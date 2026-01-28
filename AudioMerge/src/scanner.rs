@@ -19,6 +19,17 @@ pub fn scan_audio_files(root: &Path) -> HashMap<PathBuf, Vec<PathBuf>> {
             }
         }
     }
+
+    // Sort files naturally within each group
+    for files in groups.values_mut() {
+        files.sort_by(|a, b| {
+            natord::compare(
+                &a.file_name().unwrap_or_default().to_string_lossy(),
+                &b.file_name().unwrap_or_default().to_string_lossy()
+            )
+        });
+    }
+
     groups
 }
 
@@ -62,5 +73,23 @@ mod tests {
         assert_eq!(sub_files.len(), 2);
         assert!(sub_files.iter().any(|p| p.ends_with("audio2.mp3")));
         assert!(sub_files.iter().any(|p| p.ends_with("audio3.mp3")));
+    }
+
+    #[test]
+    fn test_scan_audio_files_sorting() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        
+        File::create(root.join("1.mp3")).unwrap();
+        File::create(root.join("10.mp3")).unwrap();
+        File::create(root.join("2.mp3")).unwrap();
+
+        let groups = scan_audio_files(root);
+        let files = groups.get(root).unwrap();
+
+        assert_eq!(files.len(), 3);
+        assert!(files[0].ends_with("1.mp3"));
+        assert!(files[1].ends_with("2.mp3"));
+        assert!(files[2].ends_with("10.mp3"));
     }
 }
