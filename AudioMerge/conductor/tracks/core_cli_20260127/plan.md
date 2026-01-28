@@ -15,6 +15,6 @@
     - [x] Group files by their parent directory
 - [x] Task: Implement Natural Sorting c8f4f8e
     - [x] Sort files within each group using natural ordering
-- [ ] Task: Implement Dry-Run Logic
-    - [ ] Print table showing Folder -> [File List] -> Output Name
+- [x] Task: Implement Dry-Run Logic 310b949
+    - [x] Print table showing Folder -> [File List] -> Output Name
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: CLI & Traversal' (Protocol in workflow.md)
