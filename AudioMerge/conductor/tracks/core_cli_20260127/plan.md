@@ -10,9 +10,9 @@
 - [x] Task: Implement CLI Argument Parsing 892439c
     - [x] Define `Args` struct with `clap`
     - [x] Implement `on-error` enum (halt, prompt, skip)
-- [ ] Task: Implement Recursive Scanning
-    - [ ] Use `walkdir` to find audio files
-    - [ ] Group files by their parent directory
+- [x] Task: Implement Recursive Scanning 2e51b99
+    - [x] Use `walkdir` to find audio files
+    - [x] Group files by their parent directory
 - [ ] Task: Implement Natural Sorting
     - [ ] Sort files within each group using natural ordering
 - [ ] Task: Implement Dry-Run Logic
