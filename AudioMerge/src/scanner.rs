@@ -5,7 +5,16 @@ use walkdir::WalkDir;
 pub fn scan_audio_files(root: &Path) -> HashMap<PathBuf, Vec<PathBuf>> {
     let mut groups: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
 
-    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+    for result in WalkDir::new(root) {
+        let entry = match result {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!("Error accessing file: {}", err);
+                // TODO: Integrate 'on_error' strategy logic here (Halt/Skip/Prompt)
+                continue;
+            }
+        };
+
         if entry.file_type().is_file() {
             // For MVP we assume mp3, but let's check extension just in case
             if let Some(ext) = entry.path().extension() {

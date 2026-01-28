@@ -1,15 +1,16 @@
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Source directory to scan for audio files
     #[arg(short, long, default_value = ".")]
-    pub source: String,
+    pub source: PathBuf,
 
     /// Output directory for merged files
     #[arg(short, long, default_value = "output")]
-    pub output: String,
+    pub output: PathBuf,
 
     /// Perform a dry run without writing any files
     #[arg(short, long)]
@@ -34,8 +35,8 @@ mod tests {
     #[test]
     fn test_args_parsing_defaults() {
         let args = Args::parse_from(&["app"]);
-        assert_eq!(args.source, ".");
-        assert_eq!(args.output, "output");
+        assert_eq!(args.source, PathBuf::from("."));
+        assert_eq!(args.output, PathBuf::from("output"));
         assert_eq!(args.dry_run, false);
         assert_eq!(args.on_error, OnError::Skip);
     }
@@ -49,8 +50,8 @@ mod tests {
             "--dry-run",
             "--on-error", "halt",
         ]);
-        assert_eq!(args.source, "src_dir");
-        assert_eq!(args.output, "out_dir");
+        assert_eq!(args.source, PathBuf::from("src_dir"));
+        assert_eq!(args.output, PathBuf::from("out_dir"));
         assert_eq!(args.dry_run, true);
         assert_eq!(args.on_error, OnError::Halt);
     }

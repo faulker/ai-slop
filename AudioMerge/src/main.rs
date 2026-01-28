@@ -3,22 +3,21 @@ mod scanner;
 mod dry_run;
 
 use clap::Parser;
-use std::path::Path;
 use args::Args;
 
 fn main() {
     let args = Args::parse();
     
     // Check if source exists
-    if !Path::new(&args.source).exists() {
-        eprintln!("Error: Source directory '{}' does not exist.", args.source);
+    if !args.source.exists() {
+        eprintln!("Error: Source directory '{}' does not exist.", args.source.display());
         std::process::exit(1);
     }
 
-    let groups = scanner::scan_audio_files(Path::new(&args.source));
+    let groups = scanner::scan_audio_files(&args.source);
 
     if groups.is_empty() {
-        println!("No MP3 files found in '{}'.", args.source);
+        println!("No MP3 files found in '{}'.", args.source.display());
         return;
     }
 
