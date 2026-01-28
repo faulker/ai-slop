@@ -1,10 +1,10 @@
 # Implementation Plan: Core CLI & Scanning
 
-## Phase 1: Project Scaffolding
+## Phase 1: Project Scaffolding [checkpoint: c001fac]
 - [x] Task: Initialize Rust project and dependencies 51cdb43
     - [x] Run `cargo init`
     - [x] Add `clap`, `walkdir`, `natord` (for sorting) to `Cargo.toml`
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Project Scaffolding' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Project Scaffolding' (Protocol in workflow.md)
 
 ## Phase 2: CLI & Traversal
 - [ ] Task: Implement CLI Argument Parsing
