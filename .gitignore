@@ -1,2 +1,5 @@
 .DS_Store
 .gemini
+.agent
+.cargo
+target
