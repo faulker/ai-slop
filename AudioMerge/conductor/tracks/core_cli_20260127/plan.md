@@ -13,8 +13,8 @@
 - [x] Task: Implement Recursive Scanning 2e51b99
     - [x] Use `walkdir` to find audio files
     - [x] Group files by their parent directory
-- [ ] Task: Implement Natural Sorting
-    - [ ] Sort files within each group using natural ordering
+- [x] Task: Implement Natural Sorting c8f4f8e
+    - [x] Sort files within each group using natural ordering
 - [ ] Task: Implement Dry-Run Logic
     - [ ] Print table showing Folder -> [File List] -> Output Name
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: CLI & Traversal' (Protocol in workflow.md)
