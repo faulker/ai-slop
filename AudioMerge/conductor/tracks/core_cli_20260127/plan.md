@@ -6,7 +6,7 @@
     - [x] Add `clap`, `walkdir`, `natord` (for sorting) to `Cargo.toml`
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Project Scaffolding' (Protocol in workflow.md)
 
-## Phase 2: CLI & Traversal
+## Phase 2: CLI & Traversal [checkpoint: 424b96d]
 - [x] Task: Implement CLI Argument Parsing 892439c
     - [x] Define `Args` struct with `clap`
     - [x] Implement `on-error` enum (halt, prompt, skip)
@@ -17,4 +17,4 @@
     - [x] Sort files within each group using natural ordering
 - [x] Task: Implement Dry-Run Logic 310b949
     - [x] Print table showing Folder -> [File List] -> Output Name
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: CLI & Traversal' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: CLI & Traversal' (Protocol in workflow.md)
