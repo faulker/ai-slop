@@ -1,9 +1,9 @@
 # Implementation Plan: Core CLI & Scanning
 
 ## Phase 1: Project Scaffolding
-- [ ] Task: Initialize Rust project and dependencies
-    - [ ] Run `cargo init`
-    - [ ] Add `clap`, `walkdir`, `natord` (for sorting) to `Cargo.toml`
+- [x] Task: Initialize Rust project and dependencies 51cdb43
+    - [x] Run `cargo init`
+    - [x] Add `clap`, `walkdir`, `natord` (for sorting) to `Cargo.toml`
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Project Scaffolding' (Protocol in workflow.md)
 
 ## Phase 2: CLI & Traversal
