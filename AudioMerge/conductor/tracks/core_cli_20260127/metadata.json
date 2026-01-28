@@ -1,0 +1,8 @@
+{
+  "track_id": "core_cli_20260127",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2026-01-27T00:00:00Z",
+  "updated_at": "2026-01-27T00:00:00Z",
+  "description": "Build the core CLI structure and recursive folder scanning logic with dry-run support."
+}
