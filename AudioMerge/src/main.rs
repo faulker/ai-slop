@@ -1,4 +1,5 @@
 mod args;
+mod scanner;
 
 fn main() {
     println!("Hello, world!");
