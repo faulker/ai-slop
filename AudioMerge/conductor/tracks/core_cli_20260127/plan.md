@@ -7,9 +7,9 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Project Scaffolding' (Protocol in workflow.md)
 
 ## Phase 2: CLI & Traversal
-- [ ] Task: Implement CLI Argument Parsing
-    - [ ] Define `Args` struct with `clap`
-    - [ ] Implement `on-error` enum (halt, prompt, skip)
+- [x] Task: Implement CLI Argument Parsing 892439c
+    - [x] Define `Args` struct with `clap`
+    - [x] Implement `on-error` enum (halt, prompt, skip)
 - [ ] Task: Implement Recursive Scanning
     - [ ] Use `walkdir` to find audio files
     - [ ] Group files by their parent directory
