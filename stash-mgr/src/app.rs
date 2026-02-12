@@ -7,9 +7,18 @@ use ratatui::backend::Backend;
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Position};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::{Frame, Terminal};
 use strum::{Display, EnumIter, FromRepr, IntoEnumIterator};
+
+// ── Color palette ────────────────────────────────────────────────────
+const ACCENT: Color = Color::Indexed(75);        // soft blue — tab highlight, titles
+const HIGHLIGHT_BG: Color = Color::Indexed(236);  // dark gray — selected row background
+const HIGHLIGHT_FG: Color = Color::Indexed(75);   // soft blue — selected row text
+const SUCCESS: Color = Color::Indexed(114);       // soft green — status messages, diff +
+const ERROR: Color = Color::Indexed(203);         // soft red — errors, diff -, drop popup
+const DIFF_HUNK: Color = Color::Indexed(139);     // muted purple — @@ hunk headers
+const DIM: Color = Color::Indexed(242);           // gray — help text, borders
 
 /// Maximum number of diff lines to display before truncation.
 /// Prevents UI freezes on very large diffs. Well below ratatui's u16::MAX buffer limit.
@@ -151,14 +160,23 @@ impl FileListState {
         }
     }
 
-    /// Move selection to next item
+    /// Move selection to next item (wraps around)
     pub fn select_next(&mut self) {
-        self.list_state.select_next();
+        if self.files.is_empty() {
+            return;
+        }
+        let current = self.list_state.selected().unwrap_or(0);
+        self.list_state.select(Some((current + 1) % self.files.len()));
     }
 
-    /// Move selection to previous item
+    /// Move selection to previous item (wraps around)
     pub fn select_previous(&mut self) {
-        self.list_state.select_previous();
+        if self.files.is_empty() {
+            return;
+        }
+        let current = self.list_state.selected().unwrap_or(0);
+        self.list_state
+            .select(Some((current + self.files.len() - 1) % self.files.len()));
     }
 
     /// Get paths of all selected files
@@ -525,10 +543,10 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected_tab == SelectedTab::Manage {
+                if self.selected_tab == SelectedTab::Manage && !self.stashes.is_empty() {
                     let old_selection = self.stash_list_state.selected();
-                    self.stash_list_state.select_next();
-                    // Update diff if selection changed
+                    let current = old_selection.unwrap_or(0);
+                    self.stash_list_state.select(Some((current + 1) % self.stashes.len()));
                     if old_selection != self.stash_list_state.selected() {
                         self.update_diff_preview();
                     }
@@ -543,10 +561,10 @@ impl App {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.selected_tab == SelectedTab::Manage {
+                if self.selected_tab == SelectedTab::Manage && !self.stashes.is_empty() {
                     let old_selection = self.stash_list_state.selected();
-                    self.stash_list_state.select_previous();
-                    // Update diff if selection changed
+                    let current = old_selection.unwrap_or(0);
+                    self.stash_list_state.select(Some((current + self.stashes.len() - 1) % self.stashes.len()));
                     if old_selection != self.stash_list_state.selected() {
                         self.update_diff_preview();
                     }
@@ -843,14 +861,22 @@ impl App {
     fn render_tabs(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let tab_titles: Vec<String> = SelectedTab::iter().map(|t| t.to_string()).collect();
         let tabs = Tabs::new(tab_titles)
-            .block(Block::default().borders(Borders::ALL).title("stash-mgr"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(DIM))
+                    .title("stash-mgr")
+                    .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            )
             .select(self.selected_tab as usize)
-            .style(Style::default())
+            .style(Style::default().fg(DIM))
             .highlight_style(
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(ACCENT)
                     .add_modifier(Modifier::BOLD),
-            );
+            )
+            .divider(Span::styled(" | ", Style::default().fg(DIM)));
         frame.render_widget(tabs, area);
     }
 
@@ -868,14 +894,27 @@ impl App {
                         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
                         .split(area);
 
-                    // Build list items with checkbox notation
+                    // Build list items with checkbox notation and colored status
                     let items: Vec<ListItem> = file_list_state
                         .files
                         .iter()
                         .map(|file| {
-                            let checkbox = if file.selected { "[x]" } else { "[ ]" };
-                            let status = Self::format_file_status(file.status);
-                            ListItem::new(format!("{} {} ({})", checkbox, file.path, status))
+                            let checkbox = if file.selected { "[x] " } else { "[ ] " };
+                            let status_str = Self::format_file_status(file.status);
+                            let status_color = if file.status.intersects(
+                                Status::INDEX_NEW | Status::INDEX_MODIFIED | Status::INDEX_DELETED,
+                            ) {
+                                SUCCESS
+                            } else {
+                                ERROR
+                            };
+                            ListItem::new(Line::from(vec![
+                                Span::raw(checkbox),
+                                Span::raw(&file.path),
+                                Span::raw(" ("),
+                                Span::styled(status_str, Style::default().fg(status_color)),
+                                Span::raw(")"),
+                            ]))
                         })
                         .collect();
 
@@ -883,14 +922,18 @@ impl App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title("Select Files (Space: toggle, s: stash)"),
+                                .border_type(BorderType::Rounded)
+                                .border_style(Style::default().fg(DIM))
+                                .title("Select Files (Space: toggle, s: stash)")
+                                .title_style(Style::default().fg(ACCENT)),
                         )
                         .highlight_style(
                             Style::default()
-                                .fg(Color::Yellow)
+                                .bg(HIGHLIGHT_BG)
+                                .fg(HIGHLIGHT_FG)
                                 .add_modifier(Modifier::BOLD),
                         )
-                        .highlight_symbol("> ");
+                        .highlight_symbol(" > ");
 
                     frame.render_stateful_widget(list, chunks[0], &mut file_list_state.list_state);
 
@@ -902,7 +945,10 @@ impl App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title("Create Stash"),
+                                .border_type(BorderType::Rounded)
+                                .border_style(Style::default().fg(DIM))
+                                .title("Create Stash")
+                                .title_style(Style::default().fg(ACCENT)),
                         )
                         .centered();
                     frame.render_widget(content, area);
@@ -917,7 +963,10 @@ impl App {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title("Manage Stashes"),
+                            .border_type(BorderType::Rounded)
+                            .border_style(Style::default().fg(DIM))
+                            .title("Manage Stashes")
+                            .title_style(Style::default().fg(ACCENT)),
                     )
                     .centered();
                     frame.render_widget(content, area);
@@ -944,14 +993,18 @@ impl App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .title("Stash List"),
+                                .border_type(BorderType::Rounded)
+                                .border_style(Style::default().fg(DIM))
+                                .title("Stash List")
+                                .title_style(Style::default().fg(ACCENT)),
                         )
                         .highlight_style(
                             Style::default()
-                                .fg(Color::Yellow)
+                                .bg(HIGHLIGHT_BG)
+                                .fg(HIGHLIGHT_FG)
                                 .add_modifier(Modifier::BOLD),
                         )
-                        .highlight_symbol("> ");
+                        .highlight_symbol(" > ");
 
                     frame.render_stateful_widget(list, chunks[0], &mut self.stash_list_state);
 
@@ -977,24 +1030,25 @@ impl App {
 
         // Render status message if present
         if let Some(ref msg) = self.status_message {
-            let style = if msg.contains("failed") {
-                Style::default().fg(Color::Red)
+            let style = if msg.contains("failed") || msg.contains("No files") || msg.contains("Please enter") {
+                Style::default().fg(ERROR)
             } else {
-                Style::default().fg(Color::Green)
+                Style::default().fg(SUCCESS)
             };
             let status_line = Line::from(Span::styled(msg.as_str(), style));
             frame.render_widget(status_line, status_area);
         }
 
         // Render help text (changes based on popup visibility and active tab)
+        let help_style = Style::default().fg(DIM);
         let help_text = if self.show_message_input {
-            Line::from("Enter: Create Stash | Esc: Cancel | Type your stash message")
+            Line::from(Span::styled("Enter: Create Stash | Esc: Cancel | Type your stash message", help_style))
         } else if self.show_confirm_popup {
-            Line::from("y: Confirm | n/Esc: Cancel")
+            Line::from(Span::styled("y: Confirm | n/Esc: Cancel", help_style))
         } else if self.selected_tab == SelectedTab::Create {
-            Line::from("q: Quit | Tab: Switch Tab | Up/Down: Navigate | Space: Toggle | s: Stash Selected")
+            Line::from(Span::styled("q: Quit | Tab: Switch Tab | Up/Down: Navigate | Space: Toggle | s: Stash Selected", help_style))
         } else {
-            Line::from("q: Quit | Tab: Switch Tab | Up/Down: Navigate | a: Apply | p: Pop | d: Drop")
+            Line::from(Span::styled("q: Quit | Tab: Switch Tab | Up/Down: Navigate | a: Apply | p: Pop | d: Drop", help_style))
         };
         frame.render_widget(help_text, help_area);
 
@@ -1015,11 +1069,13 @@ impl App {
             .lines()
             .map(|line| {
                 if line.starts_with('+') {
-                    Line::from(Span::styled(line, Style::default().fg(Color::Green)))
+                    Line::from(Span::styled(line, Style::default().fg(SUCCESS)))
                 } else if line.starts_with('-') {
-                    Line::from(Span::styled(line, Style::default().fg(Color::Red)))
+                    Line::from(Span::styled(line, Style::default().fg(ERROR)))
                 } else if line.starts_with("@@") {
-                    Line::from(Span::styled(line, Style::default().fg(Color::Cyan)))
+                    Line::from(Span::styled(line, Style::default().fg(DIFF_HUNK)))
+                } else if line.starts_with("diff ") || line.starts_with("index ") {
+                    Line::from(Span::styled(line, Style::default().fg(DIM).add_modifier(Modifier::BOLD)))
                 } else {
                     Line::from(line)
                 }
@@ -1030,7 +1086,10 @@ impl App {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Diff Preview"),
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(DIM))
+                    .title("Diff Preview")
+                    .title_style(Style::default().fg(ACCENT)),
             )
             .scroll((scroll, 0));
 
@@ -1078,8 +1137,10 @@ impl App {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Red))
-                    .title("Confirm Drop"),
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(ERROR))
+                    .title("Confirm Drop")
+                    .title_style(Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
             )
             .centered();
 
@@ -1115,7 +1176,10 @@ impl App {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Enter Stash Message (Enter: confirm, Esc: cancel)"),
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(ACCENT))
+                    .title("Enter Stash Message (Enter: confirm, Esc: cancel)")
+                    .title_style(Style::default().fg(ACCENT)),
             );
 
         frame.render_widget(popup, popup_area);
