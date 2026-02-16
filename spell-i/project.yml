@@ -1,0 +1,67 @@
+name: Spell-i
+options:
+  bundleIdPrefix: com.spell-i
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "16.2"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_OBJC_BRIDGING_HEADER: Spell-i/BridgingHeader.h
+    LIBRARY_SEARCH_PATHS: $(SRCROOT)
+    OTHER_LDFLAGS:
+      - -lspell_i_engine
+    HEADER_SEARCH_PATHS:
+      - $(SRCROOT)/Generated
+      - $(SRCROOT)/Generated/spell-i-engine
+
+targets:
+  Spell-i:
+    type: application
+    platform: macOS
+    sources:
+      - path: Spell-i
+        excludes:
+          - "**/.DS_Store"
+      - path: Generated
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.spell-i.app
+        PRODUCT_NAME: Spell-i
+        PRODUCT_MODULE_NAME: Spell_i
+        INFOPLIST_GENERATION_MODE: GeneratedFile
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Spell-i
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_NSAccessibilityUsageDescription: "Spell-i needs Accessibility access to read text in other applications and provide real-time spell checking."
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        SYMROOT: $(SRCROOT)/build
+    preBuildScripts:
+      - name: "Build Rust Library"
+        script: |
+          "${SRCROOT}/build-rust.sh"
+        basedOnDependencyAnalysis: false
+
+  Spell-iTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Spell-iTests
+        excludes:
+          - "**/.DS_Store"
+    dependencies:
+      - target: Spell-i
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.spell-i.tests
+        PRODUCT_NAME: Spell-iTests
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES

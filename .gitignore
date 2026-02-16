@@ -3,3 +3,7 @@
 .agent
 .cargo
 target
+/spell-i/build
+/spell-i/build_output.log
+/spell-i/libspell_i_engine.a
+Generated

@@ -1,0 +1,619 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		081E1CB45556D0B3D5150CE6 /* OverlayWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AD55DE15E847988F691C952 /* OverlayWindowController.swift */; };
+		34FECBC3EFB4E4CAC750F101 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 439D3B3BA0D62D41F03727A5 /* Constants.swift */; };
+		36A5EF6085152529C865D13A /* TextReplacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DD3DE773DA082E5AB3D840B /* TextReplacer.swift */; };
+		38B5F7C972460796F893DCAA /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDA0F099A1CB41FE480F9C0 /* AppDelegate.swift */; };
+		40F922144360D7E7B7FBEA86 /* FFIValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E68406D599131F7AF17AF89 /* FFIValidator.swift */; };
+		7DD651A188782E594475CEDC /* AccessibilityPermissionCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F7C144C03FDEDF32D820333 /* AccessibilityPermissionCheckerTests.swift */; };
+		957D1BDB424C74B96D886D57 /* AccessibilityReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A532FABCE8A5CE18F8A52C80 /* AccessibilityReader.swift */; };
+		96271C26D833DB1A05EA90B5 /* CorrectionPopupController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6362E641C249D93871B90F1 /* CorrectionPopupController.swift */; };
+		A499DB52452CF154CFFC1057 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1125A9A3C9CA168E7E9B082B /* StatusBarController.swift */; };
+		AE4DD634585725C8D74CFBC7 /* FocusTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE804F8F9B14410A66F0CD80 /* FocusTracker.swift */; };
+		B2DEF5515114054416F625F4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AC901F00B90567AEE7DADA49 /* Assets.xcassets */; };
+		C71FD1BA40E561FE3F1362D4 /* TextMonitorCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F53DE8CB8B94FB1AC8F77A /* TextMonitorCoordinator.swift */; };
+		C766B8497F4D11E356095B18 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139CE1E536B194D1869A29FD /* main.swift */; };
+		C8D6D2E043BFB256861A3EE2 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7867B67E7515791CDE4B3E05 /* Logger.swift */; };
+		CC67FD649B7EC3161D5E63E5 /* OverlayContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94AADDD9B7FFA76E89A4E8FC /* OverlayContentView.swift */; };
+		CCAF5D5F19D9F1FD46382706 /* TypingDebouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A38F84033A4908E7BC90D60B /* TypingDebouncer.swift */; };
+		CD52190E04EA131D2581D12D /* spell-i-engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C3F87FFF8A856DAC9753E9 /* spell-i-engine.swift */; };
+		D1527506DB75431F00CD18F0 /* SquigglyUnderlineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69E848E1A9BF54C4CFC24B4C /* SquigglyUnderlineView.swift */; };
+		E8FEB16FF44FA72834999AE3 /* OnboardingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DE9FB7CB18E75B14AD9E864 /* OnboardingWindowController.swift */; };
+		EB0EF694169341B1D39C9A33 /* AccessibilityPermissionChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77735B7033F9617EE2558C2A /* AccessibilityPermissionChecker.swift */; };
+		EBBE013988BDCD882BCDCA3D /* EventTapManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7016871CE112490E0B18BC5 /* EventTapManager.swift */; };
+		F33558D566E6E238EC82C6AE /* SwiftBridgeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80DE7849B967DED1295B1345 /* SwiftBridgeCore.swift */; };
+		FC91FAD1A575239B62A523C4 /* OverlayPositionCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13E44F9A1522E7C1E8326B0F /* OverlayPositionCalculator.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		498F1F5F422CB225573D77DC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5ABADE1D5DFEF916DB4C0830 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 94A8BA80D47455D37A1B9440;
+			remoteInfo = "Spell-i";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0DD3DE773DA082E5AB3D840B /* TextReplacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextReplacer.swift; sourceTree = "<group>"; };
+		1125A9A3C9CA168E7E9B082B /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
+		139CE1E536B194D1869A29FD /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		13E44F9A1522E7C1E8326B0F /* OverlayPositionCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayPositionCalculator.swift; sourceTree = "<group>"; };
+		2F7C144C03FDEDF32D820333 /* AccessibilityPermissionCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityPermissionCheckerTests.swift; sourceTree = "<group>"; };
+		31C3EF0F8210BDCA97AE574C /* SwiftBridgeCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SwiftBridgeCore.h; sourceTree = "<group>"; };
+		439D3B3BA0D62D41F03727A5 /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
+		4EDA0F099A1CB41FE480F9C0 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		5DE9FB7CB18E75B14AD9E864 /* OnboardingWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
+		61010E691E799C4B46290ABA /* Spell-iTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Spell-iTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		65D396EA66A82FCC8F8B7ECE /* BridgingHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BridgingHeader.h; sourceTree = "<group>"; };
+		69E848E1A9BF54C4CFC24B4C /* SquigglyUnderlineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SquigglyUnderlineView.swift; sourceTree = "<group>"; };
+		6AD55DE15E847988F691C952 /* OverlayWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayWindowController.swift; sourceTree = "<group>"; };
+		77735B7033F9617EE2558C2A /* AccessibilityPermissionChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityPermissionChecker.swift; sourceTree = "<group>"; };
+		7867B67E7515791CDE4B3E05 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
+		80DE7849B967DED1295B1345 /* SwiftBridgeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftBridgeCore.swift; sourceTree = "<group>"; };
+		8E68406D599131F7AF17AF89 /* FFIValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FFIValidator.swift; sourceTree = "<group>"; };
+		94AADDD9B7FFA76E89A4E8FC /* OverlayContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayContentView.swift; sourceTree = "<group>"; };
+		A38F84033A4908E7BC90D60B /* TypingDebouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingDebouncer.swift; sourceTree = "<group>"; };
+		A4D02FE471FA2B8AB3E956CF /* Spell-i.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Spell-i.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A532FABCE8A5CE18F8A52C80 /* AccessibilityReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityReader.swift; sourceTree = "<group>"; };
+		A6362E641C249D93871B90F1 /* CorrectionPopupController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorrectionPopupController.swift; sourceTree = "<group>"; };
+		AC901F00B90567AEE7DADA49 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BE804F8F9B14410A66F0CD80 /* FocusTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusTracker.swift; sourceTree = "<group>"; };
+		C1F53DE8CB8B94FB1AC8F77A /* TextMonitorCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextMonitorCoordinator.swift; sourceTree = "<group>"; };
+		C7016871CE112490E0B18BC5 /* EventTapManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTapManager.swift; sourceTree = "<group>"; };
+		E1377A3143DE673F0D9DA121 /* spell-i-engine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "spell-i-engine.h"; sourceTree = "<group>"; };
+		E3C3F87FFF8A856DAC9753E9 /* spell-i-engine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "spell-i-engine.swift"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		012CCE24A5A6FB1D66AD99EE /* TextMonitoring */ = {
+			isa = PBXGroup;
+			children = (
+				A532FABCE8A5CE18F8A52C80 /* AccessibilityReader.swift */,
+				C7016871CE112490E0B18BC5 /* EventTapManager.swift */,
+				BE804F8F9B14410A66F0CD80 /* FocusTracker.swift */,
+				C1F53DE8CB8B94FB1AC8F77A /* TextMonitorCoordinator.swift */,
+				A38F84033A4908E7BC90D60B /* TypingDebouncer.swift */,
+			);
+			path = TextMonitoring;
+			sourceTree = "<group>";
+		};
+		2265A625F563573BAAEED9B1 /* Permissions */ = {
+			isa = PBXGroup;
+			children = (
+				2F7C144C03FDEDF32D820333 /* AccessibilityPermissionCheckerTests.swift */,
+			);
+			path = Permissions;
+			sourceTree = "<group>";
+		};
+		22B7520BB247580B3192C47D /* App */ = {
+			isa = PBXGroup;
+			children = (
+				4EDA0F099A1CB41FE480F9C0 /* AppDelegate.swift */,
+				8E68406D599131F7AF17AF89 /* FFIValidator.swift */,
+				139CE1E536B194D1869A29FD /* main.swift */,
+				1125A9A3C9CA168E7E9B082B /* StatusBarController.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		2874A38008DCC8571DF1620B /* spell-i-engine */ = {
+			isa = PBXGroup;
+			children = (
+				E1377A3143DE673F0D9DA121 /* spell-i-engine.h */,
+				E3C3F87FFF8A856DAC9753E9 /* spell-i-engine.swift */,
+			);
+			path = "spell-i-engine";
+			sourceTree = "<group>";
+		};
+		2E9F9E4CC6692C25674C6F81 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				AC901F00B90567AEE7DADA49 /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		30512254AD0B2E81360E6516 /* Permissions */ = {
+			isa = PBXGroup;
+			children = (
+				77735B7033F9617EE2558C2A /* AccessibilityPermissionChecker.swift */,
+				5DE9FB7CB18E75B14AD9E864 /* OnboardingWindowController.swift */,
+			);
+			path = Permissions;
+			sourceTree = "<group>";
+		};
+		401430DAA07264E32F305B99 /* Generated */ = {
+			isa = PBXGroup;
+			children = (
+				31C3EF0F8210BDCA97AE574C /* SwiftBridgeCore.h */,
+				80DE7849B967DED1295B1345 /* SwiftBridgeCore.swift */,
+				2874A38008DCC8571DF1620B /* spell-i-engine */,
+			);
+			path = Generated;
+			sourceTree = "<group>";
+		};
+		5B120BF3F01C3A046EB994BC /* Overlay */ = {
+			isa = PBXGroup;
+			children = (
+				A6362E641C249D93871B90F1 /* CorrectionPopupController.swift */,
+				94AADDD9B7FFA76E89A4E8FC /* OverlayContentView.swift */,
+				13E44F9A1522E7C1E8326B0F /* OverlayPositionCalculator.swift */,
+				6AD55DE15E847988F691C952 /* OverlayWindowController.swift */,
+				69E848E1A9BF54C4CFC24B4C /* SquigglyUnderlineView.swift */,
+				0DD3DE773DA082E5AB3D840B /* TextReplacer.swift */,
+			);
+			path = Overlay;
+			sourceTree = "<group>";
+		};
+		829F014969CE736E1751CED5 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				439D3B3BA0D62D41F03727A5 /* Constants.swift */,
+				7867B67E7515791CDE4B3E05 /* Logger.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		94DA8E4739181953C85D7DE7 /* Spell-iTests */ = {
+			isa = PBXGroup;
+			children = (
+				2265A625F563573BAAEED9B1 /* Permissions */,
+			);
+			path = "Spell-iTests";
+			sourceTree = "<group>";
+		};
+		AC68CCDA8887C7B2CEC40E85 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A4D02FE471FA2B8AB3E956CF /* Spell-i.app */,
+				61010E691E799C4B46290ABA /* Spell-iTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D8BCEA3368C4BA30F0A3FDF8 /* Spell-i */ = {
+			isa = PBXGroup;
+			children = (
+				65D396EA66A82FCC8F8B7ECE /* BridgingHeader.h */,
+				22B7520BB247580B3192C47D /* App */,
+				5B120BF3F01C3A046EB994BC /* Overlay */,
+				30512254AD0B2E81360E6516 /* Permissions */,
+				2E9F9E4CC6692C25674C6F81 /* Resources */,
+				012CCE24A5A6FB1D66AD99EE /* TextMonitoring */,
+				829F014969CE736E1751CED5 /* Utilities */,
+			);
+			path = "Spell-i";
+			sourceTree = "<group>";
+		};
+		E869E0DEE7E6AB9F67591467 = {
+			isa = PBXGroup;
+			children = (
+				401430DAA07264E32F305B99 /* Generated */,
+				D8BCEA3368C4BA30F0A3FDF8 /* Spell-i */,
+				94DA8E4739181953C85D7DE7 /* Spell-iTests */,
+				AC68CCDA8887C7B2CEC40E85 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		78571A9F690F2C47FBA22546 /* Spell-iTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 95E729CA1D454012165EEE32 /* Build configuration list for PBXNativeTarget "Spell-iTests" */;
+			buildPhases = (
+				78C549E5784C1C7EEEDFC58D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				52DA8F92402F76CBC833A580 /* PBXTargetDependency */,
+			);
+			name = "Spell-iTests";
+			packageProductDependencies = (
+			);
+			productName = "Spell-iTests";
+			productReference = 61010E691E799C4B46290ABA /* Spell-iTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		94A8BA80D47455D37A1B9440 /* Spell-i */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2EC349976B346B3A2650133A /* Build configuration list for PBXNativeTarget "Spell-i" */;
+			buildPhases = (
+				B3FC96A6DB4722C67F109AB6 /* Build Rust Library */,
+				EE8F9A2A0E3A024C5AF195E4 /* Sources */,
+				3ED10BD51F928806D8AEB941 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Spell-i";
+			packageProductDependencies = (
+			);
+			productName = "Spell-i";
+			productReference = A4D02FE471FA2B8AB3E956CF /* Spell-i.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5ABADE1D5DFEF916DB4C0830 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1620;
+			};
+			buildConfigurationList = 2F2AF109C998DE60097557FD /* Build configuration list for PBXProject "Spell-i" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = E869E0DEE7E6AB9F67591467;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				94A8BA80D47455D37A1B9440 /* Spell-i */,
+				78571A9F690F2C47FBA22546 /* Spell-iTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3ED10BD51F928806D8AEB941 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B2DEF5515114054416F625F4 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B3FC96A6DB4722C67F109AB6 /* Build Rust Library */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Library";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"/Users/sane/My Drive/Technical/Dev/ai-slop/spell-i/build-rust.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		78C549E5784C1C7EEEDFC58D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7DD651A188782E594475CEDC /* AccessibilityPermissionCheckerTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE8F9A2A0E3A024C5AF195E4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EB0EF694169341B1D39C9A33 /* AccessibilityPermissionChecker.swift in Sources */,
+				957D1BDB424C74B96D886D57 /* AccessibilityReader.swift in Sources */,
+				38B5F7C972460796F893DCAA /* AppDelegate.swift in Sources */,
+				34FECBC3EFB4E4CAC750F101 /* Constants.swift in Sources */,
+				96271C26D833DB1A05EA90B5 /* CorrectionPopupController.swift in Sources */,
+				EBBE013988BDCD882BCDCA3D /* EventTapManager.swift in Sources */,
+				40F922144360D7E7B7FBEA86 /* FFIValidator.swift in Sources */,
+				AE4DD634585725C8D74CFBC7 /* FocusTracker.swift in Sources */,
+				C8D6D2E043BFB256861A3EE2 /* Logger.swift in Sources */,
+				E8FEB16FF44FA72834999AE3 /* OnboardingWindowController.swift in Sources */,
+				CC67FD649B7EC3161D5E63E5 /* OverlayContentView.swift in Sources */,
+				FC91FAD1A575239B62A523C4 /* OverlayPositionCalculator.swift in Sources */,
+				081E1CB45556D0B3D5150CE6 /* OverlayWindowController.swift in Sources */,
+				D1527506DB75431F00CD18F0 /* SquigglyUnderlineView.swift in Sources */,
+				A499DB52452CF154CFFC1057 /* StatusBarController.swift in Sources */,
+				F33558D566E6E238EC82C6AE /* SwiftBridgeCore.swift in Sources */,
+				C71FD1BA40E561FE3F1362D4 /* TextMonitorCoordinator.swift in Sources */,
+				36A5EF6085152529C865D13A /* TextReplacer.swift in Sources */,
+				CCAF5D5F19D9F1FD46382706 /* TypingDebouncer.swift in Sources */,
+				C766B8497F4D11E356095B18 /* main.swift in Sources */,
+				CD52190E04EA131D2581D12D /* spell-i-engine.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		52DA8F92402F76CBC833A580 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 94A8BA80D47455D37A1B9440 /* Spell-i */;
+			targetProxy = 498F1F5F422CB225573D77DC /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		20E3E9EF05DD10756C220367 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.spell-i.tests";
+				PRODUCT_NAME = "Spell-iTests";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Spell-i.app/Contents/MacOS/Spell-i";
+			};
+			name = Debug;
+		};
+		299304A4344B84B8586E40F9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Generated",
+					"$(SRCROOT)/Generated/spell-i-engine",
+				);
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = (
+					"-lspell_i_engine",
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OBJC_BRIDGING_HEADER = "Spell-i/BridgingHeader.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		43210CF34FA7691099F89D0D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Generated",
+					"$(SRCROOT)/Generated/spell-i-engine",
+				);
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = (
+					"-lspell_i_engine",
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OBJC_BRIDGING_HEADER = "Spell-i/BridgingHeader.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		4C91A02CD3461364AD8D4BFB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.spell-i.tests";
+				PRODUCT_NAME = "Spell-iTests";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Spell-i.app/Contents/MacOS/Spell-i";
+			};
+			name = Release;
+		};
+		8ED781D90EA8DD0DD15454FE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_GENERATION_MODE = GeneratedFile;
+				INFOPLIST_KEY_CFBundleDisplayName = "Spell-i";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSAccessibilityUsageDescription = "Spell-i needs Accessibility access to read text in other applications and provide real-time spell checking.";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.spell-i.app";
+				PRODUCT_MODULE_NAME = Spell_i;
+				PRODUCT_NAME = "Spell-i";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				SYMROOT = "$(SRCROOT)/build";
+			};
+			name = Release;
+		};
+		8EE173517965480B2C9C6980 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_GENERATION_MODE = GeneratedFile;
+				INFOPLIST_KEY_CFBundleDisplayName = "Spell-i";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSAccessibilityUsageDescription = "Spell-i needs Accessibility access to read text in other applications and provide real-time spell checking.";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.spell-i.app";
+				PRODUCT_MODULE_NAME = Spell_i;
+				PRODUCT_NAME = "Spell-i";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				SYMROOT = "$(SRCROOT)/build";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2EC349976B346B3A2650133A /* Build configuration list for PBXNativeTarget "Spell-i" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8EE173517965480B2C9C6980 /* Debug */,
+				8ED781D90EA8DD0DD15454FE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		2F2AF109C998DE60097557FD /* Build configuration list for PBXProject "Spell-i" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				299304A4344B84B8586E40F9 /* Debug */,
+				43210CF34FA7691099F89D0D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		95E729CA1D454012165EEE32 /* Build configuration list for PBXNativeTarget "Spell-iTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				20E3E9EF05DD10756C220367 /* Debug */,
+				4C91A02CD3461364AD8D4BFB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 5ABADE1D5DFEF916DB4C0830 /* Project object */;
+}
