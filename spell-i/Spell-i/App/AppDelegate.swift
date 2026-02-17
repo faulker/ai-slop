@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusBarControllerDel
     private var popupController: CorrectionPopupController?
     private var statusBarController: StatusBarController?
     private var onboardingController: OnboardingWindowController?
+    private var settingsController: SettingsWindowController?
 
     private let logger = Logger(category: "AppDelegate")
 
@@ -107,15 +108,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, StatusBarControllerDel
             coordinator.isPopupActive = false
         }
 
-        // Initialize engine on background queue, then start monitoring
-        coordinator.initializeEngine { [weak self] in
-            self?.coordinator?.start()
-            self?.overlayController?.showOverlay()
-            self?.logger.info("App setup complete — monitoring started")
+        // Wire engine state changes to status bar
+        coordinator.onEngineStateChanged = { [weak statusBar] state in
+            statusBar?.updateState(state)
         }
+
+        // Start monitoring immediately (independent of engine init)
+        coordinator.start()
+        overlayController?.showOverlay()
+
+        // Initialize engine in background (fire-and-forget, will trigger performLint when ready)
+        coordinator.initializeEngine()
+
+        logger.info("App setup complete — monitoring started, engine initializing")
     }
 
     // MARK: - StatusBarControllerDelegate
+
+    func statusBarDidRequestDumpAXTree() {
+        // Delay slightly so the menu dismisses and the previous app regains focus
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            let reader = AccessibilityReader()
+            reader.dumpFocusedElementTree()
+        }
+    }
+
+    func statusBarDidRequestSettings() {
+        if settingsController == nil {
+            settingsController = SettingsWindowController()
+        }
+        settingsController?.showWindow()
+    }
 
     func statusBarDidToggleEnabled(_ enabled: Bool) {
         if enabled {

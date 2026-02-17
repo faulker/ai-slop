@@ -21,6 +21,12 @@ enum Constants {
     /// Default debounce interval for typing detection (seconds).
     static let defaultDebounceInterval: TimeInterval = 0.4
 
+    /// Debounce interval for window move/scroll events (seconds).
+    static let windowMoveDebounceInterval: TimeInterval = 0.3
+
+    /// Delays between engine init retries (seconds). Index = attempt number.
+    static let engineRetryDelays: [TimeInterval] = [2.0, 5.0, 10.0]
+
     // MARK: - Overlay
 
     /// Extra padding around hit-test areas for squiggly underlines.
@@ -34,6 +40,25 @@ enum Constants {
 
     /// Squiggly line stroke width.
     static let squigglyStrokeWidth: CGFloat = 1.5
+
+    // MARK: - Accessibility Traversal
+
+    /// Maximum depth to traverse when searching for a text element in the AX tree.
+    /// Bumped from 8 to handle deeply nested Chromium/Electron hierarchies.
+    static let maxTraversalDepth = 12
+
+    /// Roles that represent editable text elements supporting bounds queries.
+    /// Includes `AXStaticText` for Chrome contenteditable elements (guarded by isEditable check).
+    static let textEditRoles: Set<String> = [
+        "AXTextArea", "AXTextField", "AXComboBox", "AXSearchField", "AXStaticText"
+    ]
+
+    /// Container roles that should be recursed into when searching for text elements.
+    static let containerRolesForTraversal: Set<String> = [
+        "AXWebArea", "AXGroup", "AXScrollArea", "AXList", "AXCell",
+        "AXSection", "AXLayoutArea", "AXSplitGroup", "AXTabGroup",
+        "AXRow", "AXOutline", "AXTable"
+    ]
 
     // MARK: - Engine
 

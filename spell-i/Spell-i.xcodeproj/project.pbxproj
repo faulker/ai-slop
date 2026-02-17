@@ -8,14 +8,19 @@
 
 /* Begin PBXBuildFile section */
 		081E1CB45556D0B3D5150CE6 /* OverlayWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AD55DE15E847988F691C952 /* OverlayWindowController.swift */; };
+		240244AF9024AC882E75BEC6 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96CC49B27F720BADFA371D15 /* Settings.swift */; };
+		32EFFC1827F2064349F37D75 /* FocusTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22CCB2FE2461921ADC63EE6B /* FocusTrackerTests.swift */; };
 		34FECBC3EFB4E4CAC750F101 /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 439D3B3BA0D62D41F03727A5 /* Constants.swift */; };
 		36A5EF6085152529C865D13A /* TextReplacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DD3DE773DA082E5AB3D840B /* TextReplacer.swift */; };
 		38B5F7C972460796F893DCAA /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDA0F099A1CB41FE480F9C0 /* AppDelegate.swift */; };
 		40F922144360D7E7B7FBEA86 /* FFIValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E68406D599131F7AF17AF89 /* FFIValidator.swift */; };
+		6162B385FCBC91C8CBB323BA /* StatusBarControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230E1144F80FF6AAE62FD3E4 /* StatusBarControllerTests.swift */; };
+		6EED449DA9EF18D3565CC818 /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31056A5C0F8704F488B8F8EE /* SettingsWindowController.swift */; };
 		7DD651A188782E594475CEDC /* AccessibilityPermissionCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F7C144C03FDEDF32D820333 /* AccessibilityPermissionCheckerTests.swift */; };
 		957D1BDB424C74B96D886D57 /* AccessibilityReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A532FABCE8A5CE18F8A52C80 /* AccessibilityReader.swift */; };
 		96271C26D833DB1A05EA90B5 /* CorrectionPopupController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6362E641C249D93871B90F1 /* CorrectionPopupController.swift */; };
 		A499DB52452CF154CFFC1057 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1125A9A3C9CA168E7E9B082B /* StatusBarController.swift */; };
+		A63F0721FB04D6C11346A64C /* SettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBE87433DFC7EF51E79EA5F4 /* SettingsTests.swift */; };
 		AE4DD634585725C8D74CFBC7 /* FocusTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE804F8F9B14410A66F0CD80 /* FocusTracker.swift */; };
 		B2DEF5515114054416F625F4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AC901F00B90567AEE7DADA49 /* Assets.xcassets */; };
 		C71FD1BA40E561FE3F1362D4 /* TextMonitorCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F53DE8CB8B94FB1AC8F77A /* TextMonitorCoordinator.swift */; };
@@ -28,6 +33,7 @@
 		E8FEB16FF44FA72834999AE3 /* OnboardingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DE9FB7CB18E75B14AD9E864 /* OnboardingWindowController.swift */; };
 		EB0EF694169341B1D39C9A33 /* AccessibilityPermissionChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77735B7033F9617EE2558C2A /* AccessibilityPermissionChecker.swift */; };
 		EBBE013988BDCD882BCDCA3D /* EventTapManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7016871CE112490E0B18BC5 /* EventTapManager.swift */; };
+		EF5E2585E15808CF02676E16 /* AccessibilityReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5DFC6E0EABBC33A62C7C9B8 /* AccessibilityReaderTests.swift */; };
 		F33558D566E6E238EC82C6AE /* SwiftBridgeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80DE7849B967DED1295B1345 /* SwiftBridgeCore.swift */; };
 		FC91FAD1A575239B62A523C4 /* OverlayPositionCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13E44F9A1522E7C1E8326B0F /* OverlayPositionCalculator.swift */; };
 /* End PBXBuildFile section */
@@ -47,7 +53,10 @@
 		1125A9A3C9CA168E7E9B082B /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
 		139CE1E536B194D1869A29FD /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		13E44F9A1522E7C1E8326B0F /* OverlayPositionCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayPositionCalculator.swift; sourceTree = "<group>"; };
+		22CCB2FE2461921ADC63EE6B /* FocusTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusTrackerTests.swift; sourceTree = "<group>"; };
+		230E1144F80FF6AAE62FD3E4 /* StatusBarControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarControllerTests.swift; sourceTree = "<group>"; };
 		2F7C144C03FDEDF32D820333 /* AccessibilityPermissionCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityPermissionCheckerTests.swift; sourceTree = "<group>"; };
+		31056A5C0F8704F488B8F8EE /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		31C3EF0F8210BDCA97AE574C /* SwiftBridgeCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SwiftBridgeCore.h; sourceTree = "<group>"; };
 		439D3B3BA0D62D41F03727A5 /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
 		4EDA0F099A1CB41FE480F9C0 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -61,9 +70,11 @@
 		80DE7849B967DED1295B1345 /* SwiftBridgeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftBridgeCore.swift; sourceTree = "<group>"; };
 		8E68406D599131F7AF17AF89 /* FFIValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FFIValidator.swift; sourceTree = "<group>"; };
 		94AADDD9B7FFA76E89A4E8FC /* OverlayContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverlayContentView.swift; sourceTree = "<group>"; };
+		96CC49B27F720BADFA371D15 /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
 		A38F84033A4908E7BC90D60B /* TypingDebouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingDebouncer.swift; sourceTree = "<group>"; };
 		A4D02FE471FA2B8AB3E956CF /* Spell-i.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Spell-i.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A532FABCE8A5CE18F8A52C80 /* AccessibilityReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityReader.swift; sourceTree = "<group>"; };
+		A5DFC6E0EABBC33A62C7C9B8 /* AccessibilityReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityReaderTests.swift; sourceTree = "<group>"; };
 		A6362E641C249D93871B90F1 /* CorrectionPopupController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorrectionPopupController.swift; sourceTree = "<group>"; };
 		AC901F00B90567AEE7DADA49 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BE804F8F9B14410A66F0CD80 /* FocusTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusTracker.swift; sourceTree = "<group>"; };
@@ -71,6 +82,7 @@
 		C7016871CE112490E0B18BC5 /* EventTapManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTapManager.swift; sourceTree = "<group>"; };
 		E1377A3143DE673F0D9DA121 /* spell-i-engine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "spell-i-engine.h"; sourceTree = "<group>"; };
 		E3C3F87FFF8A856DAC9753E9 /* spell-i-engine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "spell-i-engine.swift"; sourceTree = "<group>"; };
+		FBE87433DFC7EF51E79EA5F4 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -84,6 +96,14 @@
 				A38F84033A4908E7BC90D60B /* TypingDebouncer.swift */,
 			);
 			path = TextMonitoring;
+			sourceTree = "<group>";
+		};
+		1F28426326169A929549C122 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				FBE87433DFC7EF51E79EA5F4 /* SettingsTests.swift */,
+			);
+			path = Utilities;
 			sourceTree = "<group>";
 		};
 		2265A625F563573BAAEED9B1 /* Permissions */ = {
@@ -100,6 +120,7 @@
 				4EDA0F099A1CB41FE480F9C0 /* AppDelegate.swift */,
 				8E68406D599131F7AF17AF89 /* FFIValidator.swift */,
 				139CE1E536B194D1869A29FD /* main.swift */,
+				31056A5C0F8704F488B8F8EE /* SettingsWindowController.swift */,
 				1125A9A3C9CA168E7E9B082B /* StatusBarController.swift */,
 			);
 			path = App;
@@ -154,11 +175,29 @@
 			path = Overlay;
 			sourceTree = "<group>";
 		};
+		6F1BBD8820EE926677443977 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				230E1144F80FF6AAE62FD3E4 /* StatusBarControllerTests.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		70AAB71B9A8E962C8D21B4F1 /* TextMonitoring */ = {
+			isa = PBXGroup;
+			children = (
+				A5DFC6E0EABBC33A62C7C9B8 /* AccessibilityReaderTests.swift */,
+				22CCB2FE2461921ADC63EE6B /* FocusTrackerTests.swift */,
+			);
+			path = TextMonitoring;
+			sourceTree = "<group>";
+		};
 		829F014969CE736E1751CED5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
 				439D3B3BA0D62D41F03727A5 /* Constants.swift */,
 				7867B67E7515791CDE4B3E05 /* Logger.swift */,
+				96CC49B27F720BADFA371D15 /* Settings.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -166,7 +205,10 @@
 		94DA8E4739181953C85D7DE7 /* Spell-iTests */ = {
 			isa = PBXGroup;
 			children = (
+				6F1BBD8820EE926677443977 /* App */,
 				2265A625F563573BAAEED9B1 /* Permissions */,
+				70AAB71B9A8E962C8D21B4F1 /* TextMonitoring */,
+				1F28426326169A929549C122 /* Utilities */,
 			);
 			path = "Spell-iTests";
 			sourceTree = "<group>";
@@ -312,6 +354,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				7DD651A188782E594475CEDC /* AccessibilityPermissionCheckerTests.swift in Sources */,
+				EF5E2585E15808CF02676E16 /* AccessibilityReaderTests.swift in Sources */,
+				32EFFC1827F2064349F37D75 /* FocusTrackerTests.swift in Sources */,
+				A63F0721FB04D6C11346A64C /* SettingsTests.swift in Sources */,
+				6162B385FCBC91C8CBB323BA /* StatusBarControllerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -332,6 +378,8 @@
 				CC67FD649B7EC3161D5E63E5 /* OverlayContentView.swift in Sources */,
 				FC91FAD1A575239B62A523C4 /* OverlayPositionCalculator.swift in Sources */,
 				081E1CB45556D0B3D5150CE6 /* OverlayWindowController.swift in Sources */,
+				240244AF9024AC882E75BEC6 /* Settings.swift in Sources */,
+				6EED449DA9EF18D3565CC818 /* SettingsWindowController.swift in Sources */,
 				D1527506DB75431F00CD18F0 /* SquigglyUnderlineView.swift in Sources */,
 				A499DB52452CF154CFFC1057 /* StatusBarController.swift in Sources */,
 				F33558D566E6E238EC82C6AE /* SwiftBridgeCore.swift in Sources */,

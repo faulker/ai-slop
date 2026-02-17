@@ -6,12 +6,22 @@ import ApplicationServices
 /// Dispatches lint operations to a background queue and results to the main thread.
 final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
 
+    // MARK: - Engine State
+
+    enum EngineState {
+        case initializing
+        case ready
+        case degraded(retryCount: Int)
+        case failed
+    }
+
     // MARK: - Sub-components
 
     private let eventTapManager = EventTapManager()
     private let debouncer = TypingDebouncer()
     private let accessibilityReader = AccessibilityReader()
     private let focusTracker = FocusTracker()
+    private let windowMoveDebouncer = TypingDebouncer(interval: Constants.windowMoveDebounceInterval)
 
     // MARK: - Engine
 
@@ -19,6 +29,12 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
     private let engineQueue = DispatchQueue(label: Constants.engineQueueLabel, qos: .userInitiated)
 
     // MARK: - State
+
+    /// Current engine state.
+    private(set) var engineState: EngineState = .initializing
+
+    /// Callback when engine state changes.
+    var onEngineStateChanged: ((EngineState) -> Void)?
 
     /// Session-level ignore set (words ignored this session).
     private var sessionIgnoreList = Set<String>()
@@ -44,6 +60,12 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
     /// Callback for requesting a correction popup.
     var onUnderlineClicked: ((LintDisplayItem, CGRect) -> Void)?
 
+    /// Global scroll-wheel event monitor.
+    private var scrollMonitor: Any?
+
+    /// Cancellable work item for pending engine retry.
+    private var retryWorkItem: DispatchWorkItem?
+
     private let logger = Logger(category: "Coordinator")
 
     // MARK: - Types
@@ -60,20 +82,76 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
 
     // MARK: - Lifecycle
 
-    /// Initialize the spell engine on the background queue, then call completion on main thread.
-    /// Engine is set on engineQueue to avoid cross-thread access.
-    func initializeEngine(completion: @escaping () -> Void) {
+    /// Initialize the spell engine on the background queue (fire-and-forget).
+    /// Sets engine state and triggers performLint when ready.
+    func initializeEngine() {
         engineQueue.async { [weak self] in
+            guard let self = self else { return }
             let eng = SpellEngine()
-            self?.engine = eng
-            DispatchQueue.main.async {
-                self?.logger.info("SpellEngine initialized")
-                completion()
+
+            if eng.is_degraded() {
+                self.logger.error("SpellEngine initialized in DEGRADED state — linting unavailable")
+                DispatchQueue.main.async {
+                    self.engineState = .degraded(retryCount: 0)
+                    self.onEngineStateChanged?(self.engineState)
+                    self.scheduleRetry(attempt: 0)
+                }
+            } else {
+                self.engine = eng
+                self.logger.info("SpellEngine initialized successfully")
+                DispatchQueue.main.async {
+                    self.engineState = .ready
+                    self.onEngineStateChanged?(self.engineState)
+                    self.performLint()
+                }
             }
         }
     }
 
-    /// Starts the full monitoring pipeline.
+    /// Schedules a retry of engine initialization after a delay.
+    /// Must be called on the main thread.
+    private func scheduleRetry(attempt: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        guard attempt < Constants.engineRetryDelays.count else {
+            logger.error("Engine init failed after \(attempt) retries — giving up")
+            engineState = .failed
+            onEngineStateChanged?(engineState)
+            return
+        }
+
+        let delay = Constants.engineRetryDelays[attempt]
+        logger.info("Scheduling engine retry #\(attempt + 1) in \(delay)s")
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.engineQueue.async { [weak self] in
+                guard let self = self else { return }
+                let eng = SpellEngine()
+
+                if eng.is_degraded() {
+                    self.logger.error("Engine retry #\(attempt + 1) still degraded")
+                    DispatchQueue.main.async {
+                        self.engineState = .degraded(retryCount: attempt + 1)
+                        self.onEngineStateChanged?(self.engineState)
+                        self.scheduleRetry(attempt: attempt + 1)
+                    }
+                } else {
+                    self.engine = eng
+                    self.logger.info("Engine retry #\(attempt + 1) succeeded")
+                    DispatchQueue.main.async {
+                        self.engineState = .ready
+                        self.onEngineStateChanged?(self.engineState)
+                        self.performLint()
+                    }
+                }
+            }
+        }
+        retryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    /// Starts the full monitoring pipeline. Independent of engine init.
     func start() {
         eventTapManager.delegate = self
         let tapInstalled = eventTapManager.install()
@@ -95,8 +173,14 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
             self?.performLint()
         }
 
+        windowMoveDebouncer.onDebounced = { [weak self] in
+            self?.performLint()
+        }
+
         focusTracker.delegate = self
         focusTracker.startTracking()
+
+        installScrollMonitor()
 
         // Perform an initial lint on the currently focused element
         performLint()
@@ -108,9 +192,39 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
     func stop() {
         eventTapManager.uninstall()
         debouncer.cancel()
+        windowMoveDebouncer.cancel()
         focusTracker.stopTracking()
+        removeScrollMonitor()
+        retryWorkItem?.cancel()
+        retryWorkItem = nil
+        // Nil out engine on its queue to avoid data race with in-flight blocks
+        engineQueue.async { [weak self] in
+            self?.engine = nil
+        }
         clearResults()
         logger.info("Monitoring stopped")
+    }
+
+    // MARK: - Scroll Monitor
+
+    private func installScrollMonitor() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] _ in
+            self?.handleScrollEvent()
+        }
+    }
+
+    private func removeScrollMonitor() {
+        if let monitor = scrollMonitor {
+            NSEvent.removeMonitor(monitor)
+            scrollMonitor = nil
+        }
+    }
+
+    private func handleScrollEvent() {
+        guard !isPopupActive else { return }
+        clearResults()
+        windowMoveDebouncer.keystroke()
     }
 
     // MARK: - EventTapDelegate
@@ -137,6 +251,12 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.performLint()
         }
+    }
+
+    func focusTrackerDidDetectWindowMove() {
+        guard !isPopupActive else { return }
+        clearResults()
+        windowMoveDebouncer.keystroke()
     }
 
     // MARK: - Dictionary Actions
@@ -209,9 +329,10 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
         logger.info("performLint: checking \(text.count) chars (gen=\(currentGen))")
 
         // BACKGROUND: Run lint engine + extract raw data (no AX calls)
+        // Engine nil-check is inside engineQueue.async to avoid data race
         engineQueue.async { [weak self] in
             guard let self = self, let engine = self.engine else {
-                self?.logger.warning("performLint: engine not initialized")
+                self?.logger.debug("performLint: engine not yet available")
                 return
             }
             let lints = engine.lint_text(text)
@@ -295,6 +416,7 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
                 var items: [LintDisplayItem] = []
                 var boundsFailures = 0
                 var screenFailures = 0
+                var usedElementFallback = false
                 for raw in rawItems {
                     // For the visual underline, cap to the first word of multi-word spans.
                     // This prevents grammar lints (which can span phrases/sentences)
@@ -313,7 +435,18 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
                         underlineLength = spanLength
                     }
                     let underlineRange = NSRange(location: raw.charStart, length: max(underlineLength, 1))
-                    guard var axRect = self.accessibilityReader.boundsForRange(underlineRange, in: element) else {
+                    var axRect: CGRect
+                    if let rangeBounds = self.accessibilityReader.boundsForRange(underlineRange, in: element),
+                       rangeBounds.width > 0, rangeBounds.height > 0 {
+                        axRect = rangeBounds
+                    } else if !usedElementFallback,
+                              let fallbackBounds = self.accessibilityReader.boundsForTextChild(containing: raw.originalWord, in: element),
+                              fallbackBounds.width > 0, fallbackBounds.height > 0 {
+                        // Use tightest available child bounds (or full element bounds as last resort)
+                        self.logger.info("performLint: using element-level bounds fallback for '\(raw.originalWord)' rect=(\(Int(fallbackBounds.origin.x)),\(Int(fallbackBounds.origin.y)),\(Int(fallbackBounds.width)),\(Int(fallbackBounds.height)))")
+                        axRect = fallbackBounds
+                        usedElementFallback = true
+                    } else {
                         boundsFailures += 1
                         continue
                     }
@@ -347,6 +480,12 @@ final class TextMonitorCoordinator: EventTapDelegate, FocusTrackerDelegate {
 
                 if boundsFailures > 0 || screenFailures > 0 {
                     self.logger.info("performLint: \(boundsFailures) bounds failures, \(screenFailures) screen failures")
+                }
+                for item in items {
+                    self.logger.info("performLint: underline '\(item.originalWord)' viewRect=(\(Int(item.screenRect.origin.x)),\(Int(item.screenRect.origin.y)),\(Int(item.screenRect.width)),\(Int(item.screenRect.height)))")
+                }
+                if let w = NSApp.windows.first(where: { $0.level.rawValue > NSWindow.Level.normal.rawValue }) {
+                    self.logger.info("performLint: overlay window frame=(\(Int(w.frame.origin.x)),\(Int(w.frame.origin.y)),\(Int(w.frame.width)),\(Int(w.frame.height))) level=\(w.level.rawValue) visible=\(w.isVisible)")
                 }
                 self.logger.info("performLint: displaying \(items.count) underlines")
 

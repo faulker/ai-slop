@@ -21,8 +21,10 @@ final class OverlayWindowController: NSWindowController {
             defer: true
         )
 
-        // Transparent, floating overlay that passes all clicks through
-        window.level = .floating
+        // Transparent overlay that passes all clicks through.
+        // Use a level above .floating so the overlay renders on top of
+        // Chromium/Electron apps which also use .floating for their windows.
+        window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = false
@@ -51,6 +53,9 @@ final class OverlayWindowController: NSWindowController {
 
         contentView.squigglyView.underlines = underlines
         contentView.squigglyView.needsDisplay = true
+
+        // Re-order to front — Electron/Chromium apps can push the overlay behind
+        window?.orderFrontRegardless()
     }
 
     /// Clears all underlines from the overlay.

@@ -4,10 +4,12 @@ import ApplicationServices
 protocol FocusTrackerDelegate: AnyObject {
     func focusTrackerDidChangeApp()
     func focusTrackerDidChangeElement()
+    func focusTrackerDidDetectWindowMove()
 }
 
 /// Tracks which application is currently focused.
 /// Uses NSWorkspace notifications to detect app switches.
+/// Observes AX notifications for focus element changes and window move/resize.
 final class FocusTracker {
 
     weak var delegate: FocusTrackerDelegate?
@@ -15,6 +17,7 @@ final class FocusTracker {
     private(set) var currentBundleID: String?
     private var observer: NSObjectProtocol?
     private var axObserver: AXObserver?
+    private var observedWindow: AXUIElement?
     private let logger = Logger(category: "FocusTracker")
 
     // MARK: - Public
@@ -37,6 +40,13 @@ final class FocusTracker {
     }
 
     private func teardownAXObserver() {
+        // Remove window notifications before tearing down observer
+        if let obs = axObserver, let window = observedWindow {
+            AXObserverRemoveNotification(obs, window, kAXMovedNotification as CFString)
+            AXObserverRemoveNotification(obs, window, kAXResizedNotification as CFString)
+            observedWindow = nil
+        }
+
         if let obs = axObserver {
             CFRunLoopRemoveSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(obs), .commonModes)
             axObserver = nil
@@ -55,13 +65,62 @@ final class FocusTracker {
         guard AXObserverCreate(pid, { (observer, element, notification, refcon) in
             guard let refcon = refcon else { return }
             let tracker = Unmanaged<FocusTracker>.fromOpaque(refcon).takeUnretainedValue()
-            tracker.delegate?.focusTrackerDidChangeElement()
+            let notifString = notification as String
+
+            if notifString == kAXMovedNotification || notifString == kAXResizedNotification {
+                tracker.delegate?.focusTrackerDidDetectWindowMove()
+            } else {
+                // On focus element change, update window observers (user may have switched windows)
+                tracker.updateWindowObservers()
+                tracker.delegate?.focusTrackerDidChangeElement()
+            }
         }, &observer) == .success, let obs = observer else { return }
 
         let axApp = AXUIElementCreateApplication(pid)
-        AXObserverAddNotification(obs, axApp, kAXFocusedUIElementChangedNotification as CFString, Unmanaged.passUnretained(self).toOpaque())
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+
+        // Observe focus element changes on the app
+        AXObserverAddNotification(obs, axApp, kAXFocusedUIElementChangedNotification as CFString, refcon)
+
+        // Observe window move/resize on the focused window
+        var windowValue: AnyObject?
+        if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
+           let window = windowValue {
+            // AXUIElement is a CF type — downcast always succeeds
+            let windowElement = window as! AXUIElement // swiftlint:disable:this force_cast
+            AXObserverAddNotification(obs, windowElement, kAXMovedNotification as CFString, refcon)
+            AXObserverAddNotification(obs, windowElement, kAXResizedNotification as CFString, refcon)
+            self.observedWindow = windowElement
+        }
+
         CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(obs), .commonModes)
         self.axObserver = obs
+    }
+
+    /// Updates window move/resize observers to track the currently focused window.
+    /// Called when focus element changes within the same app (e.g. switching between windows).
+    private func updateWindowObservers() {
+        guard let obs = axObserver else { return }
+        guard let app = NSWorkspace.shared.frontmostApplication else { return }
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+
+        // Remove old window notifications
+        if let window = observedWindow {
+            AXObserverRemoveNotification(obs, window, kAXMovedNotification as CFString)
+            AXObserverRemoveNotification(obs, window, kAXResizedNotification as CFString)
+            observedWindow = nil
+        }
+
+        // Observe the new focused window
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var windowValue: AnyObject?
+        if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowValue) == .success,
+           let window = windowValue {
+            let windowElement = window as! AXUIElement // swiftlint:disable:this force_cast
+            AXObserverAddNotification(obs, windowElement, kAXMovedNotification as CFString, refcon)
+            AXObserverAddNotification(obs, windowElement, kAXResizedNotification as CFString, refcon)
+            observedWindow = windowElement
+        }
     }
 
     /// Internal method for handling notifications, allows testing.
@@ -71,7 +130,7 @@ final class FocusTracker {
             self.currentBundleID = newBundleID
             self.logger.debug("App changed: \(newBundleID ?? "unknown")")
 
-            // Re-setup AX observer for the new app
+            // Re-setup AX observer for the new app (tears down old window observers)
             setupAXObserver()
 
             self.delegate?.focusTrackerDidChangeApp()

@@ -20,6 +20,7 @@ mod ffi {
         fn lint_text(&mut self, text: &str) -> LintResults;
         fn add_user_word(&mut self, word: &str);
         fn remove_user_word(&mut self, word: &str);
+        fn is_degraded(&self) -> bool;
     }
 
     extern "Rust" {
@@ -80,44 +81,80 @@ impl LintResults {
 // MARK: - SpellEngine
 
 pub struct SpellEngine {
-    linter: LintGroup,
-    dictionary: MergedDictionary,
+    linter: Option<LintGroup>,
+    dictionary: Option<MergedDictionary>,
     parser: PlainEnglish,
-    user_dict: UserDict,
+    user_dict: Option<UserDict>,
     dialect: Dialect,
+    degraded: bool,
 }
 
 impl SpellEngine {
     fn new() -> Self {
-        let dialect = Dialect::American;
-        let user_dict = UserDict::load();
-        let dictionary = Self::build_dictionary(user_dict.words(), dialect);
-        let linter = LintGroup::new_curated(Arc::new(dictionary.clone()), dialect);
-        let parser = PlainEnglish;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let dialect = Dialect::American;
+            let user_dict = UserDict::load();
+            let dictionary = Self::build_dictionary(user_dict.words(), dialect);
+            let linter = LintGroup::new_curated(Arc::new(dictionary.clone()), dialect);
 
-        SpellEngine {
-            linter,
-            dictionary,
-            parser,
-            user_dict,
-            dialect,
+            SpellEngine {
+                linter: Some(linter),
+                dictionary: Some(dictionary),
+                parser: PlainEnglish,
+                user_dict: Some(user_dict),
+                dialect,
+                degraded: false,
+            }
+        }));
+
+        match result {
+            Ok(engine) => engine,
+            Err(e) => {
+                eprintln!("[spell-i-engine] SpellEngine::new() panicked: {:?}", e);
+                SpellEngine {
+                    linter: None,
+                    dictionary: None,
+                    parser: PlainEnglish,
+                    user_dict: None,
+                    dialect: Dialect::American,
+                    degraded: true,
+                }
+            }
         }
     }
 
+    fn is_degraded(&self) -> bool {
+        self.degraded
+    }
+
     fn lint_text(&mut self, text: &str) -> LintResults {
-        if text.is_empty() {
+        if text.is_empty() || self.degraded {
             return LintResults { items: Vec::new() };
         }
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let document = Document::new(text, &self.parser, &self.dictionary);
-            self.linter.lint(&document)
-        }));
+        if self.linter.is_none() || self.dictionary.is_none() {
+            return LintResults { items: Vec::new() };
+        }
+
+        // Scope the mutable/immutable borrows so they're released after catch_unwind,
+        // allowing us to set self.degraded on panic.
+        let result = {
+            let linter = self.linter.as_mut().unwrap();
+            let dictionary = self.dictionary.as_ref().unwrap();
+            let parser = &self.parser;
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let document = Document::new(text, parser, dictionary);
+                linter.lint(&document)
+            }))
+        };
 
         let lints = match result {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("[spell-i-engine] Linter panicked: {:?}", e);
+                // Mark as degraded — the linter may be in an inconsistent state
+                self.degraded = true;
+                self.linter = None;
                 return LintResults { items: Vec::new() };
             }
         };
@@ -148,19 +185,25 @@ impl SpellEngine {
     }
 
     fn add_user_word(&mut self, word: &str) {
-        self.user_dict.add(word);
-        self.rebuild_linter();
+        if let Some(ref mut ud) = self.user_dict {
+            ud.add(word);
+            self.rebuild_linter();
+        }
     }
 
     fn remove_user_word(&mut self, word: &str) {
-        self.user_dict.remove(word);
-        self.rebuild_linter();
+        if let Some(ref mut ud) = self.user_dict {
+            ud.remove(word);
+            self.rebuild_linter();
+        }
     }
 
     fn rebuild_linter(&mut self) {
-        self.dictionary = Self::build_dictionary(self.user_dict.words(), self.dialect);
-        self.linter =
-            LintGroup::new_curated(Arc::new(self.dictionary.clone()), self.dialect);
+        if let Some(ref ud) = self.user_dict {
+            let dictionary = Self::build_dictionary(ud.words(), self.dialect);
+            self.linter = Some(LintGroup::new_curated(Arc::new(dictionary.clone()), self.dialect));
+            self.dictionary = Some(dictionary);
+        }
     }
 
     fn build_dictionary(user_words: Vec<String>, dialect: Dialect) -> MergedDictionary {
@@ -280,6 +323,32 @@ mod tests {
         let results = engine.lint_text("Hello, world! Thsi is a test.");
         assert!(results.count() > 0, "Should detect error after punctuation");
         assert_eq!(results.suggestion(0, 0), "This");
+    }
+
+    #[test]
+    fn test_engine_new_does_not_panic() {
+        let engine = SpellEngine::new();
+        assert!(!engine.is_degraded(), "Normal construction should not be degraded");
+    }
+
+    #[test]
+    fn test_degraded_engine_returns_empty_results() {
+        let mut engine = SpellEngine {
+            linter: None,
+            dictionary: None,
+            parser: PlainEnglish,
+            user_dict: None,
+            dialect: Dialect::American,
+            degraded: true,
+        };
+        assert!(engine.is_degraded(), "Should be marked as degraded");
+
+        let results = engine.lint_text("I havv a speling eror.");
+        assert_eq!(results.count(), 0, "Degraded engine should return no lints");
+
+        // add/remove should not panic on degraded engine
+        engine.add_user_word("test");
+        engine.remove_user_word("test");
     }
 
     #[test]
