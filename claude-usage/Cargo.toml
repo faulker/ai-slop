@@ -1,0 +1,23 @@
+[package]
+name = "claude-usage"
+version = "0.1.0"
+edition = "2021"
+description = "Fetch Claude.ai usage data using Brave browser cookies"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+security-framework = "3"
+aes = "0.8"
+cbc = "0.1"
+pbkdf2 = { version = "0.12", features = ["hmac"] }
+sha1 = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+tempfile = "3"
+reqwest = { version = "0.12", features = ["blocking"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
