@@ -5,31 +5,11 @@ pub enum AppError {
     #[error("keychain error: {msg}")]
     Keychain { msg: String },
 
-    #[error("sqlite error: {msg}")]
-    Sqlite { msg: String },
-
-    #[error("decryption error: {msg}")]
-    Decrypt { msg: String },
-
-    #[error("io error: {msg}")]
-    Io { msg: String },
-
-    #[error("cookies database not found at: {path}")]
-    DbNotFound { path: String },
-
-    #[error("no claude.ai cookies found")]
-    NoCookies,
+    #[error("json parse error: {msg}")]
+    JsonParse { msg: String },
 
     #[error("http error: {msg}")]
     Http { msg: String },
-}
-
-impl From<rusqlite::Error> for AppError {
-    fn from(e: rusqlite::Error) -> Self {
-        AppError::Sqlite {
-            msg: e.to_string(),
-        }
-    }
 }
 
 impl From<reqwest::Error> for AppError {
@@ -40,9 +20,9 @@ impl From<reqwest::Error> for AppError {
     }
 }
 
-impl From<std::io::Error> for AppError {
-    fn from(e: std::io::Error) -> Self {
-        AppError::Io {
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        AppError::JsonParse {
             msg: e.to_string(),
         }
     }
@@ -64,18 +44,12 @@ mod tests {
     }
 
     #[test]
-    fn display_db_not_found() {
-        let e = AppError::DbNotFound {
-            path: "/some/path".into(),
+    fn display_json_parse_error() {
+        let e = AppError::JsonParse {
+            msg: "unexpected token".into(),
         };
-        assert!(e.to_string().contains("/some/path"));
-    }
-
-    #[test]
-    fn from_io_error() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
-        let app_err: AppError = io_err.into();
-        assert!(matches!(app_err, AppError::Io { .. }));
+        assert!(e.to_string().contains("json parse"));
+        assert!(e.to_string().contains("unexpected token"));
     }
 
     #[test]
@@ -89,16 +63,15 @@ mod tests {
 
     #[test]
     fn from_reqwest_error() {
-        // Build an invalid URL to produce a reqwest::Error
         let err = reqwest::blocking::get("http://[::invalid]").unwrap_err();
         let app_err: AppError = err.into();
         assert!(matches!(app_err, AppError::Http { .. }));
     }
 
     #[test]
-    fn from_rusqlite_error() {
-        let sql_err = rusqlite::Error::QueryReturnedNoRows;
-        let app_err: AppError = sql_err.into();
-        assert!(matches!(app_err, AppError::Sqlite { .. }));
+    fn from_serde_json_error() {
+        let err: serde_json::Error = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let app_err: AppError = err.into();
+        assert!(matches!(app_err, AppError::JsonParse { .. }));
     }
 }
