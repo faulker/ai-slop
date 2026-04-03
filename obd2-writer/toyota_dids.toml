@@ -1,0 +1,52 @@
+# Toyota 2023 Tacoma Enhanced DID Definitions
+# These are read via UDS Mode 22 (ReadDataByIdentifier)
+# Add community-discovered DIDs here.
+
+[[did]]
+id = 0x0100
+name = "Engine Coolant Temp (Enhanced)"
+unit = "°C"
+formula = "A - 40"
+ecu = "7E0"
+
+[[did]]
+id = 0x0120
+name = "Intake Air Temp (Enhanced)"
+unit = "°C"
+formula = "A - 40"
+ecu = "7E0"
+
+[[did]]
+id = 0x0121
+name = "Engine RPM (Enhanced)"
+unit = "RPM"
+formula = "(A * 256 + B) / 4"
+ecu = "7E0"
+
+[[did]]
+id = 0x0215
+name = "Coolant Temp 2"
+unit = "°C"
+formula = "A - 40"
+ecu = "7E0"
+
+# Add more DIDs as they are discovered through Techstream captures
+# or community reverse-engineering efforts.
+#
+# Write safety fields (all optional, default-safe):
+#   writable = true/false   — must be true to allow writes (default: false)
+#   data_length = N         — exact byte count required for writes
+#   min_value = 0xNN        — minimum value (data interpreted as big-endian integer)
+#   max_value = 0xNN        — maximum value
+#
+# Example writable DID:
+# [[did]]
+# id = 0x1234
+# name = "Example Writable DID"
+# unit = "raw"
+# formula = "A"
+# ecu = "750"
+# writable = true
+# data_length = 1
+# min_value = 0x00
+# max_value = 0x0F
