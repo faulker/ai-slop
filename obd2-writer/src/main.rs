@@ -1,3 +1,4 @@
+mod browse;
 mod cli;
 mod error;
 mod obd;
@@ -14,9 +15,9 @@ use crate::error::Result;
 use crate::obd::dtc;
 use crate::obd::pid;
 use crate::protocol::uds;
-use crate::toyota::write_safety;
+use crate::toyota::{did_scan, ecu_scan, write_safety};
 use crate::transport::elm327::Elm327;
-use crate::transport::serial::SerialConnection;
+use crate::transport::serial::{self, SerialConnection};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -113,8 +114,67 @@ async fn main() -> Result<()> {
             write_safety::print_backups()?;
         }
 
+        Command::BackupAll => {
+            let mut elm = connect(&cli).await?;
+            elm.initialize().await?;
+            write_safety::backup_all_settings(&mut elm).await?;
+        }
+
+        Command::Ecus => {
+            let mut elm = connect(&cli).await?;
+            elm.initialize().await?;
+            let found = ecu_scan::scan_ecus(&mut elm).await?;
+            if found.is_empty() {
+                println!("No ECUs responded.");
+            } else {
+                println!("Found {} ECU(s):", found.len());
+                for ecu in &found {
+                    println!("  {} (0x{})", ecu.name, ecu.tx_address);
+                }
+            }
+        }
+
+        Command::Browse => {
+            if let Some(pid_name) = browse::browse_pids() {
+                let mut elm = connect(&cli).await?;
+                elm.initialize().await?;
+                pid::read_pid(&mut elm, &pid_name).await?;
+            }
+        }
+
+        Command::BrowseEnhanced => {
+            if let Some((did_hex, ecu)) = browse::browse_dids() {
+                let mut elm = connect(&cli).await?;
+                elm.initialize().await?;
+                toyota::enhanced_pids::read_enhanced_did(&mut elm, &did_hex, &ecu).await?;
+            }
+        }
+
+        Command::Scan { ecu, range, test_writable, output } => {
+            let ranges = if let Some(range_str) = range {
+                vec![did_scan::parse_range(range_str)?]
+            } else {
+                did_scan::TOYOTA_BCM_RANGES
+                    .iter()
+                    .map(|(_, s, e)| (*s, *e))
+                    .collect()
+            };
+
+            let mut elm = connect(&cli).await?;
+            elm.initialize().await?;
+            did_scan::scan_and_save(
+                &mut elm,
+                ecu,
+                &ranges,
+                *test_writable,
+                output.as_deref(),
+            )
+            .await?;
+        }
+
         Command::Shell => {
-            let serial = SerialConnection::open(&cli.port, cli.baud_rate, cli.timeout)?;
+            let port = resolve_port(&cli)?;
+            let serial = SerialConnection::open(&port, cli.baud_rate, cli.timeout)?;
             let elm = Elm327::new(serial);
             shell::run(elm).await?;
         }
@@ -123,8 +183,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn resolve_port(cli: &Cli) -> Result<String> {
+    match &cli.port {
+        Some(port) => Ok(port.clone()),
+        None => serial::select_port(),
+    }
+}
+
 async fn connect(cli: &Cli) -> Result<Elm327> {
-    println!("Opening {}...", cli.port);
-    let serial = SerialConnection::open(&cli.port, cli.baud_rate, cli.timeout)?;
+    let port = resolve_port(cli)?;
+    println!("Opening {}...", port);
+    let serial = SerialConnection::open(&port, cli.baud_rate, cli.timeout)?;
     Ok(Elm327::new(serial))
 }

@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use crate::error::{Error, Result};
 use crate::protocol::uds;
 use crate::toyota::backup::BackupStore;
@@ -287,6 +289,70 @@ pub async fn restore_did(elm: &mut Elm327, did_hex: &str, ecu: &str) -> Result<(
     verified_write_did(elm, did_hex, &data_hex, ecu, false).await
 }
 
+/// Backup all configured DID values from the vehicle.
+/// Reads every DID in toyota_dids.toml and stores the current values.
+pub async fn backup_all_settings(elm: &mut Elm327) -> Result<()> {
+    let dids = enhanced_pids::cached_dids();
+    if dids.is_empty() {
+        println!("No DIDs defined in toyota_dids.toml.");
+        return Ok(());
+    }
+
+    let mut store = BackupStore::load()?;
+    let mut success_count = 0;
+    let mut skip_count = 0;
+    let total = dids.len();
+
+    // Group by ECU to minimize header switches
+    let mut by_ecu: std::collections::BTreeMap<&str, Vec<&enhanced_pids::DidDefinition>> =
+        std::collections::BTreeMap::new();
+    for d in dids {
+        by_ecu.entry(&d.ecu).or_default().push(d);
+    }
+
+    for (ecu, ecu_dids) in &by_ecu {
+        elm.set_header(ecu).await?;
+        println!("ECU {} ({} DIDs):", ecu, ecu_dids.len());
+
+        // Enter extended session for this ECU (some DIDs may require it)
+        let session_req = uds::diagnostic_session_control(uds::SESSION_EXTENDED);
+        let _ = uds::send_uds(elm, &session_req).await;
+
+        for did_def in ecu_dids {
+            print!("  0x{:04X} ({})... ", did_def.id, did_def.name);
+            std::io::stdout().flush().ok();
+
+            match read_did_value(elm, did_def.id).await {
+                Ok(data) => {
+                    store.record(ecu, did_def.id, &data)?;
+                    println!("OK ({})", uds::hex_string(&data));
+                    success_count += 1;
+                }
+                Err(e) => {
+                    println!("SKIP ({})", e);
+                    skip_count += 1;
+                }
+            }
+        }
+
+        // Return to default session
+        let _ = uds::send_uds(
+            elm,
+            &uds::diagnostic_session_control(uds::SESSION_DEFAULT),
+        )
+        .await;
+    }
+
+    store.save()?;
+    elm.set_header("7DF").await?;
+
+    println!(
+        "\nBacked up {}/{} DIDs ({} skipped).",
+        success_count, total, skip_count
+    );
+    Ok(())
+}
+
 /// Print all backup entries.
 pub fn print_backups() -> Result<()> {
     let store = BackupStore::load()?;
@@ -329,6 +395,8 @@ mod tests {
                 data_length: None,
                 min_value: None,
                 max_value: None,
+                description: None,
+                category: None,
             }],
         };
         assert!(whitelist.validate(0x0100, &[0x01]).is_err());
@@ -347,6 +415,8 @@ mod tests {
                 data_length: None,
                 min_value: None,
                 max_value: None,
+                description: None,
+                category: None,
             }],
         };
         assert!(whitelist.validate(0x1234, &[0x01]).is_ok());
@@ -365,6 +435,8 @@ mod tests {
                 data_length: Some(2),
                 min_value: None,
                 max_value: None,
+                description: None,
+                category: None,
             }],
         };
         assert!(whitelist.validate(0x1234, &[0x01]).is_err());
@@ -384,6 +456,8 @@ mod tests {
                 data_length: Some(1),
                 min_value: Some(0x00),
                 max_value: Some(0x0F),
+                description: None,
+                category: None,
             }],
         };
         assert!(whitelist.validate(0x1234, &[0x05]).is_ok());

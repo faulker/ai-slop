@@ -1,13 +1,17 @@
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
+use crate::browse;
 use crate::error::Result;
 use crate::obd::{dtc, pid};
 use crate::protocol::uds;
 use crate::toyota::bcm;
+use crate::toyota::did_scan;
+use crate::toyota::ecu_scan;
 use crate::toyota::enhanced_pids;
 use crate::toyota::write_safety;
 use crate::transport::elm327::Elm327;
@@ -114,6 +118,7 @@ pub async fn run(mut elm: Elm327) -> Result<()> {
                             match pid::read_pid_value(&mut elm, parts[1]).await {
                                 Ok((name, value, unit)) => {
                                     print!("\r{}: {:.1} {}    ", name, value, unit);
+                                    std::io::stdout().flush().ok();
                                 }
                                 Err(e) => {
                                     if is_connection_error(&e) { connected = false; }
@@ -363,10 +368,134 @@ pub async fn run(mut elm: Elm327) -> Result<()> {
                         }
                     }
 
+                    "browse" => {
+                        if let Some(pid_name) = browse::browse_pids() {
+                            if connected {
+                                if let Err(e) = pid::read_pid(&mut elm, &pid_name).await {
+                                    if is_connection_error(&e) { connected = false; }
+                                    eprintln!("Error: {}", e);
+                                }
+                            } else {
+                                println!("Selected: {} (not connected, use 'connect' first)", pid_name);
+                            }
+                        }
+                    }
+
+                    "browse-enhanced" | "be" => {
+                        if let Some((did_hex, ecu)) = browse::browse_dids() {
+                            if connected {
+                                if let Err(e) = enhanced_pids::read_enhanced_did(&mut elm, &did_hex, &ecu).await {
+                                    if is_connection_error(&e) { connected = false; }
+                                    eprintln!("Error: {}", e);
+                                }
+                            } else {
+                                println!("Selected: DID 0x{} on ECU {} (not connected, use 'connect' first)", did_hex, ecu);
+                            }
+                        }
+                    }
+
+                    "ecus" => {
+                        if !connected {
+                            eprintln!("Not connected. Use 'connect' first.");
+                            continue;
+                        }
+                        match ecu_scan::scan_ecus(&mut elm).await {
+                            Ok(found) => {
+                                if found.is_empty() {
+                                    println!("No ECUs responded.");
+                                } else {
+                                    println!("Found {} ECU(s):", found.len());
+                                    for ecu in &found {
+                                        println!("  {} (0x{})", ecu.name, ecu.tx_address);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if is_connection_error(&e) { connected = false; }
+                                eprintln!("Error scanning ECUs: {}", e);
+                            }
+                        }
+                    }
+
+                    "backup-all" => {
+                        if !connected {
+                            eprintln!("Not connected. Use 'connect' first.");
+                            continue;
+                        }
+                        if let Err(e) = write_safety::backup_all_settings(&mut elm).await {
+                            if is_connection_error(&e) { connected = false; }
+                            eprintln!("Error: {}", e);
+                        }
+                    }
+
+                    "scan" => {
+                        if !connected {
+                            eprintln!("Not connected. Use 'connect' first.");
+                            continue;
+                        }
+                        if parts.len() < 2 {
+                            eprintln!("Usage: scan <ecu> [range] [--test-writable] [--output file]");
+                            eprintln!("  scan 750                  Scan BCM with default Toyota ranges");
+                            eprintln!("  scan 750 B000-B1FF        Scan specific range");
+                            eprintln!("  scan 7E0 0100-01FF --test-writable");
+                            eprintln!("  scan 750 --output scan_results.toml");
+                            continue;
+                        }
+
+                        let ecu = parts[1];
+                        let test_writable = parts.iter().any(|p| *p == "--test-writable");
+                        let output = parts.iter().position(|p| *p == "--output")
+                            .and_then(|i| parts.get(i + 1))
+                            .copied();
+
+                        // Filter out flags to find the optional range argument
+                        let range_arg = parts.get(2).and_then(|s| {
+                            if s.starts_with("--") { None } else { Some(*s) }
+                        });
+
+                        let ranges = if let Some(range_str) = range_arg {
+                            match did_scan::parse_range(range_str) {
+                                Ok(r) => vec![r],
+                                Err(e) => {
+                                    eprintln!("Error: {}", e);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            did_scan::TOYOTA_BCM_RANGES
+                                .iter()
+                                .map(|(_, s, e)| (*s, *e))
+                                .collect()
+                        };
+
+                        match did_scan::scan_and_save(
+                            &mut elm,
+                            ecu,
+                            &ranges,
+                            test_writable,
+                            output,
+                        ).await {
+                            Ok(_) => {}
+                            Err(e) => {
+                                if is_connection_error(&e) { connected = false; }
+                                eprintln!("Error: {}", e);
+                            }
+                        }
+                    }
+
                     "pids" => {
                         println!("Available PIDs:");
                         for p in pid::PIDS {
                             println!("  {:16} (0x{:02X}) — {}", p.name, p.pid, p.unit);
+                        }
+
+                        let dids = enhanced_pids::cached_dids();
+                        if !dids.is_empty() {
+                            println!("\nEnhanced DIDs (toyota_dids.toml):");
+                            for d in dids {
+                                let writable = if d.writable { " [writable]" } else { "" };
+                                println!("  {:40} (0x{:04X}, ECU: {}){}", d.name, d.id, d.ecu, writable);
+                            }
                         }
                     }
 
@@ -407,7 +536,10 @@ fn print_help() {
     println!("  connect                    Connect and initialize OBDLink MX+");
     println!("  read <pid>                 Read a standard OBD2 PID (name or hex)");
     println!("  read-enhanced <did> [ecu]  Read Toyota-specific DID (Mode 22)");
+    println!("  browse                     Interactive PID picker");
+    println!("  browse-enhanced / be       Interactive DID picker");
     println!("  monitor <pid> [ms]         Continuously read a PID (default 500ms)");
+    println!("  ecus                       Scan for responding ECUs");
     println!("  dtc [list|clear]           Read or clear DTCs");
     println!("  session <type>             Set diagnostic session (default/extended/programming)");
     println!("  keepalive                  Send TesterPresent to extend session");
@@ -416,10 +548,16 @@ fn print_help() {
     println!("  write <did> <data> [ecu] --dry-run  Preview write without changing anything");
     println!("  restore <did> [ecu]        Restore a backed-up DID value");
     println!("  backups                    List all backed-up DID values");
+    println!("  backup-all                 Backup all configured DID values");
+    println!("  scan <ecu> [range]         Discover DIDs by brute-force read scan");
+    println!("    scan 750                   Scan BCM with default Toyota ranges");
+    println!("    scan 750 B000-B1FF         Scan specific range");
+    println!("    scan 750 --test-writable   Also test if DIDs are writable");
+    println!("    scan 750 --output file.toml  Save results to file");
     println!("  target <ecu>               Set target ECU (e.g., 7E0, 750)");
     println!("  raw <hex>                  Send raw hex command");
     println!("  at <cmd>                   Send AT command");
-    println!("  pids                       List available PIDs");
+    println!("  pids                       List available PIDs and DIDs");
     println!("  help                       Show this help");
     println!("  quit                       Exit");
 }

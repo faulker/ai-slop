@@ -24,6 +24,10 @@ pub struct DidDefinition {
     pub data_length: Option<usize>,
     pub min_value: Option<u64>,
     pub max_value: Option<u64>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 fn default_ecu() -> String {

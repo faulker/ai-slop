@@ -42,9 +42,25 @@ cargo run -- read speed
 # Read Toyota-specific enhanced DID
 cargo run -- read-enhanced 0100
 
+# Interactive PID/DID browsers (fuzzy search)
+cargo run -- browse            # pick a standard PID
+cargo run -- browse-enhanced   # pick a Toyota DID
+
+# Scan for responding ECUs
+cargo run -- ecus
+
 # List/clear DTCs
 cargo run -- dtc list
 cargo run -- dtc clear
+
+# Backup all configured DID values
+cargo run -- backup-all
+
+# Discover DIDs by brute-force scanning an ECU
+cargo run -- scan 750                          # scan BCM with default Toyota ranges
+cargo run -- scan 750 B000-B1FF                # scan specific range
+cargo run -- scan 750 --test-writable          # also check if DIDs are writable
+cargo run -- scan 7E0 0100-01FF -o ecm_dids.toml  # save results to file
 
 # Change UDS session
 cargo run -- session extended
@@ -63,15 +79,22 @@ Shell commands:
 - `connect` — Initialize the OBDLink MX+
 - `read <pid>` — Read a standard PID (by name or hex)
 - `read-enhanced <did> [ecu]` — Read Toyota Mode 22 DID
-- `monitor <pid> [interval_ms]` — Continuously read a PID
+- `browse` — Interactive PID picker with fuzzy search
+- `browse-enhanced` / `be` — Interactive DID picker with fuzzy search
+- `monitor <pid> [interval_ms]` — Continuously read a PID (live updates)
+- `ecus` — Scan for responding ECUs on the CAN bus
 - `dtc [list|clear]` — Read or clear DTCs
 - `session <default|extended|programming>` — Set diagnostic session
 - `security [level]` — Perform security access handshake
 - `write <did> <data> [ecu]` — Write to a DID
+- `backup-all` — Backup all configured DID values
+- `backups` — List backed-up values
+- `scan <ecu> [range]` — Discover DIDs by brute-force read scan
+- `restore <did> [ecu]` — Restore a backed-up DID value
 - `target <ecu>` — Set target ECU header
 - `raw <hex>` — Send raw hex command
 - `at <cmd>` — Send AT command
-- `pids` — List available PIDs
+- `pids` — List available PIDs and DIDs
 - `help` — Show help
 - `quit` — Exit
 
@@ -107,6 +130,14 @@ Shell commands:
 ## Toyota Enhanced DIDs
 
 Toyota-specific DIDs are defined in `toyota_dids.toml`. Add community-discovered DIDs there. These use UDS Mode 22 (ReadDataByIdentifier).
+
+The TOML currently includes:
+- **ECM (0x7E0):** Engine coolant temp, intake air temp, RPM, throttle, load, MAF, fuel pressure, ignition timing, battery voltage
+- **TCM (0x7E1):** ATF pan temp, ATF post-converter temp (community verified on 3rd gen Tacoma)
+- **BCM (0x750):** Seatbelt chime, auto door lock/unlock, DRL, turn signal flash count, headlight auto-off, key-off power timer, horn chirp, reverse tilt mirrors, smart key range (**DID addresses unverified** — see TOML comments for discovery methods)
+- **Diagnostic:** Active session, VIN, ECU software version
+
+Each DID entry supports optional `description` and `category` fields for the interactive browser.
 
 ## Write Operations
 

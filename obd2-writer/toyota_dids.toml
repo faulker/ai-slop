@@ -1,6 +1,18 @@
-# Toyota 2023 Tacoma Enhanced DID Definitions
+# Toyota 2023 Tacoma (3rd Gen) Enhanced DID Definitions
 # These are read via UDS Mode 22 (ReadDataByIdentifier)
 # Add community-discovered DIDs here.
+#
+# Write safety fields (all optional, default-safe):
+#   writable = true/false   — must be true to allow writes (default: false)
+#   data_length = N         — exact byte count required for writes
+#   min_value = 0xNN        — minimum value (data interpreted as big-endian integer)
+#   max_value = 0xNN        — maximum value
+#   description = "..."     — human-readable description of values
+#   category = "..."        — grouping for browser display
+
+# ============================================================
+# ECM (Engine Control Module) — 0x7E0
+# ============================================================
 
 [[did]]
 id = 0x0100
@@ -8,6 +20,7 @@ name = "Engine Coolant Temp (Enhanced)"
 unit = "°C"
 formula = "A - 40"
 ecu = "7E0"
+category = "engine"
 
 [[did]]
 id = 0x0120
@@ -15,6 +28,7 @@ name = "Intake Air Temp (Enhanced)"
 unit = "°C"
 formula = "A - 40"
 ecu = "7E0"
+category = "engine"
 
 [[did]]
 id = 0x0121
@@ -22,6 +36,7 @@ name = "Engine RPM (Enhanced)"
 unit = "RPM"
 formula = "(A * 256 + B) / 4"
 ecu = "7E0"
+category = "engine"
 
 [[did]]
 id = 0x0215
@@ -29,24 +44,298 @@ name = "Coolant Temp 2"
 unit = "°C"
 formula = "A - 40"
 ecu = "7E0"
+category = "engine"
 
-# Add more DIDs as they are discovered through Techstream captures
-# or community reverse-engineering efforts.
+[[did]]
+id = 0x0200
+name = "Vehicle Speed (Enhanced)"
+unit = "km/h"
+formula = "A"
+ecu = "7E0"
+category = "engine"
+
+[[did]]
+id = 0x0105
+name = "Throttle Position (Enhanced)"
+unit = "%"
+formula = "A * 100 / 255"
+ecu = "7E0"
+category = "engine"
+
+[[did]]
+id = 0x0106
+name = "Engine Load (Enhanced)"
+unit = "%"
+formula = "A * 100 / 255"
+ecu = "7E0"
+category = "engine"
+
+[[did]]
+id = 0x0110
+name = "MAF Sensor"
+unit = "g/s"
+formula = "(A * 256 + B) / 100"
+ecu = "7E0"
+category = "engine"
+
+[[did]]
+id = 0x0125
+name = "Fuel Pressure"
+unit = "kPa"
+formula = "(A * 256 + B)"
+ecu = "7E0"
+category = "engine"
+
+[[did]]
+id = 0x0130
+name = "Ignition Timing"
+unit = "°"
+formula = "A / 2 - 64"
+ecu = "7E0"
+category = "engine"
+
+[[did]]
+id = 0x0140
+name = "Battery Voltage (Enhanced)"
+unit = "V"
+formula = "(A * 256 + B) / 1000"
+ecu = "7E0"
+category = "engine"
+
+# ============================================================
+# TCM (Transmission Control Module) — 0x7E1
+# Community verified on 3rd gen Tacoma (TacomaWorld)
+# ============================================================
+
+[[did]]
+id = 0x1627
+name = "ATF Pan Temperature"
+unit = "°F"
+formula = "(A * 256 + B)"
+ecu = "7E1"
+category = "transmission"
+description = "Verified: ATF pan temp sensor. Formula approx (A*459/255)+(B*1.6/255)-40"
+
+[[did]]
+id = 0x1628
+name = "ATF Post-Converter Temperature"
+unit = "°F"
+formula = "(A * 256 + B)"
+ecu = "7E1"
+category = "transmission"
+description = "Verified: ATF temp after torque converter"
+
+[[did]]
+id = 0x1AAA
+name = "Transmission Temp 1 (Alt)"
+unit = "raw"
+formula = "(A * 256 + B)"
+ecu = "7E1"
+category = "transmission"
+description = "Alternate trans temp reading (ScanGauge format)"
+
+[[did]]
+id = 0x1AC0
+name = "Transmission Temp 2 (Alt)"
+unit = "raw"
+formula = "(A * 256 + B)"
+ecu = "7E1"
+category = "transmission"
+description = "Alternate trans temp reading (ScanGauge format)"
+
+# ============================================================
+# BCM (Body Control Module) — 0x750
+# Customization settings configurable via Techstream
 #
-# Write safety fields (all optional, default-safe):
-#   writable = true/false   — must be true to allow writes (default: false)
-#   data_length = N         — exact byte count required for writes
-#   min_value = 0xNN        — minimum value (data interpreted as big-endian integer)
-#   max_value = 0xNN        — maximum value
+# WARNING: The DID addresses below (0xB1xx) are UNVERIFIED
+# placeholders. These settings exist in Techstream but Toyota
+# does not publish the DID hex addresses. To discover real
+# addresses, either:
+#   1. Sniff Techstream CAN traffic while changing a setting
+#   2. Brute-force scan: Mode 22 sweep on 0x750 (ranges
+#      0x0100-0x01FF, 0xB000-0xBFFF, 0xC000-0xCFFF)
 #
-# Example writable DID:
-# [[did]]
-# id = 0x1234
-# name = "Example Writable DID"
-# unit = "raw"
-# formula = "A"
-# ecu = "750"
-# writable = true
-# data_length = 1
-# min_value = 0x00
-# max_value = 0x0F
+# Update these IDs once verified. The settings themselves are
+# confirmed configurable on 3rd gen Tacoma via Techstream/Carista.
+# All writable DIDs have safety constraints (data_length, min/max).
+# ============================================================
+
+[[did]]
+id = 0xB100
+name = "Seatbelt Warning Buzzer"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x01
+description = "0x00 = disabled, 0x01 = enabled (factory default)"
+category = "comfort"
+
+[[did]]
+id = 0xB101
+name = "Auto Door Lock (by Speed)"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x02
+description = "0x00 = off, 0x01 = lock at 20km/h, 0x02 = lock on shift from P"
+category = "comfort"
+
+[[did]]
+id = 0xB102
+name = "Auto Door Unlock (Shift to P)"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x01
+description = "0x00 = off, 0x01 = unlock when shifting to P"
+category = "comfort"
+
+[[did]]
+id = 0xB103
+name = "Daytime Running Lights (DRL)"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x01
+description = "0x00 = disabled, 0x01 = enabled (factory default)"
+category = "lighting"
+
+[[did]]
+id = 0xB104
+name = "Turn Signal Lane-Change Flashes"
+unit = "flashes"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x01
+max_value = 0x07
+description = "Number of flashes for one-tap lane change signal (factory: 3)"
+category = "lighting"
+
+[[did]]
+id = 0xB105
+name = "Headlight Auto-Off Timer"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x03
+description = "0x00 = off, 0x01 = 30s, 0x02 = 60s, 0x03 = 90s"
+category = "lighting"
+
+[[did]]
+id = 0xB106
+name = "Key-Off Power Timer"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x03
+description = "Accessory power after key-off: 0x00 = 0min, 0x01 = 10min, 0x02 = 20min, 0x03 = 30min"
+category = "comfort"
+
+[[did]]
+id = 0xB107
+name = "Horn Chirp on Lock"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x01
+description = "0x00 = disabled, 0x01 = chirp when locking with key fob"
+category = "comfort"
+
+[[did]]
+id = 0xB108
+name = "Reverse Tilt Mirrors"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x01
+description = "0x00 = disabled, 0x01 = mirrors tilt down in reverse"
+category = "comfort"
+
+[[did]]
+id = 0xB109
+name = "Smart Key Detection Range"
+unit = "setting"
+formula = "A"
+ecu = "750"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0x02
+description = "0x00 = short, 0x01 = normal (factory), 0x02 = long"
+category = "comfort"
+
+# ============================================================
+# Additional Techstream-documented settings (DID addresses unknown)
+# These are confirmed configurable but on different ECUs:
+#
+# Combination Meter (0x7C0):
+#   - Driver Seatbelt Warning Buzzer: ON/OFF
+#   - Front Passenger Seatbelt Warning Buzzer: ON/OFF
+#   (Note: only the continuous chime >20km/h can be disabled)
+#
+# A/C Amplifier:
+#   - DEF Mode Setting, Temp Shift, Compressor Mode, Fan Speed
+#
+# Smart Key ECU (possibly 0x760):
+#   - Hazard Answer Back, Auto Lock Time, Wireless Buzzer Volume
+#   - Remote 2-Press Unlock, Auto Relock Timer
+#
+# Power Door Lock (BCM 0x750):
+#   - Unlock Key Twice: ON/OFF
+#   - Auto Door Lock: OFF / Link Shift / Link Speed
+#   - Auto Door Unlock: OFF / Link D-door / Link Shift
+# ============================================================
+
+# ============================================================
+# Standard UDS DIDs (common across Toyota vehicles)
+# ============================================================
+
+[[did]]
+id = 0xF186
+name = "Active Diagnostic Session"
+unit = "raw"
+formula = "A"
+ecu = "7E0"
+category = "diagnostic"
+
+[[did]]
+id = 0xF190
+name = "VIN (Vehicle Identification Number)"
+unit = "raw"
+formula = "A"
+ecu = "7E0"
+category = "diagnostic"
+
+[[did]]
+id = 0xF194
+name = "System Supplier ECU Software Version"
+unit = "raw"
+formula = "A"
+ecu = "7E0"
+category = "diagnostic"

@@ -3,9 +3,9 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "obd2", about = "OBD2 read/write tool for 2023 Toyota Tacoma")]
 pub struct Cli {
-    /// Serial port path for OBDLink MX+
-    #[arg(short, long, default_value = "/dev/tty.OBDLink_MXp-SPPDev")]
-    pub port: String,
+    /// Serial port path (if omitted, lists available devices for selection)
+    #[arg(short, long)]
+    pub port: Option<String>,
 
     /// Baud rate
     #[arg(short, long, default_value_t = 115200)]
@@ -94,6 +94,35 @@ pub enum Command {
 
     /// List all backed-up DID values
     Backups,
+
+    /// Backup all configured DID values from the vehicle
+    BackupAll,
+
+    /// Scan for responding ECUs on the CAN bus
+    Ecus,
+
+    /// Interactive PID browser — select and read a standard OBD2 PID
+    Browse,
+
+    /// Interactive DID browser — select and read a Toyota enhanced DID
+    BrowseEnhanced,
+
+    /// Scan a DID range on an ECU to discover valid DIDs
+    Scan {
+        /// Target ECU header (e.g., "750" for BCM, "7E0" for ECM)
+        ecu: String,
+
+        /// DID range as hex (e.g., "B000-B1FF"). Omit to scan all Toyota BCM ranges.
+        range: Option<String>,
+
+        /// Test if discovered DIDs are writable (writes current value back)
+        #[arg(long)]
+        test_writable: bool,
+
+        /// Save results to a TOML file
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 
     /// Start interactive shell
     Shell,
