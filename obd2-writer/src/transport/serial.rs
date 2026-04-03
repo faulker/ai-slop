@@ -75,3 +75,63 @@ impl SerialConnection {
         Ok(())
     }
 }
+
+/// List available serial ports and let the user select one.
+/// Filters out /dev/tty.* duplicates on macOS, preferring /dev/cu.* for outgoing connections.
+/// Returns the selected port's path.
+pub fn select_port() -> Result<String> {
+    let all_ports = tokio_serial::available_ports().map_err(|e| Error::Serial(e))?;
+
+    // On macOS, each device gets both /dev/tty.* and /dev/cu.* entries.
+    // Filter out tty.* when a matching cu.* exists — cu.* is correct for outgoing connections.
+    let ports: Vec<_> = all_ports
+        .iter()
+        .filter(|p| {
+            if let Some(tty_suffix) = p.port_name.strip_prefix("/dev/tty.") {
+                let cu_name = format!("/dev/cu.{}", tty_suffix);
+                !all_ports.iter().any(|other| other.port_name == cu_name)
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    if ports.is_empty() {
+        return Err(Error::Protocol("no serial ports found".into()));
+    }
+
+    if ports.len() == 1 {
+        let port = &ports[0].port_name;
+        println!("Found one device: {} ({})", port, port_type_label(&ports[0].port_type));
+        return Ok(port.clone());
+    }
+
+    println!("Available serial ports:");
+    for (i, port) in ports.iter().enumerate() {
+        println!("  [{}] {} ({})", i + 1, port.port_name, port_type_label(&port.port_type));
+    }
+
+    loop {
+        print!("Select port [1-{}]: ", ports.len());
+        std::io::Write::flush(&mut std::io::stdout()).map_err(Error::Io)?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).map_err(Error::Io)?;
+
+        if let Ok(n) = input.trim().parse::<usize>() {
+            if n > 0 && n <= ports.len() {
+                return Ok(ports[n - 1].port_name.clone());
+            }
+        }
+        println!("Invalid selection, try again.");
+    }
+}
+
+fn port_type_label(port_type: &tokio_serial::SerialPortType) -> &'static str {
+    match port_type {
+        tokio_serial::SerialPortType::UsbPort(_) => "USB",
+        tokio_serial::SerialPortType::BluetoothPort => "Bluetooth",
+        tokio_serial::SerialPortType::PciPort => "PCI",
+        tokio_serial::SerialPortType::Unknown => "Unknown",
+    }
+}
