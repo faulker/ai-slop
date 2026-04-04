@@ -6,6 +6,7 @@ mod protocol;
 mod shell;
 mod toyota;
 mod transport;
+mod tui;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -177,6 +178,13 @@ async fn main() -> Result<()> {
             let serial = SerialConnection::open(&port, cli.baud_rate, cli.timeout)?;
             let elm = Elm327::new(serial);
             shell::run(elm).await?;
+        }
+
+        Command::Tui => {
+            let port = resolve_port(&cli)?;
+            let serial = SerialConnection::open(&port, cli.baud_rate, cli.timeout)?;
+            let elm = Elm327::new(serial);
+            tui::run(elm).await?;
         }
     }
 

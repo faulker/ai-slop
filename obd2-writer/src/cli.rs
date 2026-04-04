@@ -12,7 +12,7 @@ pub struct Cli {
     pub baud_rate: u32,
 
     /// Response timeout in milliseconds
-    #[arg(short, long, default_value_t = 2000)]
+    #[arg(short, long, default_value_t = 3000)]
     pub timeout: u64,
 
     /// Enable verbose protocol logging
@@ -126,6 +126,9 @@ pub enum Command {
 
     /// Start interactive shell
     Shell,
+
+    /// Launch the TUI dashboard
+    Tui,
 }
 
 #[derive(Subcommand)]

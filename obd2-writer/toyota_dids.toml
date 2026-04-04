@@ -144,6 +144,36 @@ category = "transmission"
 description = "Alternate trans temp reading (ScanGauge format)"
 
 # ============================================================
+# ============================================================
+# Combination Meter — 0x7C0  (KWP2000 protocol)
+# This ECU does NOT support UDS (service 0x22/0x2E).
+# Read via KWP2000 service 0x21 (ReadDataByLocalIdentifier).
+# Write via KWP2000 service 0x3B (WriteDataByLocalIdentifier).
+#
+# VERIFIED: Seatbelt chime at local ID 0xA7.
+#   0xC0 = ON (factory default), 0x00 = OFF
+# Write may return NRC 0x78 (responsePending) before success.
+# ============================================================
+
+[[did]]
+id = 0xA7
+name = "Seatbelt Warning Chime"
+unit = "setting"
+formula = "A"
+ecu = "7C0"
+protocol = "kwp"
+writable = true
+data_length = 1
+min_value = 0x00
+max_value = 0xC0
+description = "Disables the extended warning chime >20km/h; initial 5 dings always remain."
+category = "warnings"
+
+[did.values]
+"00" = "OFF"
+"C0" = "ON (factory)"
+
+# ============================================================
 # BCM (Body Control Module) — 0x750
 # Customization settings configurable via Techstream
 #
@@ -160,144 +190,114 @@ description = "Alternate trans temp reading (ScanGauge format)"
 # All writable DIDs have safety constraints (data_length, min/max).
 # ============================================================
 
-[[did]]
-id = 0xB100
-name = "Seatbelt Warning Buzzer"
-unit = "setting"
-formula = "A"
-ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x01
-description = "0x00 = disabled, 0x01 = enabled (factory default)"
-category = "comfort"
+# ============================================================
+# BCM (Body Control Module) — 0x750
+#
+# UNVERIFIED PLACEHOLDERS — addresses 0xB1xx are fabricated.
+# These settings exist in Techstream but real DID addresses
+# have not been discovered. The BCM uses KWP2000 with
+# sub-addressing and did not respond to our probes.
+# Set writable = false to prevent accidental write attempts.
+# ============================================================
 
 [[did]]
 id = 0xB101
-name = "Auto Door Lock (by Speed)"
+name = "[NOT VERIFIED] Auto Door Lock (by Speed)"
 unit = "setting"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x02
-description = "0x00 = off, 0x01 = lock at 20km/h, 0x02 = lock on shift from P"
-category = "comfort"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. Techstream: 0x00=off, 0x01=lock at 20km/h, 0x02=lock on shift from P"
+category = "unverified"
 
 [[did]]
 id = 0xB102
-name = "Auto Door Unlock (Shift to P)"
+name = "[NOT VERIFIED] Auto Door Unlock (Shift to P)"
 unit = "setting"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x01
-description = "0x00 = off, 0x01 = unlock when shifting to P"
-category = "comfort"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. Techstream: 0x00=off, 0x01=unlock when shifting to P"
+category = "unverified"
 
 [[did]]
 id = 0xB103
-name = "Daytime Running Lights (DRL)"
+name = "[NOT VERIFIED] Daytime Running Lights (DRL)"
 unit = "setting"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x01
-description = "0x00 = disabled, 0x01 = enabled (factory default)"
-category = "lighting"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. Techstream: 0x00=disabled, 0x01=enabled"
+category = "unverified"
 
 [[did]]
 id = 0xB104
-name = "Turn Signal Lane-Change Flashes"
+name = "[NOT VERIFIED] Turn Signal Lane-Change Flashes"
 unit = "flashes"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x01
-max_value = 0x07
-description = "Number of flashes for one-tap lane change signal (factory: 3)"
-category = "lighting"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. May be on Combination Meter (0x7C0) not BCM. Techstream: 3-7 flashes"
+category = "unverified"
 
 [[did]]
 id = 0xB105
-name = "Headlight Auto-Off Timer"
+name = "[NOT VERIFIED] Headlight Auto-Off Timer"
 unit = "setting"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x03
-description = "0x00 = off, 0x01 = 30s, 0x02 = 60s, 0x03 = 90s"
-category = "lighting"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. Techstream: 0x00=off, 0x01=30s, 0x02=60s, 0x03=90s"
+category = "unverified"
 
 [[did]]
 id = 0xB106
-name = "Key-Off Power Timer"
+name = "[NOT VERIFIED] Key-Off Power Timer"
 unit = "setting"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x03
-description = "Accessory power after key-off: 0x00 = 0min, 0x01 = 10min, 0x02 = 20min, 0x03 = 30min"
-category = "comfort"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. Techstream: 0x00=0min, 0x01=10min, 0x02=20min, 0x03=30min"
+category = "unverified"
 
 [[did]]
 id = 0xB107
-name = "Horn Chirp on Lock"
+name = "[NOT VERIFIED] Horn Chirp on Lock"
 unit = "setting"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x01
-description = "0x00 = disabled, 0x01 = chirp when locking with key fob"
-category = "comfort"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. Techstream: 0x00=disabled, 0x01=chirp on lock"
+category = "unverified"
 
 [[did]]
 id = 0xB108
-name = "Reverse Tilt Mirrors"
+name = "[NOT VERIFIED] Reverse Tilt Mirrors"
 unit = "setting"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x01
-description = "0x00 = disabled, 0x01 = mirrors tilt down in reverse"
-category = "comfort"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. Techstream: 0x00=disabled, 0x01=mirrors tilt in reverse"
+category = "unverified"
 
 [[did]]
 id = 0xB109
-name = "Smart Key Detection Range"
+name = "[NOT VERIFIED] Smart Key Detection Range"
 unit = "setting"
 formula = "A"
 ecu = "750"
-writable = true
-data_length = 1
-min_value = 0x00
-max_value = 0x02
-description = "0x00 = short, 0x01 = normal (factory), 0x02 = long"
-category = "comfort"
+writable = false
+description = "UNVERIFIED ADDRESS. Real DID unknown. May be on Certification ECU. Techstream: 0x00=short, 0x01=normal, 0x02=long"
+category = "unverified"
 
 # ============================================================
-# Additional Techstream-documented settings (DID addresses unknown)
-# These are confirmed configurable but on different ECUs:
+# Additional Techstream-documented settings (addresses unknown)
+# These are confirmed configurable but ECU/DID not yet discovered:
 #
-# Combination Meter (0x7C0):
-#   - Driver Seatbelt Warning Buzzer: ON/OFF
-#   - Front Passenger Seatbelt Warning Buzzer: ON/OFF
-#   (Note: only the continuous chime >20km/h can be disabled)
+# Combination Meter (0x7C0, KWP2000):
+#   - Lane change flash count (likely in one of the config blocks)
+#   - Key reminder sound cycle: Fast/Normal/Slow
+#   - ODO display time after ignition off: 30s/60s/600s/OFF
 #
 # A/C Amplifier:
 #   - DEF Mode Setting, Temp Shift, Compressor Mode, Fan Speed
@@ -306,7 +306,7 @@ category = "comfort"
 #   - Hazard Answer Back, Auto Lock Time, Wireless Buzzer Volume
 #   - Remote 2-Press Unlock, Auto Relock Timer
 #
-# Power Door Lock (BCM 0x750):
+# Power Door Lock (BCM 0x750, KWP2000 sub-addressed at 0x40):
 #   - Unlock Key Twice: ON/OFF
 #   - Auto Door Lock: OFF / Link Shift / Link Speed
 #   - Auto Door Unlock: OFF / Link D-door / Link Shift

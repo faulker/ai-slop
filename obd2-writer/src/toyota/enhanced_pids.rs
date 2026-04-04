@@ -19,6 +19,10 @@ pub struct DidDefinition {
     #[serde(default = "default_ecu")]
     #[allow(dead_code)]
     pub ecu: String,
+    /// Protocol: "uds" (default) uses service 0x22/0x2E,
+    /// "kwp" uses KWP2000 service 0x21/0x3B.
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
     #[serde(default)]
     pub writable: bool,
     pub data_length: Option<usize>,
@@ -28,6 +32,13 @@ pub struct DidDefinition {
     pub description: Option<String>,
     #[serde(default)]
     pub category: Option<String>,
+    /// Named values for toggle/enum display, e.g. {"00" = "OFF", "C0" = "ON"}
+    #[serde(default)]
+    pub values: Option<std::collections::HashMap<String, String>>,
+}
+
+fn default_protocol() -> String {
+    "uds".to_string()
 }
 
 fn default_ecu() -> String {

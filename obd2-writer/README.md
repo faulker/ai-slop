@@ -2,18 +2,18 @@
 
 > **WARNING: Use at your own risk. Writing incorrect data to your vehicle's ECU can permanently damage its computer, disable safety systems, or brick modules beyond repair. The authors assume no liability for any damage caused by use of this tool.**
 
-A Rust CLI application for reading from and writing to a 2023 Toyota Tacoma's ECUs via an OBDLink MX+ Bluetooth scanner.
+A Rust CLI application for reading from and writing to a 2023 Toyota Tacoma's ECUs via an OBDLink MX+ Bluetooth scanner. Includes a full-featured TUI dashboard for live data, settings editing, scanning, and backup/restore.
 
 ## Hardware Requirements
 
-- **OBDLink MX+** OBD2 Bluetooth Scanner
+- **OBDLink MX+** OBD2 Bluetooth Scanner (genuine, STN-based — reports `ELM327 v1.4b` via ATI for compatibility)
 - **2023 Toyota Tacoma** (3rd gen, ICE)
 - macOS with Bluetooth
 
 ## Prerequisites
 
 1. **Pair the OBDLink MX+** with your Mac via System Settings → Bluetooth. Press the Connect button on the device to enable pairing.
-2. The device will appear as a serial port (typically `/dev/tty.OBDLink_MXp-SPPDev`).
+2. The device will appear as a serial port (typically `/dev/cu.OBDLink_MXp-SPPDev`).
 3. Vehicle ignition must be ON (engine running or accessory mode).
 
 ## Setup
@@ -28,7 +28,82 @@ cargo test
 
 ## Usage
 
-### One-shot commands
+### TUI Dashboard
+
+```bash
+cargo run -- tui
+```
+
+The TUI provides a full-screen terminal interface with six tabs:
+
+| Tab | Key | Description |
+|-----|-----|-------------|
+| **Dashboard** | `1` | Live PID/DID gauges with configurable polling interval |
+| **Settings** | `2` | Browse and toggle writable vehicle settings |
+| **DTCs** | `3` | View and clear diagnostic trouble codes |
+| **Scans** | `4` | ECU discovery and DID range scanning (UDS + KWP2000) |
+| **Backup** | `5` | Backup all settings, restore individual values |
+| **Raw** | `6` | Send AT commands, raw hex, and special diagnostic commands |
+
+#### TUI Controls
+
+| Key | Action |
+|-----|--------|
+| `1`–`6` | Switch tabs |
+| `Tab` / `Shift+Tab` | Next / previous tab |
+| `q` | Quit |
+| `Ctrl+C` | Force quit (works in any context) |
+
+**Dashboard tab:**
+- `Enter` — Open PID/DID picker (type to filter, supports both standard OBD2 PIDs and Toyota enhanced DIDs)
+- `Space` — Pause / resume live polling
+- `+` / `-` — Adjust poll interval (default 500ms)
+- `d` — Remove selected PID from display
+- `Up` / `Down` — Navigate PID list
+
+**Settings tab:**
+- `t` — **Toggle** setting (cycles between named values, e.g. ON/OFF)
+- `Enter` — Edit selected DID (enter new hex value manually)
+- `d` — Dry-run preview (validates without writing)
+- `r` — Read current value from ECU
+- `R` — Read all writable DIDs
+- After any write, auto-reads the value back to confirm
+
+**DTCs tab:**
+- `r` — Refresh (fetch stored DTCs)
+- `c` — Clear all DTCs (with confirmation)
+
+**Scans tab:**
+- `e` — Run ECU scan (discovers responding modules)
+- `s` — Start DID range scan
+- `m` — **Cycle scan mode**: UDS 0x22, KWP 0x21, KWP 0x1A
+- `i` — Edit scan parameters (ECU address, DID range)
+- `w` — Toggle writable-DID testing
+- `Enter` — Select found ECU as DID scan target
+- `Esc` — Cancel running scan
+- `Tab` — Switch between ECU and DID scan panes
+
+**Backup tab:**
+- `a` — Backup all writable DIDs (grouped by ECU, supports KWP + UDS)
+- `r` — Restore selected backup to ECU (with confirmation)
+
+**Raw tab:**
+- Type commands and press `Enter` to send
+- `Esc` — Exit input mode (allows tab navigation)
+- Any key — Re-enter input mode
+- `F5` — Clear output
+- `F6` — Save output to `raw-output.txt`
+- `Up` / `Down` — Command history
+
+Special Raw commands:
+| Prefix | Description |
+|--------|-------------|
+| `sec <ECU> <level>` | Request security access seed with ISO-TP reassembly |
+| `unlock <ECU> <level>` | Automated security unlock (tries common algorithms) |
+| `key <ECU> <level+key>` | Send security key manually |
+| `dbg <cmd>` | Send command and show raw hex dump of response |
+
+### One-shot Commands
 
 ```bash
 # Test connection
@@ -57,109 +132,162 @@ cargo run -- dtc clear
 cargo run -- backup-all
 
 # Discover DIDs by brute-force scanning an ECU
-cargo run -- scan 750                          # scan BCM with default Toyota ranges
-cargo run -- scan 750 B000-B1FF                # scan specific range
-cargo run -- scan 750 --test-writable          # also check if DIDs are writable
-cargo run -- scan 7E0 0100-01FF -o ecm_dids.toml  # save results to file
+cargo run -- scan 7C0 00-FF               # scan Combination Meter
+cargo run -- scan 750 B000-B1FF           # scan BCM range
+cargo run -- scan 750 --test-writable     # also check if DIDs are writable
 
 # Change UDS session
 cargo run -- session extended
 
-# Write to a DID (e.g., BCM customization)
-cargo run -- write F190 01 --ecu 750
+# Write to a DID (requires --confirm flag)
+cargo run -- write A7 00 --ecu 7C0 --confirm   # disable seatbelt chime
 ```
 
-### Interactive shell
+### Interactive Shell
 
 ```bash
 cargo run -- shell
 ```
 
-Shell commands:
-- `connect` — Initialize the OBDLink MX+
-- `read <pid>` — Read a standard PID (by name or hex)
-- `read-enhanced <did> [ecu]` — Read Toyota Mode 22 DID
-- `browse` — Interactive PID picker with fuzzy search
-- `browse-enhanced` / `be` — Interactive DID picker with fuzzy search
-- `monitor <pid> [interval_ms]` — Continuously read a PID (live updates)
-- `ecus` — Scan for responding ECUs on the CAN bus
-- `dtc [list|clear]` — Read or clear DTCs
-- `session <default|extended|programming>` — Set diagnostic session
-- `security [level]` — Perform security access handshake
-- `write <did> <data> [ecu]` — Write to a DID
-- `backup-all` — Backup all configured DID values
-- `backups` — List backed-up values
-- `scan <ecu> [range]` — Discover DIDs by brute-force read scan
-- `restore <did> [ecu]` — Restore a backed-up DID value
-- `target <ecu>` — Set target ECU header
-- `raw <hex>` — Send raw hex command
-- `at <cmd>` — Send AT command
-- `pids` — List available PIDs and DIDs
-- `help` — Show help
-- `quit` — Exit
+## Discovered ECUs
 
-### Options
+The 2023 Tacoma has a **security gateway** that blocks direct UDS access to powertrain ECUs. Broadcast OBD2 requests (via 0x7DF) are forwarded, but direct addressing to the ECM is blocked.
 
-```
--p, --port <PORT>       Serial port path [default: /dev/tty.OBDLink_MXp-SPPDev]
--b, --baud-rate <RATE>  Baud rate [default: 115200]
--t, --timeout <MS>      Response timeout in ms [default: 2000]
--v, --verbose           Enable protocol logging
-```
+### Responding ECUs
 
-## Available PIDs
+| Address | Name | Protocol | Notes |
+|---------|------|----------|-------|
+| **0x7C0** | **Combination Meter** | **KWP2000** | Seatbelt chime, instrument cluster settings |
+| 0x7C4 | HVAC | Unknown | Responds to TesterPresent |
+| 0x7B0 | ABS/VSC | Unknown | Responds to TesterPresent |
+| 0x780 | SRS (Airbag) | Unknown | Responds (NRC 0x12) |
+| 0x790 | Parking Assist | Unknown | Responds to TesterPresent |
+| 0x701 | TCM #2 (Transmission) | Unknown | Responds to TesterPresent |
 
-| Name | PID | Unit |
-|------|-----|------|
-| rpm | 0x0C | RPM |
-| speed | 0x0D | km/h |
-| coolant_temp | 0x05 | °C |
-| intake_temp | 0x0F | °C |
-| throttle | 0x11 | % |
-| load | 0x04 | % |
-| maf | 0x10 | g/s |
-| fuel_level | 0x2F | % |
-| battery_voltage | 0x42 | V |
-| oil_temp | 0x5C | °C |
-| ambient_temp | 0x46 | °C |
-| timing_advance | 0x0E | ° |
-| intake_pressure | 0x0B | kPa |
-| baro_pressure | 0x33 | kPa |
-| runtime | 0x1F | s |
+### Non-responding ECUs (gateway blocked)
 
-## Toyota Enhanced DIDs
-
-Toyota-specific DIDs are defined in `toyota_dids.toml`. Add community-discovered DIDs there. These use UDS Mode 22 (ReadDataByIdentifier).
-
-The TOML currently includes:
-- **ECM (0x7E0):** Engine coolant temp, intake air temp, RPM, throttle, load, MAF, fuel pressure, ignition timing, battery voltage
-- **TCM (0x7E1):** ATF pan temp, ATF post-converter temp (community verified on 3rd gen Tacoma)
-- **BCM (0x750):** Seatbelt chime, auto door lock/unlock, DRL, turn signal flash count, headlight auto-off, key-off power timer, horn chirp, reverse tilt mirrors, smart key range (**DID addresses unverified** — see TOML comments for discovery methods)
-- **Diagnostic:** Active session, VIN, ECU software version
-
-Each DID entry supports optional `description` and `category` fields for the interactive browser.
-
-## Write Operations
-
-Writing to ECUs uses UDS WriteDataByIdentifier (0x2E). The tool automatically:
-1. Sets the target ECU header
-2. Enters Extended Diagnostic Session
-3. Performs the write
-4. Returns to default session
-
-For operations requiring security access (UDS 0x27), the tool will prompt for the key. Toyota's seed-key algorithm is proprietary.
-
-### Limitations
-
-- **Full ECU reflashing** is not possible via ELM327-class devices (requires J2534 passthrough)
-- **Toyota seed-key algorithm** is proprietary — manual key entry is supported
-- **BCM CAN address** may be 0x750 or 0x7C0 depending on the specific module; experiment with the `target` command
+| Address | Name | Notes |
+|---------|------|-------|
+| 0x7E0 | ECM (Engine) | Responds to broadcast only, blocked for direct addressing |
+| 0x7E1 | TCM (Transmission) | Gateway blocked |
+| 0x750 | BCM (Body/Gateway) | Uses KWP2000 with sub-addressing, did not respond |
+| 0x760 | Gateway | No response |
+| 0x7A0 | EPS (Power Steering) | No response |
 
 ## Protocol Details
 
+### Combination Meter (0x7C0) — KWP2000
+
+The Combination Meter does **NOT** support UDS services (0x22/0x2E). It uses KWP2000:
+
+| Service | Name | Status |
+|---------|------|--------|
+| **0x21** | ReadDataByLocalIdentifier | Works — 21 identifiers found |
+| **0x3B** | WriteDataByLocalIdentifier | Works for writable IDs |
+| 0x1A | ReadEcuIdentification | Works (part number "4W70") |
+| 0x10 | DiagnosticSessionControl | Only default session (0x01) |
+| 0x27 | SecurityAccess | Level 0x61 returns 6-byte seed |
+| 0x22 | UDS ReadDataByIdentifier | **Not supported** (NRC 0x11) |
+
+### Verified Settings
+
+| Setting | ECU | Local ID | Values | Protocol |
+|---------|-----|----------|--------|----------|
+| **Seatbelt Warning Chime** | 0x7C0 | **0xA7** | `C0` = ON, `00` = OFF | KWP 0x21/0x3B |
+
+### CAN Bus
+
 - **Vehicle protocol:** ISO 15765-4 CAN, 11-bit addressing, 500 kbps
-- **ECM:** Request 0x7E0, Response 0x7E8
-- **Communication:** UDS (ISO 14229) over ISO-TP (ISO 15765-2) via ELM327 AT commands
+- **Communication:** UDS/KWP2000 over ISO-TP (ISO 15765-2) via ELM327 AT commands
+- **Gateway:** 2020+ Toyota security gateway blocks direct diagnostic access to powertrain ECUs
+
+## Toyota Enhanced DIDs
+
+Toyota-specific DIDs are defined in `toyota_dids.toml`. Each entry specifies:
+- `protocol` — `"uds"` (service 0x22/0x2E) or `"kwp"` (service 0x21/0x3B)
+- `writable` — whether the Settings tab allows writing
+- `values` — named value map for toggle display (e.g. `{00 = "OFF", C0 = "ON"}`)
+- `data_length`, `min_value`, `max_value` — write safety constraints
+- `category` — grouping for display
+
+The TOML currently includes:
+- **ECM (0x7E0):** Engine coolant temp, intake air temp, RPM, throttle, load, MAF, fuel pressure, ignition timing, battery voltage
+- **TCM (0x7E1):** ATF pan temp, ATF post-converter temp (community verified)
+- **Combination Meter (0x7C0, KWP):** Seatbelt warning chime — **verified and writable**
+- **BCM (0x750):** 9 placeholder entries marked `[NOT VERIFIED]` with `writable = false` — real DID addresses unknown
+- **Diagnostic:** Active session, VIN, ECU software version
+
+## Write Operations
+
+For **KWP2000 ECUs** (e.g., Combination Meter), writes use service 0x3B (WriteDataByLocalIdentifier). The write may return NRC 0x78 (responsePending) before the positive response — the tool handles this automatically.
+
+For **UDS ECUs**, writes use service 0x2E (WriteDataByIdentifier) with automatic session management, backup, verification, and rollback on failure.
+
+Both the CLI (`--dry-run`) and TUI (`d` key) support dry-run mode.
+
+## Architecture
+
+```
+src/
+├── main.rs                 # Entry point, CLI routing
+├── cli.rs                  # Clap CLI definition
+├── shell.rs                # Interactive REPL
+├── browse.rs               # Fuzzy-select PID/DID browsers
+├── error.rs                # Unified error type with UDS NRC decoding
+│
+├── tui/                    # TUI dashboard (ratatui + crossterm)
+│   ├── mod.rs              # Terminal setup/teardown, main event loop
+│   ├── app.rs              # App state, tab management, render dispatch
+│   ├── elm_actor.rs        # Actor pattern for non-blocking Elm327 communication
+│   ├── event.rs            # Key event → action mapping
+│   ├── screens/            # Tab screen implementations
+│   │   ├── dashboard.rs    # Live PID gauges with configurable polling
+│   │   ├── settings.rs     # Writable DID editor with toggle and confirmation
+│   │   ├── dtc.rs          # DTC list/clear
+│   │   ├── scans.rs        # ECU scan + DID range scan (UDS/KWP modes)
+│   │   ├── backup.rs       # Backup/restore management
+│   │   └── raw.rs          # Command passthrough with history, debug, security
+│   └── widgets/            # Reusable TUI components
+│       ├── gauge.rs        # Horizontal bar gauge
+│       ├── status_bar.rs   # Connection info display
+│       ├── confirm.rs      # Modal yes/no dialog
+│       └── pid_picker.rs   # Filterable PID/DID selection list
+│
+├── obd/                    # Standard OBD2
+│   ├── pid.rs              # PID definitions and reading (Mode 01)
+│   └── dtc.rs              # DTC read/clear (Mode 03/04)
+│
+├── toyota/                 # Toyota-specific
+│   ├── enhanced_pids.rs    # Enhanced DIDs, TOML config loader (UDS + KWP)
+│   ├── write_safety.rs     # Verified writes with whitelist, backup, rollback
+│   ├── did_scan.rs         # DID range discovery
+│   ├── ecu_scan.rs         # ECU discovery via TesterPresent
+│   ├── backup.rs           # JSON backup store
+│   ├── bcm.rs              # BCM write operations
+│   └── tpms.rs             # TPMS sensor registration
+│
+├── protocol/               # Protocol implementations
+│   ├── uds.rs              # UDS services (0x10, 0x22, 0x2E, 0x27, 0x3E)
+│   └── isotp.rs            # ISO-TP multi-frame reassembly
+│
+└── transport/              # Hardware communication
+    ├── elm327.rs            # ELM327 AT commands and response parsing
+    └── serial.rs            # Serial port connection and port selection
+```
+
+### Data Flow
+
+```
+CLI / Shell / TUI → Elm327 (AT commands over serial) → OBDLink MX+ → CAN bus → Vehicle ECU
+```
+
+The TUI uses an **actor pattern**: a dedicated tokio task owns the `Elm327` connection exclusively. The UI sends commands via async channels and polls for responses, keeping the interface responsive during slow ECU operations.
+
+## Known Issues
+
+- **Bluetooth disconnect on macOS:** Closing the serial port triggers macOS to terminate the RFCOMM channel. Mitigated by using `process::exit(0)` to avoid explicit serial port closure, but may still occur in some situations.
+- **Multi-frame TX:** The OBDLink MX+ supports multi-frame ISO-TP for outgoing messages with `ATCAF1`, but `ATCAF0` (manual framing) has issues with flow control. Keep auto-formatting enabled.
+- **Security gateway:** The 2023 Tacoma's security gateway blocks direct UDS diagnostic access to powertrain ECUs (ECM, TCM). Only broadcast OBD2 requests work for these modules.
 
 ## Debugging
 
@@ -174,3 +302,9 @@ Or set the environment variable:
 ```bash
 RUST_LOG=debug cargo run -- connect
 ```
+
+## Tested On
+
+- 2023 Toyota Tacoma (3rd gen, ICE)
+- OBDLink MX+ (genuine, firmware updated)
+- macOS (Darwin 25.4.0)

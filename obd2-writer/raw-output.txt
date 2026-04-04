@@ -1,0 +1,9 @@
+Type AT or hex commands. Enter to send. Esc to navigate tabs.
+> ATSH 7C0
+OK
+> 21 A7
+7C8 03 61 A7 C0
+> 3B A7 00
+7C8 02 7B A7
+> 21 A7
+7C8 03 61 A7 00

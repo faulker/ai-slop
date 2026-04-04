@@ -391,12 +391,14 @@ mod tests {
                 unit: "".into(),
                 formula: "A".into(),
                 ecu: "7E0".into(),
+                protocol: "uds".into(),
                 writable: false,
                 data_length: None,
                 min_value: None,
                 max_value: None,
                 description: None,
                 category: None,
+                values: None,
             }],
         };
         assert!(whitelist.validate(0x0100, &[0x01]).is_err());
@@ -411,12 +413,14 @@ mod tests {
                 unit: "".into(),
                 formula: "A".into(),
                 ecu: "7E0".into(),
+                protocol: "uds".into(),
                 writable: true,
                 data_length: None,
                 min_value: None,
                 max_value: None,
                 description: None,
                 category: None,
+                values: None,
             }],
         };
         assert!(whitelist.validate(0x1234, &[0x01]).is_ok());
@@ -431,12 +435,14 @@ mod tests {
                 unit: "".into(),
                 formula: "A".into(),
                 ecu: "7E0".into(),
+                protocol: "uds".into(),
                 writable: true,
                 data_length: Some(2),
                 min_value: None,
                 max_value: None,
                 description: None,
                 category: None,
+                values: None,
             }],
         };
         assert!(whitelist.validate(0x1234, &[0x01]).is_err());
@@ -452,12 +458,14 @@ mod tests {
                 unit: "".into(),
                 formula: "A".into(),
                 ecu: "7E0".into(),
+                protocol: "uds".into(),
                 writable: true,
                 data_length: Some(1),
                 min_value: Some(0x00),
                 max_value: Some(0x0F),
                 description: None,
                 category: None,
+                values: None,
             }],
         };
         assert!(whitelist.validate(0x1234, &[0x05]).is_ok());
