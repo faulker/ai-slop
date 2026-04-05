@@ -20,6 +20,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("CRASH: %@", info.description)
         }
 
+        setupMainMenu()
+
         DatabaseManager.shared.initialize()
         NSLog("[ThoughtQueue] Database initialized")
 
@@ -41,6 +43,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("[ThoughtQueue] Hotkey manager registered, app ready")
     }
 
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "About ThoughtQueue", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
+        appMenu.addItem(NSMenuItem.separator())
+        let prefsItem = NSMenuItem(title: "Preferences\u{2026}", action: #selector(openPreferences), keyEquivalent: ",")
+        prefsItem.target = self
+        appMenu.addItem(prefsItem)
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(NSMenuItem(title: "Quit ThoughtQueue", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // Edit menu (enables standard text editing shortcuts in text fields)
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"))
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        NSApp.mainMenu = mainMenu
+    }
+
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem = item
@@ -58,7 +92,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             let s = rect.size.width
 
-            // Rounded square outline
             let inset = s * 0.08
             let outlineRect = NSRect(x: inset, y: inset, width: s - inset * 2, height: s - inset * 2)
             let outlineRadius = s * 0.18
@@ -67,7 +100,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             outlinePath.lineWidth = 1.2
             outlinePath.stroke()
 
-            // Curly quotes in center
             let font = NSFont(name: "Georgia-Bold", size: s * 0.45) ?? NSFont.systemFont(ofSize: s * 0.45, weight: .heavy)
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,
@@ -100,7 +132,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Open ThoughtQueue", action: #selector(openMainWindow), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Preferences…", action: #selector(openPreferences), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Preferences\u{2026}", action: #selector(openPreferences), keyEquivalent: ","))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApp.terminate), keyEquivalent: "q"))
         statusItem.menu = menu

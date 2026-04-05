@@ -22,7 +22,7 @@ final class EntryRowView: NSView {
         let sentIndicator = sentButton
 
         let truncated = entry.text.prefix(80)
-        let preview = String(truncated) + (entry.text.count > 80 ? "…" : "")
+        let preview = String(truncated) + (entry.text.count > 80 ? "\u{2026}" : "")
         let textLabel = NSTextField(labelWithString: preview)
         textLabel.font = .systemFont(ofSize: 12)
         textLabel.lineBreakMode = .byTruncatingTail
@@ -31,7 +31,7 @@ final class EntryRowView: NSView {
 
         let openBtn = makeButton(title: "Open", action: #selector(openInClaude))
         let moveBtn = makeButton(title: "Move", action: #selector(showMoveMenu(_:)))
-        let deleteBtn = makeButton(title: "Del", action: #selector(deleteEntry))
+        let deleteBtn = makeButton(title: "Del", action: #selector(confirmDelete))
 
         let buttonStack = NSStackView(views: [openBtn, moveBtn, deleteBtn])
         buttonStack.spacing = 4
@@ -74,14 +74,14 @@ final class EntryRowView: NSView {
 
         let uncatItem = NSMenuItem(title: "Uncategorized", action: #selector(moveToCategory(_:)), keyEquivalent: "")
         uncatItem.target = self
-        uncatItem.tag = 0
+        uncatItem.representedObject = nil as Int64? as AnyObject
         menu.addItem(uncatItem)
         menu.addItem(NSMenuItem.separator())
 
         for cat in DatabaseManager.shared.fetchCategories() {
             let item = NSMenuItem(title: cat.name, action: #selector(moveToCategory(_:)), keyEquivalent: "")
             item.target = self
-            item.tag = Int(cat.id)
+            item.representedObject = cat.id as AnyObject
             menu.addItem(item)
         }
 
@@ -89,13 +89,23 @@ final class EntryRowView: NSView {
     }
 
     @objc private func moveToCategory(_ sender: NSMenuItem) {
-        let categoryId: Int64? = sender.tag == 0 ? nil : Int64(sender.tag)
+        let categoryId = sender.representedObject as? Int64
         _ = DatabaseManager.shared.moveEntry(id: entry.id, toCategoryId: categoryId)
         NotificationCenter.default.post(name: .entriesDidChange, object: nil)
     }
 
-    @objc private func deleteEntry() {
-        _ = DatabaseManager.shared.deleteEntry(id: entry.id)
-        NotificationCenter.default.post(name: .entriesDidChange, object: nil)
+    @objc private func confirmDelete() {
+        let alert = NSAlert()
+        alert.messageText = "Delete Entry?"
+        let preview = String(entry.text.prefix(60)) + (entry.text.count > 60 ? "\u{2026}" : "")
+        alert.informativeText = "This will permanently delete: \"\(preview)\""
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            _ = DatabaseManager.shared.deleteEntry(id: entry.id)
+            NotificationCenter.default.post(name: .entriesDidChange, object: nil)
+        }
     }
 }

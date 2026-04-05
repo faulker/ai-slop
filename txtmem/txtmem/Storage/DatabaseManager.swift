@@ -7,9 +7,12 @@ final class DatabaseManager {
     static let shared = DatabaseManager()
     private var db: OpaquePointer?
     private let queue = DispatchQueue(label: "com.txtmem.database")
+    private var isOpen = false
 
-    /// Allow tests to inject a custom DB path
+    /// Must be set before calling initialize()
     var dbPathOverride: String?
+
+    private static let currentSchemaVersion: Int32 = 1
 
     private init() {}
 
@@ -17,10 +20,13 @@ final class DatabaseManager {
         queue.sync {
             let dbPath = dbPathOverride ?? getDBPath()
             if sqlite3_open(dbPath, &db) != SQLITE_OK {
-                NSLog("[ThoughtQueue] ERROR: Failed to open database at %@", dbPath)
+                let errMsg = db.flatMap { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
+                NSLog("[ThoughtQueue] FATAL: Failed to open database at %@: %@", dbPath, errMsg)
                 return
             }
+            isOpen = true
             createTables()
+            migrateIfNeeded()
         }
     }
 
@@ -54,12 +60,52 @@ final class DatabaseManager {
         executeDDL(entriesSQL)
     }
 
-    private func executeDDL(_ sql: String) {
+    private func migrateIfNeeded() {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(stmt) }
+
+        var version: Int32 = 0
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            version = sqlite3_column_int(stmt, 0)
+        }
+
+        // Future migrations go here:
+        // if version < 2 { ... }
+
+        if version < Self.currentSchemaVersion {
+            executeDDL("PRAGMA user_version = \(Self.currentSchemaVersion);")
+        }
+    }
+
+    private func guardOpen() -> Bool {
+        if !isOpen {
+            NSLog("[ThoughtQueue] ERROR: Database operation attempted but database is not open")
+        }
+        return isOpen
+    }
+
+    @discardableResult
+    private func executeDDL(_ sql: String) -> Bool {
         var errMsg: UnsafeMutablePointer<CChar>?
         if sqlite3_exec(db, sql, nil, nil, &errMsg) != SQLITE_OK {
             let msg = errMsg.map { String(cString: $0) } ?? "unknown error"
             sqlite3_free(errMsg)
             NSLog("[ThoughtQueue] SQL error: %@", msg)
+            return false
+        }
+        return true
+    }
+
+    private func inTransaction(_ block: () -> Bool) {
+        guard executeDDL("BEGIN TRANSACTION;") else { return }
+        if block() {
+            if !executeDDL("COMMIT;") {
+                executeDDL("ROLLBACK;")
+            }
+        } else {
+            executeDDL("ROLLBACK;")
+            NSLog("[ThoughtQueue] Transaction rolled back due to failure")
         }
     }
 
@@ -82,6 +128,7 @@ final class DatabaseManager {
 
     func createCategory(name: String) -> Category? {
         queue.sync {
+            guard guardOpen() else { return nil }
             let sql = "INSERT INTO categories (name) VALUES (?);"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
@@ -97,6 +144,7 @@ final class DatabaseManager {
 
     func fetchCategories() -> [Category] {
         queue.sync {
+            guard guardOpen() else { return [] }
             let sql = "SELECT id, name, created_at FROM categories ORDER BY name;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -115,6 +163,7 @@ final class DatabaseManager {
 
     func renameCategory(id: Int64, name: String) -> Bool {
         queue.sync {
+            guard guardOpen() else { return false }
             let sql = "UPDATE categories SET name = ? WHERE id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -128,30 +177,33 @@ final class DatabaseManager {
 
     func deleteCategory(id: Int64, moveToUncategorized: Bool) {
         queue.sync {
-            if moveToUncategorized {
-                let updateSQL = "UPDATE entries SET category_id = NULL, updated_at = strftime('%s', 'now') WHERE category_id = ?;"
-                var stmt: OpaquePointer?
-                if sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
+            guard guardOpen() else { return }
+            inTransaction {
+                if moveToUncategorized {
+                    let updateSQL = "UPDATE entries SET category_id = NULL, updated_at = strftime('%s', 'now') WHERE category_id = ?;"
+                    var stmt: OpaquePointer?
+                    guard sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK else { return false }
                     sqlite3_bind_int64(stmt, 1, id)
-                    sqlite3_step(stmt)
+                    let rc = sqlite3_step(stmt)
                     sqlite3_finalize(stmt)
-                }
-            } else {
-                let deleteEntriesSQL = "DELETE FROM entries WHERE category_id = ?;"
-                var stmt: OpaquePointer?
-                if sqlite3_prepare_v2(db, deleteEntriesSQL, -1, &stmt, nil) == SQLITE_OK {
+                    guard rc == SQLITE_DONE else { return false }
+                } else {
+                    let deleteEntriesSQL = "DELETE FROM entries WHERE category_id = ?;"
+                    var stmt: OpaquePointer?
+                    guard sqlite3_prepare_v2(db, deleteEntriesSQL, -1, &stmt, nil) == SQLITE_OK else { return false }
                     sqlite3_bind_int64(stmt, 1, id)
-                    sqlite3_step(stmt)
+                    let rc = sqlite3_step(stmt)
                     sqlite3_finalize(stmt)
+                    guard rc == SQLITE_DONE else { return false }
                 }
-            }
 
-            let sql = "DELETE FROM categories WHERE id = ?;"
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                let sql = "DELETE FROM categories WHERE id = ?;"
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
                 sqlite3_bind_int64(stmt, 1, id)
-                sqlite3_step(stmt)
+                let rc = sqlite3_step(stmt)
                 sqlite3_finalize(stmt)
+                return rc == SQLITE_DONE
             }
         }
     }
@@ -160,6 +212,7 @@ final class DatabaseManager {
 
     func createEntry(text: String, categoryId: Int64? = nil) -> Entry? {
         queue.sync {
+            guard guardOpen() else { return nil }
             let sql = "INSERT INTO entries (text, category_id) VALUES (?, ?);"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
@@ -180,6 +233,7 @@ final class DatabaseManager {
 
     func fetchEntries(categoryId: Int64? = nil) -> [Entry] {
         queue.sync {
+            guard guardOpen() else { return [] }
             let sql: String
             if categoryId != nil {
                 sql = """
@@ -209,6 +263,7 @@ final class DatabaseManager {
 
     func fetchUncategorizedEntries() -> [Entry] {
         queue.sync {
+            guard guardOpen() else { return [] }
             let sql = """
                 SELECT e.id, e.text, e.category_id, e.is_sent, e.created_at, e.updated_at, NULL
                 FROM entries e WHERE e.category_id IS NULL
@@ -223,6 +278,7 @@ final class DatabaseManager {
 
     func fetchEntriesCount(categoryId: Int64?) -> Int {
         queue.sync {
+            guard guardOpen() else { return 0 }
             let sql: String
             if categoryId != nil {
                 sql = "SELECT COUNT(*) FROM entries WHERE category_id = ?;"
@@ -237,6 +293,17 @@ final class DatabaseManager {
                 sqlite3_bind_int64(stmt, 1, catId)
             }
 
+            return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
+        }
+    }
+
+    func fetchTotalEntriesCount() -> Int {
+        queue.sync {
+            guard guardOpen() else { return 0 }
+            let sql = "SELECT COUNT(*) FROM entries;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+            defer { sqlite3_finalize(stmt) }
             return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
         }
     }
@@ -258,6 +325,7 @@ final class DatabaseManager {
 
     func updateEntry(id: Int64, text: String) -> Bool {
         queue.sync {
+            guard guardOpen() else { return false }
             let sql = "UPDATE entries SET text = ?, updated_at = strftime('%s', 'now') WHERE id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -271,6 +339,7 @@ final class DatabaseManager {
 
     func moveEntry(id: Int64, toCategoryId: Int64?) -> Bool {
         queue.sync {
+            guard guardOpen() else { return false }
             let sql = "UPDATE entries SET category_id = ?, updated_at = strftime('%s', 'now') WHERE id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -288,6 +357,7 @@ final class DatabaseManager {
 
     func toggleEntrySent(id: Int64, isSent: Bool) -> Bool {
         queue.sync {
+            guard guardOpen() else { return false }
             let sql = "UPDATE entries SET is_sent = ?, updated_at = strftime('%s', 'now') WHERE id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -301,6 +371,7 @@ final class DatabaseManager {
 
     func markEntryAsSent(id: Int64) -> Bool {
         queue.sync {
+            guard guardOpen() else { return false }
             let sql = "UPDATE entries SET is_sent = 1, updated_at = strftime('%s', 'now') WHERE id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -313,6 +384,7 @@ final class DatabaseManager {
 
     func deleteEntry(id: Int64) -> Bool {
         queue.sync {
+            guard guardOpen() else { return false }
             let sql = "DELETE FROM entries WHERE id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -325,7 +397,12 @@ final class DatabaseManager {
 
     func clearCompletedEntries() -> Int {
         queue.sync {
-            executeDDL("DELETE FROM entries WHERE is_sent = 1;")
+            guard guardOpen() else { return 0 }
+            let sql = "DELETE FROM entries WHERE is_sent = 1;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_step(stmt) == SQLITE_DONE else { return 0 }
             return Int(sqlite3_changes(db))
         }
     }

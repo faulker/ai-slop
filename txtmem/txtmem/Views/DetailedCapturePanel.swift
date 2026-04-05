@@ -31,39 +31,70 @@ final class DetailedCapturePanel {
 
         let contentView = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight))
 
-        let scrollView = NSScrollView(frame: NSRect(x: 16, y: 60, width: panelWidth - 32, height: panelHeight - 100))
-        let tv = NSTextView(frame: scrollView.bounds)
+        // Text scroll view
+        let scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .bezelBorder
+
+        let tv = NSTextView()
         tv.string = text
         tv.font = .systemFont(ofSize: 13)
         tv.isEditable = true
         tv.isRichText = false
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.textContainerInset = NSSize(width: 4, height: 4)
+        tv.textContainer?.widthTracksTextView = true
         tv.autoresizingMask = [.width, .height]
         scrollView.documentView = tv
-        scrollView.hasVerticalScroller = true
-        contentView.addSubview(scrollView)
         self.textView = tv
 
-        let popup = NSPopUpButton(frame: NSRect(x: 16, y: 20, width: 180, height: 28))
+        // Category popup
+        let popup = NSPopUpButton()
+        popup.translatesAutoresizingMaskIntoConstraints = false
         popup.addItem(withTitle: "Uncategorized")
         popup.menu?.items.first?.tag = 0
         for cat in DatabaseManager.shared.fetchCategories() {
             popup.addItem(withTitle: cat.name)
             popup.menu?.items.last?.tag = Int(cat.id)
         }
-        contentView.addSubview(popup)
         self.categoryPopup = popup
 
+        // Buttons
         let saveBtn = NSButton(title: "Save", target: self, action: #selector(save))
+        saveBtn.translatesAutoresizingMaskIntoConstraints = false
         saveBtn.bezelStyle = .rounded
-        saveBtn.frame = NSRect(x: panelWidth - 90, y: 20, width: 70, height: 28)
         saveBtn.keyEquivalent = "\r"
-        contentView.addSubview(saveBtn)
 
         let cancelBtn = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancelBtn.translatesAutoresizingMaskIntoConstraints = false
         cancelBtn.bezelStyle = .rounded
-        cancelBtn.frame = NSRect(x: panelWidth - 170, y: 20, width: 70, height: 28)
         cancelBtn.keyEquivalent = "\u{1b}"
+
+        contentView.addSubview(scrollView)
+        contentView.addSubview(popup)
+        contentView.addSubview(saveBtn)
         contentView.addSubview(cancelBtn)
+
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
+            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            scrollView.bottomAnchor.constraint(equalTo: popup.topAnchor, constant: -12),
+
+            popup.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            popup.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
+
+            saveBtn.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            saveBtn.centerYAnchor.constraint(equalTo: popup.centerYAnchor),
+            saveBtn.widthAnchor.constraint(equalToConstant: 70),
+
+            cancelBtn.trailingAnchor.constraint(equalTo: saveBtn.leadingAnchor, constant: -8),
+            cancelBtn.centerYAnchor.constraint(equalTo: popup.centerYAnchor),
+            cancelBtn.widthAnchor.constraint(equalToConstant: 70),
+        ])
 
         newPanel.contentView = contentView
         newPanel.makeKeyAndOrderFront(nil)
@@ -84,7 +115,6 @@ final class DetailedCapturePanel {
         let categoryId: Int64? = selectedTag == 0 ? nil : Int64(selectedTag)
 
         if let _ = DatabaseManager.shared.createEntry(text: text, categoryId: categoryId) {
-            NSPasteboard.general.clearContents()
             NotificationCenter.default.post(name: .entriesDidChange, object: nil)
             ToastWindow.show(message: "Captured!")
         }

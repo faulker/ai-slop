@@ -10,20 +10,22 @@ final class CaptureService {
 
     func quickCapture() {
         log.info("Quick capture triggered")
-        grabSelectedText { [weak self] text in
+        grabSelectedText { [weak self] text, savedClipboard in
             guard let text = text, !text.isEmpty else {
                 log.warning("No text captured from selection")
+                restoreClipboard(savedClipboard)
                 self?.showToast("No text selected")
                 return
             }
 
             log.info("Captured text: \(text.prefix(50))...")
             if let _ = DatabaseManager.shared.createEntry(text: text) {
-                NSPasteboard.general.clearContents()
+                restoreClipboard(savedClipboard)
                 self?.showToast("Captured!")
                 NotificationCenter.default.post(name: .entriesDidChange, object: nil)
             } else {
                 log.error("Failed to save entry to database")
+                restoreClipboard(savedClipboard)
                 self?.showToast("Failed to save")
             }
         }
@@ -31,20 +33,22 @@ final class CaptureService {
 
     func showDetailedCapture() {
         log.info("Detailed capture triggered")
-        grabSelectedText { [weak self] text in
+        grabSelectedText { [weak self] text, savedClipboard in
             guard let text = text, !text.isEmpty else {
                 log.warning("No text captured for detailed capture")
+                restoreClipboard(savedClipboard)
                 self?.showToast("No text selected")
                 return
             }
 
-            // Don't clear clipboard here — DetailedCapturePanel.save() will clear it on successful save
+            restoreClipboard(savedClipboard)
             DetailedCapturePanel.shared.show(with: text)
         }
     }
 
-    private func grabSelectedText(completion: @escaping (String?) -> Void) {
+    private func grabSelectedText(completion: @escaping (String?, [[NSPasteboard.PasteboardType: Data]]) -> Void) {
         let pasteboard = NSPasteboard.general
+        let savedClipboard = saveClipboard()
         let changeCountBefore = pasteboard.changeCount
 
         log.debug("Pasteboard change count before: \(changeCountBefore)")
@@ -53,7 +57,7 @@ final class CaptureService {
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x08, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x08, keyDown: false) else {
             log.error("Failed to create CGEvent for Cmd+C simulation")
-            completion(nil)
+            completion(nil, savedClipboard)
             return
         }
 
@@ -64,7 +68,6 @@ final class CaptureService {
 
         log.debug("Simulated Cmd+C, waiting for pasteboard update...")
 
-        // Check pasteboard on a background queue to avoid blocking main thread
         DispatchQueue.global(qos: .userInitiated).async {
             var text: String?
             let maxAttempts = 10
@@ -82,7 +85,7 @@ final class CaptureService {
             }
 
             DispatchQueue.main.async {
-                completion(text)
+                completion(text, savedClipboard)
             }
         }
     }
@@ -96,6 +99,36 @@ final class CaptureService {
             }
         }
     }
+}
+
+// MARK: - Clipboard Save/Restore
+
+func saveClipboard() -> [[NSPasteboard.PasteboardType: Data]] {
+    let pb = NSPasteboard.general
+    guard let items = pb.pasteboardItems else { return [] }
+    return items.map { item in
+        var dict: [NSPasteboard.PasteboardType: Data] = [:]
+        for type in item.types {
+            if let data = item.data(forType: type) {
+                dict[type] = data
+            }
+        }
+        return dict
+    }
+}
+
+func restoreClipboard(_ saved: [[NSPasteboard.PasteboardType: Data]]) {
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    guard !saved.isEmpty else { return }
+    let items = saved.map { dict -> NSPasteboardItem in
+        let item = NSPasteboardItem()
+        for (type, data) in dict {
+            item.setData(data, forType: type)
+        }
+        return item
+    }
+    pb.writeObjects(items)
 }
 
 extension Notification.Name {

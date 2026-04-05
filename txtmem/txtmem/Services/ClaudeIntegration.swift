@@ -14,6 +14,8 @@ final class ClaudeIntegration {
         log.info("Sending entry \(entry.id) to Claude")
         NSLog("[ThoughtQueue] Sending entry %lld to Claude", entry.id)
 
+        let savedClipboard = saveClipboard()
+
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(entry.text, forType: .string)
@@ -21,6 +23,7 @@ final class ClaudeIntegration {
         let workspace = NSWorkspace.shared
         guard let claudeURL = workspace.urlForApplication(withBundleIdentifier: claudeBundleId) else {
             log.error("Claude desktop app not found")
+            restoreClipboard(savedClipboard)
             showError("Claude desktop app not found. Please install it first.")
             return
         }
@@ -32,6 +35,7 @@ final class ClaudeIntegration {
             if let error = error {
                 DispatchQueue.main.async {
                     NSLog("[ThoughtQueue] Failed to open Claude: %@", error.localizedDescription)
+                    restoreClipboard(savedClipboard)
                     self?.showError("Failed to open Claude: \(error.localizedDescription)")
                 }
                 return
@@ -39,7 +43,6 @@ final class ClaudeIntegration {
 
             NSLog("[ThoughtQueue] Claude activated, waiting before new chat...")
 
-            // Longer delay for Electron app to come to foreground
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 NSLog("[ThoughtQueue] Simulating Cmd+1 to switch to Chat tab")
                 self?.simulateKeystroke(keyCode: 0x12, flags: [.maskCommand])  // Cmd+1
@@ -53,7 +56,7 @@ final class ClaudeIntegration {
                         self?.simulateKeystroke(keyCode: 0x09, flags: [.maskCommand])  // Cmd+V
 
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            NSPasteboard.general.clearContents()
+                            restoreClipboard(savedClipboard)
                             _ = DatabaseManager.shared.markEntryAsSent(id: entry.id)
                             NotificationCenter.default.post(name: .entriesDidChange, object: nil)
                             NSLog("[ThoughtQueue] Entry %lld sent to Claude successfully", entry.id)
@@ -65,7 +68,6 @@ final class ClaudeIntegration {
     }
 
     private func simulateKeystroke(keyCode: UInt16, flags: CGEventFlags) {
-        // Use a separate event source so our own event tap doesn't intercept these
         let source = CGEventSource(stateID: .combinedSessionState)
 
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),

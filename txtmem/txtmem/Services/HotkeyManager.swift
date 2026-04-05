@@ -9,7 +9,10 @@ final class HotkeyManager {
     private let onDetailedCapture: () -> Void
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var retainedSelf: Unmanaged<HotkeyManager>?
     private var permissionTimer: Timer?
+    private var permissionPollCount = 0
+    private static let maxPermissionPolls = 60 // 2 minutes at 2s intervals
 
     init(onQuickCapture: @escaping () -> Void, onDetailedCapture: @escaping () -> Void) {
         self.onQuickCapture = onQuickCapture
@@ -17,8 +20,6 @@ final class HotkeyManager {
     }
 
     func register() {
-        // Only keyDown in the mask — tapDisabledByTimeout/tapDisabledByUserInput
-        // are delivered automatically regardless of mask
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
 
         let callback: CGEventTapCallBack = { proxy, type, event, refcon in
@@ -27,7 +28,9 @@ final class HotkeyManager {
             return manager.handleEvent(proxy: proxy, type: type, event: event)
         }
 
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        // Use passRetained so the event tap callback always has a valid reference
+        let retained = Unmanaged.passRetained(self)
+        let refcon = retained.toOpaque()
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -36,12 +39,15 @@ final class HotkeyManager {
             callback: callback,
             userInfo: refcon
         ) else {
+            // Balance the retain since we won't store the tap
+            retained.release()
             log.error("Failed to create event tap — Accessibility permission not yet granted")
             NSLog("[ThoughtQueue] Event tap failed — waiting for accessibility permission...")
             startPollingForPermission()
             return
         }
 
+        retainedSelf = retained
         eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
@@ -52,12 +58,38 @@ final class HotkeyManager {
 
     private func startPollingForPermission() {
         guard permissionTimer == nil else { return }
+        permissionPollCount = 0
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+            guard let self = self else { timer.invalidate(); return }
+            self.permissionPollCount += 1
+
             if AXIsProcessTrusted() {
                 NSLog("[ThoughtQueue] Accessibility permission granted, registering hotkeys...")
                 timer.invalidate()
-                self?.permissionTimer = nil
-                self?.register()
+                self.permissionTimer = nil
+                self.register()
+            } else if self.permissionPollCount >= Self.maxPermissionPolls {
+                NSLog("[ThoughtQueue] Accessibility permission not granted after %d attempts, stopping poll", Self.maxPermissionPolls)
+                timer.invalidate()
+                self.permissionTimer = nil
+                DispatchQueue.main.async {
+                    self.showPermissionAlert()
+                }
+            }
+        }
+    }
+
+    private func showPermissionAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Accessibility Permission Required"
+        alert.informativeText = "ThoughtQueue needs Accessibility permission to capture global hotkeys. Please grant it in System Settings > Privacy & Security > Accessibility, then relaunch the app."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Dismiss")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
             }
         }
     }
@@ -110,6 +142,8 @@ final class HotkeyManager {
         }
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
+            retainedSelf?.release()
+            retainedSelf = nil
             eventTap = nil
             log.info("Event tap unregistered")
         }

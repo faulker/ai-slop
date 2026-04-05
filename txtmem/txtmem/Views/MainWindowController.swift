@@ -77,6 +77,7 @@ final class CategorySidebarViewController: NSViewController {
     private let tableView = NSTableView()
     private var categories: [Category] = []
     private var selectedCategoryId: Int64? = nil
+    private var reloadWorkItem: DispatchWorkItem?
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 550))
@@ -100,7 +101,6 @@ final class CategorySidebarViewController: NSViewController {
 
         tableView.registerForDraggedTypes([entryDragType])
 
-        // Right-click menu
         let contextMenu = NSMenu()
         contextMenu.delegate = self
         tableView.menu = contextMenu
@@ -133,7 +133,14 @@ final class CategorySidebarViewController: NSViewController {
     }
 
     @objc private func onEntriesChanged() {
-        reload()
+        let scheduleReload = { [weak self] in
+            self?.reloadWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in self?.reload() }
+            self?.reloadWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
+        }
+        if Thread.isMainThread { scheduleReload() }
+        else { DispatchQueue.main.async { scheduleReload() } }
     }
 
     func reload() {
@@ -249,7 +256,6 @@ extension CategorySidebarViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let clickedRow = tableView.clickedRow
-        // Only user categories (row 2+) get context menu
         let catIndex = clickedRow - 2
         guard catIndex >= 0, catIndex < categories.count else { return }
         let cat = categories[catIndex]
@@ -268,7 +274,7 @@ extension CategorySidebarViewController: NSMenuDelegate {
 
 extension CategorySidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        return categories.count + 2  // All + Uncategorized + user categories
+        return categories.count + 2
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -294,7 +300,7 @@ extension CategorySidebarViewController: NSTableViewDataSource, NSTableViewDeleg
         countLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         if row == 0 {
-            let count = DatabaseManager.shared.fetchEntries().count
+            let count = DatabaseManager.shared.fetchTotalEntriesCount()
             nameLabel.stringValue = "All"
             countLabel.stringValue = "\(count)"
         } else if row == 1 {
@@ -317,11 +323,9 @@ extension CategorySidebarViewController: NSTableViewDataSource, NSTableViewDeleg
         let row = tableView.selectedRow
         guard row >= 0 else { return }
         if row == 0 {
-            // "All"
             selectedCategoryId = Self.allSentinel
             onCategorySelected?(Self.allSentinel)
         } else if row == 1 {
-            // "Uncategorized"
             selectedCategoryId = nil
             onCategorySelected?(nil)
         } else {
@@ -337,7 +341,6 @@ extension CategorySidebarViewController: NSTableViewDataSource, NSTableViewDeleg
     // MARK: - Drag-and-drop (accept entries onto categories)
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
-        // Allow drop on Uncategorized (row 1) and user categories (row 2+), not on "All" (row 0)
         if dropOperation == .on && row >= 1 {
             return .move
         }
@@ -386,7 +389,6 @@ final class EntryCardView: NSView {
     }
 
     private func setupUI() {
-        // Use NSTextView in a scroll view for proper text wrapping + scrolling
         let textView = NSTextView()
         textView.string = entry.text
         textView.font = .systemFont(ofSize: 13)
@@ -409,7 +411,6 @@ final class EntryCardView: NSView {
 
         addSubview(textScroll)
 
-        // Calculate ideal height for this text
         let maxTextHeight: CGFloat = 100
         let minTextHeight: CGFloat = 30
 
@@ -421,7 +422,6 @@ final class EntryCardView: NSView {
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
         addSubview(bottomBar)
 
-        // Sent toggle (left side)
         let sentBtn = EntryButton(title: "", target: self, action: #selector(toggleSent))
         sentBtn.entryId = entry.id
         sentBtn.image = NSImage(systemSymbolName: entry.isSent ? "checkmark.circle.fill" : "circle", accessibilityDescription: entry.isSent ? "Mark as unread" : "Mark as read")
@@ -432,22 +432,19 @@ final class EntryCardView: NSView {
         sentBtn.contentTintColor = entry.isSent ? .systemGreen : .secondaryLabelColor
         bottomBar.addArrangedSubview(sentBtn)
 
-        // Spacer
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         bottomBar.addArrangedSubview(spacer)
 
-        // Action buttons (right side)
         let openBtn = makeActionButton(title: "Open", symbolName: "arrow.up.forward.app", action: #selector(openInClaude))
         let moveBtn = makeActionButton(title: "Move", symbolName: "folder", action: #selector(showMoveMenu(_:)))
-        let deleteBtn = makeActionButton(title: "Delete", symbolName: "trash", action: #selector(deleteEntry))
+        let deleteBtn = makeActionButton(title: "Delete", symbolName: "trash", action: #selector(confirmDelete))
         deleteBtn.contentTintColor = .systemRed
 
         bottomBar.addArrangedSubview(openBtn)
         bottomBar.addArrangedSubview(moveBtn)
         bottomBar.addArrangedSubview(deleteBtn)
 
-        // Compute natural text height to decide scroll view height
         textHeightConstraint = textScroll.heightAnchor.constraint(equalToConstant: maxTextHeight)
         textHeightConstraint?.isActive = true
 
@@ -482,14 +479,14 @@ final class EntryCardView: NSView {
 
     private func updateTextHeight() {
         guard let textView = textView, let textScrollView = textScrollView else { return }
-        let containerWidth = textScrollView.frame.width - 8 // account for textContainerInset
+        let containerWidth = textScrollView.frame.width - 8
         guard containerWidth > 0 else { return }
 
         textView.textContainer?.containerSize = NSSize(width: containerWidth, height: .greatestFiniteMagnitude)
         textView.layoutManager?.ensureLayout(for: textView.textContainer!)
 
         let naturalHeight = textView.layoutManager?.usedRect(for: textView.textContainer!).height ?? 50
-        let idealHeight = naturalHeight + 12 // padding
+        let idealHeight = naturalHeight + 12
         let clampedHeight = min(max(idealHeight, minTextHeight), maxTextHeight)
         textHeightConstraint?.constant = clampedHeight
     }
@@ -541,9 +538,19 @@ final class EntryCardView: NSView {
         NotificationCenter.default.post(name: .entriesDidChange, object: nil)
     }
 
-    @objc private func deleteEntry() {
-        _ = DatabaseManager.shared.deleteEntry(id: entry.id)
-        NotificationCenter.default.post(name: .entriesDidChange, object: nil)
+    @objc private func confirmDelete() {
+        let alert = NSAlert()
+        alert.messageText = "Delete Entry?"
+        let preview = String(entry.text.prefix(60)) + (entry.text.count > 60 ? "\u{2026}" : "")
+        alert.informativeText = "This will permanently delete: \"\(preview)\""
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            _ = DatabaseManager.shared.deleteEntry(id: entry.id)
+            NotificationCenter.default.post(name: .entriesDidChange, object: nil)
+        }
     }
 
     // MARK: - Drag source
@@ -556,11 +563,12 @@ final class EntryCardView: NSView {
         let item = NSDraggingItem(pasteboardWriter: NSPasteboardItem())
         (item.item as? NSPasteboardItem)?.setString(String(entryId), forType: entryDragType)
 
-        let dragImage = NSImage(size: bounds.size)
-        dragImage.lockFocus()
-        NSColor.controlAccentColor.withAlphaComponent(0.15).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
-        dragImage.unlockFocus()
+        let dragImage = NSImage(size: bounds.size, flipped: false) { [weak self] rect in
+            guard let self = self else { return false }
+            NSColor.controlAccentColor.withAlphaComponent(0.15).setFill()
+            NSBezierPath(roundedRect: self.bounds, xRadius: 8, yRadius: 8).fill()
+            return true
+        }
         item.setDraggingFrame(bounds, contents: dragImage)
 
         beginDraggingSession(with: [item], event: event, source: self)
@@ -581,6 +589,7 @@ final class EntriesListViewController: NSViewController {
     private var entries: [Entry] = []
     private var currentCategoryId: Int64? = nil
     private var showAll = true
+    private var reloadWorkItem: DispatchWorkItem?
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 550))
@@ -597,19 +606,16 @@ final class EntriesListViewController: NSViewController {
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        // Use a flipped document view so content starts at top
         let docView = FlippedClipView()
         docView.translatesAutoresizingMaskIntoConstraints = false
         docView.addSubview(stackView)
         scrollView.documentView = docView
 
-        // Pin stack view inside document view with padding
         NSLayoutConstraint.activate([
             stackView.topAnchor.constraint(equalTo: docView.topAnchor, constant: 8),
             stackView.leadingAnchor.constraint(equalTo: docView.leadingAnchor, constant: 8),
             stackView.trailingAnchor.constraint(equalTo: docView.trailingAnchor, constant: -8),
             stackView.bottomAnchor.constraint(lessThanOrEqualTo: docView.bottomAnchor, constant: -8),
-            // Pin document view width to clip view so cards stretch full width
             docView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
         ])
 
@@ -639,7 +645,14 @@ final class EntriesListViewController: NSViewController {
     }
 
     @objc private func onEntriesChanged() {
-        reload()
+        let scheduleReload = { [weak self] in
+            self?.reloadWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in self?.reload() }
+            self?.reloadWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
+        }
+        if Thread.isMainThread { scheduleReload() }
+        else { DispatchQueue.main.async { scheduleReload() } }
     }
 
     func showAllEntries() {

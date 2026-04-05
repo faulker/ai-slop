@@ -1,5 +1,5 @@
 import XCTest
-@testable import txtmem
+@testable import ThoughtQueue
 
 final class DatabaseManagerTests: XCTestCase {
     override func setUp() {
@@ -79,6 +79,21 @@ final class DatabaseManagerTests: XCTestCase {
 
         let cleared = DatabaseManager.shared.clearCompletedEntries()
         XCTAssertEqual(cleared, 2)
+    }
+
+    func testFetchTotalEntriesCount() {
+        let beforeCount = DatabaseManager.shared.fetchTotalEntriesCount()
+        _ = DatabaseManager.shared.createEntry(text: "Count1_\(UUID().uuidString.prefix(6))")
+        _ = DatabaseManager.shared.createEntry(text: "Count2_\(UUID().uuidString.prefix(6))")
+        let afterCount = DatabaseManager.shared.fetchTotalEntriesCount()
+        XCTAssertEqual(afterCount - beforeCount, 2)
+    }
+
+    func testFetchEntriesCount() {
+        let cat = DatabaseManager.shared.createCategory(name: "CountCat_\(UUID().uuidString.prefix(6))")!
+        _ = DatabaseManager.shared.createEntry(text: "CatEntry_\(UUID().uuidString.prefix(6))", categoryId: cat.id)
+        let count = DatabaseManager.shared.fetchEntriesCount(categoryId: cat.id)
+        XCTAssertGreaterThanOrEqual(count, 1)
     }
 
     func testDeleteCategoryMoveToUncategorized() {

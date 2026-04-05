@@ -37,5 +37,6 @@ targets:
       - target: txtmem
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: true
         BUNDLE_LOADER: "$(TEST_HOST)"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ThoughtQueue.app/Contents/MacOS/ThoughtQueue"

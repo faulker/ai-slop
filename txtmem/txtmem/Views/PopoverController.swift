@@ -28,6 +28,7 @@ final class PopoverViewController: NSViewController {
     private var uncategorizedEntries: [Entry] = []
     private var expandedCategories: Set<Int64> = [-1]  // Uncategorized expanded by default
     private var entriesByCategory: [Int64: [Entry]] = [:]
+    private var reloadWorkItem: DispatchWorkItem?
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 400))
@@ -44,7 +45,6 @@ final class PopoverViewController: NSViewController {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
-        // Wrap stackView in a flipped container so content starts at top
         let flipView = FlippedView(frame: NSRect(x: 0, y: 0, width: 344, height: 0))
         flipView.autoresizingMask = .width
         flipView.addSubview(stackView)
@@ -69,7 +69,14 @@ final class PopoverViewController: NSViewController {
     }
 
     @objc private func onEntriesChanged() {
-        reload()
+        let scheduleReload = { [weak self] in
+            self?.reloadWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in self?.reload() }
+            self?.reloadWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: item)
+        }
+        if Thread.isMainThread { scheduleReload() }
+        else { DispatchQueue.main.async { scheduleReload() } }
     }
 
     func reload() {
@@ -87,18 +94,7 @@ final class PopoverViewController: NSViewController {
     private func rebuildUI() {
         stackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
-        if uncategorizedEntries.isEmpty && categories.isEmpty {
-            let emptyLabel = NSTextField(labelWithString: "No entries yet.\nUse Cmd+Shift+B to capture text.")
-            emptyLabel.font = .systemFont(ofSize: 12)
-            emptyLabel.textColor = .secondaryLabelColor
-            emptyLabel.alignment = .center
-            emptyLabel.maximumNumberOfLines = 2
-            stackView.addArrangedSubview(emptyLabel)
-            layoutDocumentView()
-            return
-        }
-
-        // Uncategorized section
+        // Uncategorized section — always present
         addSectionHeader(title: "Uncategorized", count: uncategorizedEntries.count, categoryId: nil)
         if expandedCategories.contains(-1) {
             for entry in uncategorizedEntries {
@@ -106,7 +102,7 @@ final class PopoverViewController: NSViewController {
             }
         }
 
-        // Other categories
+        // User categories
         for cat in categories {
             let entries = entriesByCategory[cat.id] ?? []
             addSectionHeader(title: cat.name, count: entries.count, categoryId: cat.id)
@@ -142,7 +138,6 @@ final class PopoverViewController: NSViewController {
         let effectiveId = categoryId ?? -1
         let isExpanded = expandedCategories.contains(effectiveId)
 
-        // Top separator line
         stackView.addArrangedSubview(makeSeparator())
 
         let header = CategoryHeaderView(
@@ -177,7 +172,7 @@ final class CategoryHeaderView: NSView {
         self.onTap = onTap
         super.init(frame: .zero)
 
-        let chevron = isExpanded ? "\u{25BE}" : "\u{25B8}"  // ▾ down / ▸ right
+        let chevron = isExpanded ? "\u{25BE}" : "\u{25B8}"  // down / right
         let label = NSTextField(labelWithString: "\(chevron)   \(title)  (\(count))")
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         label.textColor = .controlTextColor

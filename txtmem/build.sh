@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
 
-CONFIG="${1:-Debug}"
+INPUT="${1:-Debug}"
+CONFIG="$(tr '[:lower:]' '[:upper:]' <<< "${INPUT:0:1}")$(tr '[:upper:]' '[:lower:]' <<< "${INPUT:1}")"
 BUILD_DIR="build"
 
 echo "==> Generating Xcode project..."
