@@ -1,0 +1,41 @@
+name: txtmem
+options:
+  bundleIdPrefix: com.txtmem
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+targets:
+  txtmem:
+    type: application
+    platform: macOS
+    sources:
+      - txtmem
+    settings:
+      base:
+        INFOPLIST_FILE: txtmem/Info.plist
+        CODE_SIGN_ENTITLEMENTS: txtmem/txtmem.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.txtmem.app
+        PRODUCT_NAME: ThoughtQueue
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+        COMBINE_HIDPI_IMAGES: true
+    dependencies: []
+
+  txtmemTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - txtmemTests
+    dependencies:
+      - target: txtmem
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ThoughtQueue.app/Contents/MacOS/ThoughtQueue"
