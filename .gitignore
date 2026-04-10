@@ -3,10 +3,10 @@
 .agent
 .cargo
 target
-/spell-i/build
-/spell-i/build_output.log
-/spell-i/libspell_i_engine.a
+build
+build_output.log
 Generated
 .claude
 build
 libspell_i_engine.a
+dist
