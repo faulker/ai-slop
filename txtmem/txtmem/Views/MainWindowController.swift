@@ -436,11 +436,13 @@ final class EntryCardView: NSView {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         bottomBar.addArrangedSubview(spacer)
 
+        let copyBtn = makeActionButton(title: "Copy", symbolName: "doc.on.doc", action: #selector(copyToClipboard))
         let openBtn = makeActionButton(title: "Open", symbolName: "arrow.up.forward.app", action: #selector(openInClaude))
         let moveBtn = makeActionButton(title: "Move", symbolName: "folder", action: #selector(showMoveMenu(_:)))
         let deleteBtn = makeActionButton(title: "Delete", symbolName: "trash", action: #selector(confirmDelete))
         deleteBtn.contentTintColor = .systemRed
 
+        bottomBar.addArrangedSubview(copyBtn)
         bottomBar.addArrangedSubview(openBtn)
         bottomBar.addArrangedSubview(moveBtn)
         bottomBar.addArrangedSubview(deleteBtn)
@@ -507,6 +509,11 @@ final class EntryCardView: NSView {
     @objc private func toggleSent() {
         _ = DatabaseManager.shared.toggleEntrySent(id: entry.id, isSent: !entry.isSent)
         NotificationCenter.default.post(name: .entriesDidChange, object: nil)
+    }
+
+    @objc private func copyToClipboard() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(entry.text, forType: .string)
     }
 
     @objc private func openInClaude() {

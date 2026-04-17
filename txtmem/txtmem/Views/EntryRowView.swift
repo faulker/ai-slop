@@ -29,11 +29,12 @@ final class EntryRowView: NSView {
         textLabel.maximumNumberOfLines = compact ? 1 : 2
         textLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        let copyBtn = makeButton(title: "Copy", action: #selector(copyToClipboard))
         let openBtn = makeButton(title: "Open", action: #selector(openInClaude))
         let moveBtn = makeButton(title: "Move", action: #selector(showMoveMenu(_:)))
         let deleteBtn = makeButton(title: "Del", action: #selector(confirmDelete))
 
-        let buttonStack = NSStackView(views: [openBtn, moveBtn, deleteBtn])
+        let buttonStack = NSStackView(views: [copyBtn, openBtn, moveBtn, deleteBtn])
         buttonStack.spacing = 4
 
         let mainStack = NSStackView(views: [sentIndicator, textLabel, buttonStack])
@@ -63,6 +64,11 @@ final class EntryRowView: NSView {
     @objc private func toggleSent() {
         _ = DatabaseManager.shared.toggleEntrySent(id: entry.id, isSent: !entry.isSent)
         NotificationCenter.default.post(name: .entriesDidChange, object: nil)
+    }
+
+    @objc private func copyToClipboard() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(entry.text, forType: .string)
     }
 
     @objc private func openInClaude() {
