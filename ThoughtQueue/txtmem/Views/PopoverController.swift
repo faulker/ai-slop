@@ -1,13 +1,16 @@
 import Cocoa
 
-final class PopoverController: NSObject {
+final class PopoverController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private let viewController = PopoverViewController()
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
 
     override init() {
         super.init()
         popover.contentViewController = viewController
         popover.behavior = .transient
+        popover.delegate = self
         popover.contentSize = NSSize(width: 360, height: 400)
     }
 
@@ -18,7 +21,36 @@ final class PopoverController: NSObject {
             viewController.reload()
             popover.show(relativeTo: rect, of: view, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            startEventMonitors()
         }
+    }
+
+    private func startEventMonitors() {
+        if globalMonitor == nil {
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown]
+            ) { [weak self] _ in
+                self?.popover.close()
+            }
+        }
+        if localMonitor == nil {
+            localMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown]
+            ) { [weak self] event in
+                guard let self,
+                      let popoverWindow = self.popover.contentViewController?.view.window
+                else { return event }
+                if event.window !== popoverWindow {
+                    self.popover.close()
+                }
+                return event
+            }
+        }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        if let g = globalMonitor { NSEvent.removeMonitor(g); globalMonitor = nil }
+        if let l = localMonitor { NSEvent.removeMonitor(l); localMonitor = nil }
     }
 }
 

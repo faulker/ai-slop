@@ -29,8 +29,8 @@ final class EntryRowView: NSView {
         textLabel.maximumNumberOfLines = compact ? 1 : 2
         textLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let copyBtn = makeButton(title: "Copy", action: #selector(copyToClipboard))
-        let openBtn = makeButton(title: "Open", action: #selector(openInClaude))
+        let copyBtn = makeButton(title: "Copy", action: #selector(copyToClipboard(_:)))
+        let openBtn = makeButton(title: "Open", action: #selector(openInClaude(_:)))
         let moveBtn = makeButton(title: "Move", action: #selector(showMoveMenu(_:)))
         let deleteBtn = makeButton(title: "Del", action: #selector(confirmDelete))
 
@@ -66,13 +66,29 @@ final class EntryRowView: NSView {
         NotificationCenter.default.post(name: .entriesDidChange, object: nil)
     }
 
-    @objc private func copyToClipboard() {
+    @objc private func copyToClipboard(_ sender: NSButton) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(entry.text, forType: .string)
+        flashButton(sender, feedback: "Copied")
     }
 
-    @objc private func openInClaude() {
+    @objc private func openInClaude(_ sender: NSButton) {
         ClaudeIntegration.shared.sendToClaude(entry: entry)
+        flashButton(sender, feedback: "Sent")
+    }
+
+    private func flashButton(_ button: NSButton, feedback: String) {
+        let originalTitle = button.title
+        let originalTint = button.contentTintColor
+        button.title = feedback
+        button.contentTintColor = .systemGreen
+        button.isEnabled = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak button] in
+            guard let button else { return }
+            button.title = originalTitle
+            button.contentTintColor = originalTint
+            button.isEnabled = true
+        }
     }
 
     @objc private func showMoveMenu(_ sender: NSButton) {
