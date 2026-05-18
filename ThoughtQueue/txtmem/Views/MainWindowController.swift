@@ -436,12 +436,14 @@ final class EntryCardView: NSView {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         bottomBar.addArrangedSubview(spacer)
 
+        let editBtn = makeActionButton(title: "Edit", symbolName: "pencil", action: #selector(editEntry(_:)))
         let copyBtn = makeActionButton(title: "Copy", symbolName: "doc.on.doc", action: #selector(copyToClipboard(_:)))
         let openBtn = makeActionButton(title: "Open", symbolName: "arrow.up.forward.app", action: #selector(openInClaude(_:)))
         let moveBtn = makeActionButton(title: "Move", symbolName: "folder", action: #selector(showMoveMenu(_:)))
         let deleteBtn = makeActionButton(title: "Delete", symbolName: "trash", action: #selector(confirmDelete))
         deleteBtn.contentTintColor = .systemRed
 
+        bottomBar.addArrangedSubview(editBtn)
         bottomBar.addArrangedSubview(copyBtn)
         bottomBar.addArrangedSubview(openBtn)
         bottomBar.addArrangedSubview(moveBtn)
@@ -509,6 +511,10 @@ final class EntryCardView: NSView {
     @objc private func toggleSent() {
         _ = DatabaseManager.shared.toggleEntrySent(id: entry.id, isSent: !entry.isSent)
         NotificationCenter.default.post(name: .entriesDidChange, object: nil)
+    }
+
+    @objc private func editEntry(_ sender: NSButton) {
+        DetailedCapturePanel.shared.showEditing(entry: entry)
     }
 
     @objc private func copyToClipboard(_ sender: NSButton) {
@@ -644,6 +650,11 @@ final class EntriesListViewController: NSViewController {
 
         container.addSubview(scrollView)
 
+        let addNoteButton = NSButton(title: "+ Add Note", target: self, action: #selector(addNote))
+        addNoteButton.bezelStyle = .rounded
+        addNoteButton.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(addNoteButton)
+
         let clearButton = NSButton(title: "Clear Completed", target: self, action: #selector(clearCompleted))
         clearButton.bezelStyle = .rounded
         clearButton.translatesAutoresizingMaskIntoConstraints = false
@@ -654,6 +665,8 @@ final class EntriesListViewController: NSViewController {
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: clearButton.topAnchor, constant: -4),
+            addNoteButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            addNoteButton.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
             clearButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
             clearButton.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
         ])
@@ -746,6 +759,10 @@ final class EntriesListViewController: NSViewController {
             ToastWindow.show(message: "Cleared \(count) completed")
             NotificationCenter.default.post(name: .entriesDidChange, object: nil)
         }
+    }
+
+    @objc private func addNote() {
+        DetailedCapturePanel.shared.show(with: "")
     }
 }
 

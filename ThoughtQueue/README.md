@@ -11,7 +11,9 @@ You're reading something interesting, debugging code, or researching a topic and
 - **Global hotkeys** -- capture selected text from any app without switching windows
 - **Quick capture** -- one shortcut saves instantly, no interruption
 - **Detailed capture** -- a second shortcut opens an overlay to edit the text and pick a category before saving
-- **Categories** -- organize entries however you want; create, rename, move between, or delete categories
+- **Add note** -- write a note manually with a hotkey or a `+ Add Note` button in the popover and main window
+- **Edit entries** -- click `Edit` on any card in the main window to revise the text or change its category
+- **Categories** -- organize entries however you want; create, rename, move between, or delete categories. New categories can also be created inline from the capture/edit dialog's dropdown
 - **Claude Desktop integration** -- opens a new Claude chat and pastes the text automatically
 - **Completion tracking** -- entries get a checkmark after being sent to Claude; bulk-clear completed entries
 - **Local storage** -- everything stays on your machine in a SQLite database
@@ -56,8 +58,9 @@ On first launch, ThoughtQueue appears in your menu bar with a `"` icon. macOS wi
 |---|---|---|
 | Quick capture | `Cmd+Shift+B` | Saves selected text instantly to "Uncategorized" |
 | Detailed capture | `Cmd+Shift+Option+B` | Opens an overlay to edit text and choose a category |
+| Add note | `Cmd+Shift+N` | Opens a blank dialog to type a new note and choose a category |
 
-Select text in any app, hit the shortcut, and keep working. A toast confirms the capture.
+Select text in any app, hit the shortcut, and keep working. A toast confirms the capture. Add Note can also be triggered from the `+ Add Note` button in the menu-bar popover or the main window.
 
 ### Manage your queue
 

@@ -7,6 +7,7 @@ struct KeyBinding {
 
     static let defaultQuickCapture = KeyBinding(keyCode: 11, modifiers: [.maskCommand, .maskShift])  // Cmd+Shift+B
     static let defaultDetailedCapture = KeyBinding(keyCode: 11, modifiers: [.maskCommand, .maskShift, .maskAlternate])  // Cmd+Shift+Option+B
+    static let defaultAddNote = KeyBinding(keyCode: 45, modifiers: [.maskCommand, .maskShift])  // Cmd+Shift+N
 }
 
 final class PreferencesManager {
@@ -19,6 +20,8 @@ final class PreferencesManager {
         static let quickCaptureModifiers = "quickCaptureModifiers"
         static let detailedCaptureKeyCode = "detailedCaptureKeyCode"
         static let detailedCaptureModifiers = "detailedCaptureModifiers"
+        static let addNoteKeyCode = "addNoteKeyCode"
+        static let addNoteModifiers = "addNoteModifiers"
     }
 
     var quickCaptureKey: KeyBinding {
@@ -29,6 +32,11 @@ final class PreferencesManager {
     var detailedCaptureKey: KeyBinding {
         get { loadBinding(keyCodeKey: Keys.detailedCaptureKeyCode, modifiersKey: Keys.detailedCaptureModifiers, default: .defaultDetailedCapture) }
         set { saveBinding(newValue, keyCodeKey: Keys.detailedCaptureKeyCode, modifiersKey: Keys.detailedCaptureModifiers) }
+    }
+
+    var addNoteKey: KeyBinding {
+        get { loadBinding(keyCodeKey: Keys.addNoteKeyCode, modifiersKey: Keys.addNoteModifiers, default: .defaultAddNote) }
+        set { saveBinding(newValue, keyCodeKey: Keys.addNoteKeyCode, modifiersKey: Keys.addNoteModifiers) }
     }
 
     private func loadBinding(keyCodeKey: String, modifiersKey: String, default fallback: KeyBinding) -> KeyBinding {

@@ -12,6 +12,9 @@ final class PopoverController: NSObject, NSPopoverDelegate {
         popover.behavior = .transient
         popover.delegate = self
         popover.contentSize = NSSize(width: 360, height: 400)
+        viewController.onRequestClose = { [weak self] in
+            self?.popover.close()
+        }
     }
 
     func toggle(relativeTo rect: NSRect, of view: NSView) {
@@ -55,6 +58,8 @@ final class PopoverController: NSObject, NSPopoverDelegate {
 }
 
 final class PopoverViewController: NSViewController {
+    var onRequestClose: (() -> Void)?
+
     private var stackView: NSStackView!
     private var categories: [Category] = []
     private var uncategorizedEntries: [Entry] = []
@@ -65,20 +70,32 @@ final class PopoverViewController: NSViewController {
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 400))
 
+        let addNoteButton = NSButton(title: "+ Add Note", target: self, action: #selector(addNote))
+        addNoteButton.bezelStyle = .inline
+        addNoteButton.font = .systemFont(ofSize: 13)
+        addNoteButton.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(addNoteButton)
+
+        let openButton = NSButton(title: "Open", target: self, action: #selector(openMainWindow))
+        openButton.bezelStyle = .inline
+        openButton.font = .systemFont(ofSize: 13)
+        openButton.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(openButton)
+
         stackView = NSStackView()
         stackView.orientation = .vertical
         stackView.alignment = .width
         stackView.spacing = 0
 
-        let scrollView = NSScrollView(frame: container.bounds)
-        scrollView.autoresizingMask = [.width, .height]
+        let scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
-        let flipView = FlippedView(frame: NSRect(x: 0, y: 0, width: 344, height: 0))
-        flipView.autoresizingMask = .width
+        let flipView = FlippedView()
+        flipView.translatesAutoresizingMaskIntoConstraints = false
         flipView.addSubview(stackView)
         stackView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -91,9 +108,37 @@ final class PopoverViewController: NSViewController {
         scrollView.documentView = flipView
         container.addSubview(scrollView)
 
+        flipView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor).isActive = true
+
+        NSLayoutConstraint.activate([
+            addNoteButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            addNoteButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            addNoteButton.heightAnchor.constraint(equalToConstant: 28),
+
+            openButton.centerYAnchor.constraint(equalTo: addNoteButton.centerYAnchor),
+            openButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            openButton.heightAnchor.constraint(equalToConstant: 28),
+
+            scrollView.topAnchor.constraint(equalTo: addNoteButton.bottomAnchor, constant: 4),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+
         self.view = container
 
         NotificationCenter.default.addObserver(self, selector: #selector(onEntriesChanged), name: .entriesDidChange, object: nil)
+    }
+
+    @objc private func addNote() {
+        onRequestClose?()
+        DetailedCapturePanel.shared.show(with: "")
+    }
+
+    @objc private func openMainWindow() {
+        onRequestClose?()
+        MainWindowController.shared.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     deinit {
@@ -147,16 +192,6 @@ final class PopoverViewController: NSViewController {
 
         // Bottom separator
         stackView.addArrangedSubview(makeSeparator())
-
-        layoutDocumentView()
-    }
-
-    private func layoutDocumentView() {
-        stackView.layoutSubtreeIfNeeded()
-        let contentHeight = stackView.fittingSize.height + 16
-        if let docView = stackView.superview {
-            docView.frame.size.height = max(contentHeight, view.bounds.height)
-        }
     }
 
     private func makeSeparator() -> NSBox {

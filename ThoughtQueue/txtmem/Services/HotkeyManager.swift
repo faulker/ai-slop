@@ -7,6 +7,7 @@ private let log = Logger(subsystem: "com.txtmem.app", category: "HotkeyManager")
 final class HotkeyManager {
     private let onQuickCapture: () -> Void
     private let onDetailedCapture: () -> Void
+    private let onAddNote: () -> Void
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var retainedSelf: Unmanaged<HotkeyManager>?
@@ -14,9 +15,10 @@ final class HotkeyManager {
     private var permissionPollCount = 0
     private static let maxPermissionPolls = 60 // 2 minutes at 2s intervals
 
-    init(onQuickCapture: @escaping () -> Void, onDetailedCapture: @escaping () -> Void) {
+    init(onQuickCapture: @escaping () -> Void, onDetailedCapture: @escaping () -> Void, onAddNote: @escaping () -> Void) {
         self.onQuickCapture = onQuickCapture
         self.onDetailedCapture = onDetailedCapture
+        self.onAddNote = onAddNote
     }
 
     func register() {
@@ -110,6 +112,7 @@ final class HotkeyManager {
 
         let quickKey = PreferencesManager.shared.quickCaptureKey
         let detailedKey = PreferencesManager.shared.detailedCaptureKey
+        let addNoteKey = PreferencesManager.shared.addNoteKey
 
         if keyCode == quickKey.keyCode && flags.contains(quickKey.modifiers) && !hasExtraModifiers(flags, expected: quickKey.modifiers) {
             log.info("Quick capture hotkey detected")
@@ -120,6 +123,12 @@ final class HotkeyManager {
         if keyCode == detailedKey.keyCode && flags.contains(detailedKey.modifiers) && !hasExtraModifiers(flags, expected: detailedKey.modifiers) {
             log.info("Detailed capture hotkey detected")
             DispatchQueue.main.async { [weak self] in self?.onDetailedCapture() }
+            return nil
+        }
+
+        if keyCode == addNoteKey.keyCode && flags.contains(addNoteKey.modifiers) && !hasExtraModifiers(flags, expected: addNoteKey.modifiers) {
+            log.info("Add note hotkey detected")
+            DispatchQueue.main.async { [weak self] in self?.onAddNote() }
             return nil
         }
 

@@ -60,6 +60,17 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertFalse(entries.first(where: { $0.id == entry.id })?.isSent ?? true)
     }
 
+    func testUpdateEntry() {
+        let entry = DatabaseManager.shared.createEntry(text: "Original \(UUID().uuidString.prefix(6))")!
+        let updatedText = "Edited \(UUID().uuidString.prefix(6))"
+
+        let updated = DatabaseManager.shared.updateEntry(id: entry.id, text: updatedText)
+        XCTAssertTrue(updated)
+
+        let fetched = DatabaseManager.shared.fetchEntries().first(where: { $0.id == entry.id })
+        XCTAssertEqual(fetched?.text, updatedText)
+    }
+
     func testDeleteEntry() {
         let entry = DatabaseManager.shared.createEntry(text: "Delete me \(UUID().uuidString.prefix(6))")!
         let deleted = DatabaseManager.shared.deleteEntry(id: entry.id)

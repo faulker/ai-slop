@@ -7,11 +7,12 @@ final class PreferencesWindowController: NSWindowController {
 
     private let quickCaptureRecorder = ShortcutRecorderView()
     private let detailedCaptureRecorder = ShortcutRecorderView()
+    private let addNoteRecorder = ShortcutRecorderView()
     private let startAtLoginCheckbox = NSButton(checkboxWithTitle: "Start ThoughtQueue at login", target: nil, action: nil)
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 450, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 450, height: 390),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -47,17 +48,26 @@ final class PreferencesWindowController: NSWindowController {
         detailedLabel.font = .systemFont(ofSize: 13)
         detailedLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        let addNoteLabel = NSTextField(labelWithString: "Add Note:")
+        addNoteLabel.font = .systemFont(ofSize: 13)
+        addNoteLabel.translatesAutoresizingMaskIntoConstraints = false
+
         quickCaptureRecorder.translatesAutoresizingMaskIntoConstraints = false
         detailedCaptureRecorder.translatesAutoresizingMaskIntoConstraints = false
+        addNoteRecorder.translatesAutoresizingMaskIntoConstraints = false
 
         quickCaptureRecorder.keyBinding = PreferencesManager.shared.quickCaptureKey
         detailedCaptureRecorder.keyBinding = PreferencesManager.shared.detailedCaptureKey
+        addNoteRecorder.keyBinding = PreferencesManager.shared.addNoteKey
 
         quickCaptureRecorder.onChanged = { binding in
             PreferencesManager.shared.quickCaptureKey = binding
         }
         detailedCaptureRecorder.onChanged = { binding in
             PreferencesManager.shared.detailedCaptureKey = binding
+        }
+        addNoteRecorder.onChanged = { binding in
+            PreferencesManager.shared.addNoteKey = binding
         }
 
         let noteLabel = NSTextField(wrappingLabelWithString: "Click a shortcut field and press your desired key combination. Changes take effect after restarting the app.")
@@ -96,6 +106,8 @@ final class PreferencesWindowController: NSWindowController {
         contentView.addSubview(quickCaptureRecorder)
         contentView.addSubview(detailedLabel)
         contentView.addSubview(detailedCaptureRecorder)
+        contentView.addSubview(addNoteLabel)
+        contentView.addSubview(addNoteRecorder)
         contentView.addSubview(noteLabel)
         contentView.addSubview(divider2)
         contentView.addSubview(backupLabel)
@@ -129,9 +141,18 @@ final class PreferencesWindowController: NSWindowController {
             detailedCaptureRecorder.widthAnchor.constraint(equalToConstant: 200),
             detailedCaptureRecorder.heightAnchor.constraint(equalToConstant: 24),
 
+            addNoteLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            addNoteLabel.topAnchor.constraint(equalTo: detailedLabel.bottomAnchor, constant: 20),
+            addNoteLabel.widthAnchor.constraint(equalToConstant: 140),
+
+            addNoteRecorder.leadingAnchor.constraint(equalTo: addNoteLabel.trailingAnchor, constant: 8),
+            addNoteRecorder.centerYAnchor.constraint(equalTo: addNoteLabel.centerYAnchor),
+            addNoteRecorder.widthAnchor.constraint(equalToConstant: 200),
+            addNoteRecorder.heightAnchor.constraint(equalToConstant: 24),
+
             noteLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             noteLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            noteLabel.topAnchor.constraint(equalTo: detailedLabel.bottomAnchor, constant: 16),
+            noteLabel.topAnchor.constraint(equalTo: addNoteLabel.bottomAnchor, constant: 16),
 
             divider2.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             divider2.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),

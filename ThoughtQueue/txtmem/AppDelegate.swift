@@ -37,7 +37,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             AXIsProcessTrustedWithOptions(options)
         }
 
-        let hk = HotkeyManager(onQuickCapture: handleQuickCapture, onDetailedCapture: handleDetailedCapture)
+        let hk = HotkeyManager(
+            onQuickCapture: handleQuickCapture,
+            onDetailedCapture: handleDetailedCapture,
+            onAddNote: handleAddNote
+        )
         hk.register()
         hotkeyManager = hk
         NSLog("[ThoughtQueue] Hotkey manager registered, app ready")
@@ -156,5 +160,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleDetailedCapture() {
         CaptureService.shared.showDetailedCapture()
+    }
+
+    private func handleAddNote() {
+        DetailedCapturePanel.shared.show(with: "")
     }
 }
