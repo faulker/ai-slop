@@ -1,5 +1,30 @@
 # osx-anytone
 
+> # ⚠️ USE AT YOUR OWN RISK ⚠️
+>
+> ## THIS SOFTWARE WRITES DIRECTLY TO YOUR RADIO. IT CAN CORRUPT ITS MEMORY AND LEAVE IT UNUSABLE.
+>
+> This is an **unofficial, reverse-engineered, AI-generated** tool. It is **not**
+> affiliated with, endorsed by, or supported by AnyTone. It has been tested on a
+> very limited set of hardware and firmware versions, and the protocol it speaks
+> was inferred, not documented.
+>
+> **Before you connect a radio, understand that:**
+>
+> - **You can brick your radio.** A bad write, a cable that pops loose mid-restore,
+>   or a firmware version this tool has never seen can leave the radio in a state
+>   you cannot recover from without vendor tooling, if at all.
+> - **You can lose your codeplug.** Restores overwrite everything. Take a full
+>   backup with the vendor CPS first, and verify you can read it back.
+> - **There is no warranty of any kind.** No guarantee it works, no guarantee it
+>   won't destroy your data or your hardware. All risk is yours.
+> - **You are responsible for what you transmit.** Nothing here validates that the
+>   frequencies, power levels, or modes you program are legal for your license or
+>   your region. Check before you key up.
+>
+> If any of that is unacceptable to you, **stop here and use the official Windows
+> CPS instead.**
+
 A macOS tool to back up and restore codeplugs for the **AnyTone AT-D878UVII Plus**
 ham radio over the USB programming cable, without the Windows-only vendor CPS.
 
