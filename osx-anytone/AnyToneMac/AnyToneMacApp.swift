@@ -26,6 +26,9 @@ struct AnyToneMacApp: App {
                 Button("Save") { delegate.codeplug.save() }
                     .keyboardShortcut("s")
                     .disabled(!delegate.codeplug.isDirty)
+                Button("Save As…") { delegate.codeplug.saveAs() }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+                    .disabled(delegate.codeplug.fileURL == nil)
                 Button("Revert to Saved") { delegate.codeplug.discardChanges() }
                     .disabled(!delegate.codeplug.isDirty)
             }

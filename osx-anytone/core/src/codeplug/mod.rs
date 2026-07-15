@@ -85,6 +85,33 @@ pub const ZONE_BITMAP: u32 = 0x024c_1300;
 pub const NUM_ZONES: usize = 250;
 /// Maximum number of channel members per zone.
 pub const CHANNELS_PER_ZONE: usize = 250;
+/// Radio address believed to hold the zone channel list (qdmr
+/// `Offset::zoneChannelList`, a **D878UV** offset).
+///
+/// **Read-only.** This falls inside the radio-settings block
+/// (0x02500000 – 0x025014FF), which also holds the power-on password flag and
+/// the menu language. Writing it on a D878UVII left a radio demanding an unknown
+/// power-on password with its menus switched to Chinese, so the offset is wrong
+/// for this model, mis-sized, or the surrounding bytes matter in a way this
+/// model does not capture. The region stays in `REGIONS` so backups still
+/// capture the bytes and existing `.bin` files still parse, but it must not be
+/// added back to `Radio::write_codeplug` until the layout is confirmed against a
+/// real D878UVII backup.
+pub const ZONE_CHANNEL_LIST: u32 = 0x0250_0100;
+/// Byte size of the zone channel list (qdmr `ZoneChannelListElement::size`).
+pub const ZONE_CHANNEL_LIST_SIZE: usize = 0x400;
+/// Offset of the VFO A selections within the zone channel list
+/// (qdmr `ZoneChannelListElement::Offset::channelsA`).
+#[cfg(test)]
+pub(crate) const ZONE_CHANNELS_A: usize = 0x000;
+/// Offset of the VFO B selections within the zone channel list
+/// (qdmr `ZoneChannelListElement::Offset::channelsB`).
+#[cfg(test)]
+pub(crate) const ZONE_CHANNELS_B: usize = 0x200;
+/// Sentinel for an unset zone channel selection (qdmr `hasChannelA` tests
+/// against `0xffff`).
+#[cfg(test)]
+const ZONE_CHANNEL_UNSET: u16 = 0xffff;
 
 /// Radio address of the first contact bank.
 pub const CONTACT_BANKS: u32 = 0x0268_0000;
@@ -968,6 +995,18 @@ mod tests {
         raw[ch_off..ch_off + 2].copy_from_slice(&0u16.to_le_bytes());
         raw[ch_off + 2..ch_off + 4].copy_from_slice(&1u16.to_le_bytes());
 
+        // --- Zone channel list: unset everywhere (qdmr
+        // `ZoneChannelListElement::clear`), then park zone 0 on channel 0 for
+        // both VFOs, as a real radio would. A zeroed list would instead read as
+        // "every zone is parked on channel 0", which no radio would ever hold.
+        let zcl = global_offset(ZONE_CHANNEL_LIST).unwrap();
+        for slot in raw[zcl..zcl + ZONE_CHANNEL_LIST_SIZE].iter_mut() {
+            *slot = 0xff;
+        }
+        for vfo in [ZONE_CHANNELS_A, ZONE_CHANNELS_B] {
+            raw[zcl + vfo..zcl + vfo + 2].copy_from_slice(&0u16.to_le_bytes());
+        }
+
         raw
     }
 
@@ -1247,6 +1286,30 @@ mod tests {
         assert!(back.channels().any(|c| c.index == 5 && c.name == "SIMPLEX 2M"));
         assert!(!back.channels().any(|c| c.index == 1));
         assert_eq!(back.zones().next().unwrap().channels, vec![0, 5]);
+    }
+
+    #[test]
+    fn serialize_never_touches_the_radio_settings_block() {
+        // The zone channel list sits inside the radio-settings block, alongside
+        // the power-on password flag and the menu language. Editing a codeplug
+        // must pass those bytes through untouched: a serialize that rewrote them
+        // once fed a write that locked a radio behind an unknown power-on
+        // password with its menus in Chinese. These are the edits that did it.
+        let before = synthetic_codeplug();
+        let mut cp = Codeplug::parse(&before).unwrap();
+        cp.channel_mut(1).unwrap().set_name("RENAMED");
+        cp.zone_mut(0).unwrap().set_members(&[1]);
+        cp.move_channel(1, 5).unwrap();
+        let z = cp.add_zone().unwrap();
+        cp.zone_mut(z).unwrap().set_members(&[5]);
+        cp.remove_zone(0);
+        let after = cp.serialize();
+
+        let zcl = global_offset(ZONE_CHANNEL_LIST).unwrap();
+        assert_eq!(
+            &after[zcl..zcl + ZONE_CHANNEL_LIST_SIZE],
+            &before[zcl..zcl + ZONE_CHANNEL_LIST_SIZE],
+        );
     }
 
     #[test]

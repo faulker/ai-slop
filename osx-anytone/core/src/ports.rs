@@ -6,6 +6,7 @@
 //! non-matching VID/PID is not treated as a hard failure.
 
 use crate::error::Result;
+use std::collections::HashSet;
 
 /// Known (VID, PID) pairs for the AT-D878UVII Plus USB bridges.
 /// GD32 variant and STM32 variant, respectively.
@@ -31,9 +32,34 @@ pub fn is_known_radio(vid: u16, pid: u16) -> bool {
     KNOWN_USB_IDS.contains(&(vid, pid))
 }
 
-/// Enumerate all serial ports, flagging likely radios by VID/PID. On macOS we
-/// prefer the callout (`cu.`) devices; the `serialport` crate already returns
-/// those alongside the `tty.` variants.
+/// macOS exposes every serial device twice: once as a callout device
+/// (`/dev/cu.*`) and once as a dial-in device (`/dev/tty.*`). Both names refer
+/// to the same physical port, so listing both shows every radio twice and makes
+/// [`autodetect_radio`] report an ambiguity that doesn't exist.
+///
+/// Drop the `tty.` half of any such pair. Only the callout device is usable
+/// here anyway: the dial-in device blocks on open waiting for carrier detect,
+/// which a USB CDC-ACM bridge never asserts. A `tty.` port with no `cu.` twin
+/// is left alone, since it is then the only handle on that device.
+fn dedupe_callout_ports(ports: &mut Vec<PortInfo>) {
+    let callouts: HashSet<&str> = ports
+        .iter()
+        .filter_map(|p| p.name.strip_prefix("/dev/cu."))
+        .collect();
+    let shadowed: HashSet<String> = ports
+        .iter()
+        .filter(|p| {
+            p.name
+                .strip_prefix("/dev/tty.")
+                .is_some_and(|suffix| callouts.contains(suffix))
+        })
+        .map(|p| p.name.clone())
+        .collect();
+    ports.retain(|p| !shadowed.contains(&p.name));
+}
+
+/// Enumerate the serial ports, flagging likely radios by VID/PID and collapsing
+/// each macOS `cu.`/`tty.` pair down to its callout half.
 pub fn list_ports() -> Result<Vec<PortInfo>> {
     let ports = serialport::available_ports()?;
     let mut out = Vec::with_capacity(ports.len());
@@ -56,6 +82,7 @@ pub fn list_ports() -> Result<Vec<PortInfo>> {
             likely_radio,
         });
     }
+    dedupe_callout_ports(&mut out);
     Ok(out)
 }
 
@@ -80,6 +107,72 @@ pub fn autodetect_radio() -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A radio port with the given device path. VID/PID are a known AnyTone
+    /// bridge so `likely_radio` reflects what the real enumeration would say.
+    fn radio_at(name: &str) -> PortInfo {
+        PortInfo {
+            name: name.to_string(),
+            vid: Some(0x28e9),
+            pid: Some(0x018a),
+            product: Some("AnyTone".to_string()),
+            likely_radio: true,
+        }
+    }
+
+    fn names(ports: &[PortInfo]) -> Vec<&str> {
+        ports.iter().map(|p| p.name.as_str()).collect()
+    }
+
+    #[test]
+    fn dedupe_drops_the_tty_half_of_a_callout_pair() {
+        // The exact shape macOS reports for one plugged-in radio, and the reason
+        // the device list showed every radio twice.
+        let mut ports = vec![
+            radio_at("/dev/cu.usbmodem14201"),
+            radio_at("/dev/tty.usbmodem14201"),
+        ];
+        dedupe_callout_ports(&mut ports);
+        assert_eq!(names(&ports), ["/dev/cu.usbmodem14201"]);
+    }
+
+    #[test]
+    fn dedupe_keeps_a_tty_port_with_no_callout_twin() {
+        // Hiding it would leave the device with no handle at all.
+        let mut ports = vec![radio_at("/dev/tty.usbmodem14201")];
+        dedupe_callout_ports(&mut ports);
+        assert_eq!(names(&ports), ["/dev/tty.usbmodem14201"]);
+    }
+
+    #[test]
+    fn dedupe_pairs_by_suffix_not_across_devices() {
+        // Two radios plugged in at once must stay two radios.
+        let mut ports = vec![
+            radio_at("/dev/cu.usbmodem14201"),
+            radio_at("/dev/tty.usbmodem14201"),
+            radio_at("/dev/cu.usbmodem14301"),
+            radio_at("/dev/tty.usbmodem14301"),
+        ];
+        dedupe_callout_ports(&mut ports);
+        assert_eq!(
+            names(&ports),
+            ["/dev/cu.usbmodem14201", "/dev/cu.usbmodem14301"]
+        );
+    }
+
+    #[test]
+    fn dedupe_leaves_unrelated_ports_alone() {
+        let mut ports = vec![
+            radio_at("/dev/cu.usbmodem14201"),
+            radio_at("/dev/tty.usbmodem14201"),
+            radio_at("/dev/cu.Bluetooth-Incoming-Port"),
+        ];
+        dedupe_callout_ports(&mut ports);
+        assert_eq!(
+            names(&ports),
+            ["/dev/cu.usbmodem14201", "/dev/cu.Bluetooth-Incoming-Port"]
+        );
+    }
 
     #[test]
     fn known_ids_match_and_others_do_not() {

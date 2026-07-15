@@ -109,11 +109,14 @@ adds a talk group and a digital channel wired to it:
 A sidebar selects between the radio and the open codeplug's entity families.
 Both are thin shells over the Rust core.
 
-- **Device** — lists serial ports (likely radios are flagged), Identify shows
-  the model string, Backup… reads the full codeplug to a `.bin`, Restore…
-  writes a `.bin` back after a prominent confirmation dialog. Progress and
-  errors are shown inline; the same safety gates as the CLI apply (model check,
-  per-block read-back verification).
+- **Device** — lists the connected AnyTone radios (matched by USB VID/PID; macOS
+  enumerates every serial device twice, as `/dev/cu.*` and `/dev/tty.*`, and the
+  core collapses each pair to its callout half so one radio shows up once). With
+  none connected the list is replaced by a Refresh button. Identify shows the
+  model string, **Read from Radio…** reads the full codeplug to a `.bin`, and
+  **Write to Radio…** writes a `.bin` back after a prominent confirmation
+  dialog. Progress and errors are shown inline; the same safety gates as the CLI
+  apply (model check, per-block read-back verification).
 - **Codeplug** — opens a `.bin` offline (no radio needed) and lists Channels,
   Zones, Contacts, Group Lists, and Radio IDs. Every table sorts by any column
   and filters from the toolbar's search field. Double-click a row (or press
@@ -121,11 +124,24 @@ Both are thin shells over the Rust core.
   without keeping anything, Done stages the change. Channels expose name, RX/TX,
   mode, power, bandwidth, color code, time slot, and the DMR contact /
   group-list / radio-ID selection (name pickers, not raw indices); contacts
-  expose name, DMR ID, and call type (a talk group is a Group call); group lists
-  and zones build their membership from a name-based picker; radio IDs edit name
-  and DMR ID. Every change round-trips through the Rust `Codeplug` model, which
-  re-verifies the result by re-parsing. Removing a channel scrubs it from zones,
-  and removing a contact scrubs it from group lists.
+  expose name, DMR ID, and call type (a talk group is a Group call); radio IDs
+  edit name and DMR ID. Every change round-trips through the Rust `Codeplug`
+  model, which re-verifies the result by re-parsing. Removing a channel scrubs
+  it from zones, and removing a contact scrubs it from group lists.
+- **Building zones and group lists in bulk.** A zone's channels and a group
+  list's contacts are edited as a two-column transfer: everything available on
+  the left, everything already a member on the right, and buttons between them
+  that move a whole multi-selection at once (⌘-click / shift-click to pick
+  several). Both columns filter, which is what makes the left one usable when a
+  codeplug carries thousands of channels or contacts. Membership is still chosen
+  by name; the slot indices stay hidden.
+- **Writing from the Codeplug tab.** The Codeplug toolbar has its own **Write to
+  Radio** button, so you don't have to save and switch tabs to try an edit on the
+  radio. It writes what you are looking at, staged changes included, and says so
+  in the confirmation.
+- **Seeing what's unsaved.** A record with staged changes gets an orange dot in
+  its row, and any section holding staged changes gets one next to it in the
+  sidebar, so you can find your edits without remembering where you made them.
 - **Choosing where an entry lands.** The `#` column is a 1-based slot number. A
   radio's channels are sparse (real codeplugs skip slots, so numbers run
   `1, 2, 3, 4, 10, 11, …`). "Move to Slot…" in a row's context menu **moves**
@@ -143,6 +159,11 @@ record, not by Add, Remove, or Move. Staged changes live in a work file under
 `~/Library/Application Support/AnyToneMac/Recovery/`, and the window subtitle
 reads "Edited" whenever the file on disk is behind what you see.
 
+**Save As…** (⇧⌘S, or the chevron next to the toolbar's Save button) writes the
+staged state to a different `.bin` and continues editing that one, leaving the
+original as it was. It works on an unmodified codeplug too, which is the easy way
+to fork a working setup before experimenting on it.
+
 That work file doubles as crash protection: if the app dies (or is force-quit)
 with unsaved changes, the next launch offers to restore them. Quitting or
 opening another codeplug with unsaved work prompts first.
@@ -154,9 +175,11 @@ before and after each operation.
 ### Manual hardware checkpoints (need the physical radio)
 
 - `anytone-cli info` / GUI Identify shows the D878UVII model string.
-- GUI Backup produces a `.bin` byte-identical to `anytone-cli backup`.
-- GUI Restore of an unmodified backup completes with read-back verification.
-- Edit one channel name in the Codeplug tab, restore, and confirm on the radio.
+- GUI Read from Radio produces a `.bin` byte-identical to `anytone-cli backup`.
+- GUI Write to Radio of an unmodified read completes with read-back verification.
+- Edit one channel name in the Codeplug tab, write it, and confirm on the radio.
+- With one radio plugged in, the Device list shows exactly one row (not the
+  `cu.`/`tty.` pair).
 
 ## Safety
 
@@ -189,7 +212,8 @@ hardware:
 Validated end-to-end on a real **AT-D878UVII Plus (firmware V101)**: backup →
 restore round-trips byte-for-byte, and an edit (add a channel) written back and
 re-read shows the change landed correctly. Note that codeplug `.bin` files
-captured before the DMR regions were added will no longer parse. Because writes
+captured before the DMR regions, or before the zone channel list (0x02500100),
+were added will no longer parse — re-read from the radio. Because writes
 are not read-back verified, keep a known-good backup and, before trusting an
 *edited* codeplug written to the radio:
 

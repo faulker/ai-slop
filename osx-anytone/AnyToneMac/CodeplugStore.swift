@@ -97,6 +97,15 @@ final class CodeplugStore: ObservableObject {
     /// True when the work file holds changes the document doesn't have yet.
     @Published private(set) var isDirty = false
 
+    /// Slots holding staged, unsaved changes, per section. Drives the per-row
+    /// indicator in the tables.
+    @Published private(set) var unsavedSlots: [CodeplugSection: Set<Int>] = [:]
+
+    /// Sections holding any staged change. This can't be derived from
+    /// `unsavedSlots`: a removal is a real unsaved change but leaves no row
+    /// behind to mark, and the sidebar still has to show the section as edited.
+    @Published private(set) var unsavedSections: Set<CodeplugSection> = []
+
     @Published private(set) var statusMessage: String?
     @Published var errorMessage: String?
 
@@ -122,6 +131,11 @@ final class CodeplugStore: ObservableObject {
         do {
             load(try RadioCore.dump(binPath: Recovery.workURL.path), url: original)
             isDirty = true
+            // The work file records the result of the recovered edits, not which
+            // slots they touched, so every section is flagged and no row is. The
+            // alternative — showing nothing as edited — would be a lie.
+            unsavedSlots = [:]
+            unsavedSections = Set(CodeplugSection.allCases)
             pendingRecovery = nil
             setStatus("Restored unsaved changes to \(original.lastPathComponent)")
         } catch {
@@ -157,6 +171,7 @@ final class CodeplugStore: ObservableObject {
             try replaceFile(at: Recovery.workURL, withContentsOf: url)
             load(try RadioCore.dump(binPath: Recovery.workURL.path), url: url)
             isDirty = false
+            clearUnsaved()
             Recovery.clearManifest()
             setStatus("Opened \(url.lastPathComponent): \(channels.count) channels, "
                 + "\(zones.count) zones, \(contacts.count) contacts, "
@@ -183,14 +198,39 @@ final class CodeplugStore: ObservableObject {
     /// Write the staged work file over the user's document.
     func save() {
         guard let url = fileURL, isDirty else { return }
+        write(to: url)
+    }
+
+    /// Ask for a destination, write the staged state there, and continue editing
+    /// that document instead of the old one.
+    ///
+    /// Unlike `save()` this runs even with nothing staged: "save this codeplug
+    /// under a new name" is a reasonable thing to want from an unmodified file.
+    func saveAs() {
+        guard fileURL != nil else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
+        panel.nameFieldStringValue = fileURL?.lastPathComponent ?? "codeplug.bin"
+        panel.title = "Save Codeplug As"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        write(to: url)
+    }
+
+    /// Write the work file's bytes to `url` and adopt it as the open document.
+    ///
+    /// Copying the bytes rather than `replaceItem`-ing the work file into place
+    /// covers both callers with one path: Save As targets a file that may not
+    /// exist yet, which `replaceItem` rejects. It also leaves the work file
+    /// intact, so editing continues without re-seeding it.
+    ///
+    /// Internal rather than private so tests can drive a Save As without
+    /// standing up a modal panel.
+    func write(to url: URL) {
         do {
-            try FileManager.default.replaceItem(at: url, withItemAt: Recovery.workURL,
-                                                backupItemName: nil, options: [],
-                                                resultingItemURL: nil)
-            // `replaceItem` consumes the work file, so re-seed it from the saved
-            // document to keep editing without reopening.
-            try replaceFile(at: Recovery.workURL, withContentsOf: url)
+            try Data(contentsOf: Recovery.workURL).write(to: url, options: .atomic)
+            fileURL = url
             isDirty = false
+            clearUnsaved()
             Recovery.clearManifest()
             setStatus("Saved \(url.lastPathComponent)")
         } catch {
@@ -224,7 +264,9 @@ final class CodeplugStore: ObservableObject {
         if ch.contactIndex != old.contactIndex { e.contactIndex = ch.contactIndex }
         if ch.radioIdIndex != old.radioIdIndex { e.radioIdIndex = ch.radioIdIndex }
         if ch.groupListIndex != old.groupListIndex { e.groupListIndex = ch.groupListIndex }
-        stage({ $0.channels.append(e) }, "Updated channel \(formatSlot(ch.index))")
+        if stage({ $0.channels.append(e) }, "Updated channel \(formatSlot(ch.index))") {
+            markUnsaved(.channels, slots: [ch.index])
+        }
     }
 
     func update(_ z: DumpZone) {
@@ -232,7 +274,9 @@ final class CodeplugStore: ObservableObject {
         var e = ZoneEdit(index: z.index)
         if z.name != old.name { e.name = z.name }
         if z.channels != old.channels { e.members = z.channels }
-        stage({ $0.zones.append(e) }, "Updated zone \(formatSlot(z.index))")
+        if stage({ $0.zones.append(e) }, "Updated zone \(formatSlot(z.index))") {
+            markUnsaved(.zones, slots: [z.index])
+        }
     }
 
     func update(_ c: DumpContact) {
@@ -241,7 +285,9 @@ final class CodeplugStore: ObservableObject {
         if c.name != old.name { e.name = c.name }
         if c.number != old.number { e.number = c.number }
         if c.callType != old.callType { e.callType = editValue(c.callType) }
-        stage({ $0.contacts.append(e) }, "Updated contact \(formatSlot(c.index))")
+        if stage({ $0.contacts.append(e) }, "Updated contact \(formatSlot(c.index))") {
+            markUnsaved(.contacts, slots: [c.index])
+        }
     }
 
     func update(_ g: DumpGroupList) {
@@ -249,7 +295,9 @@ final class CodeplugStore: ObservableObject {
         var e = GroupListEdit(index: g.index)
         if g.name != old.name { e.name = g.name }
         if g.members != old.members { e.members = g.members }
-        stage({ $0.groupLists.append(e) }, "Updated group list \(formatSlot(g.index))")
+        if stage({ $0.groupLists.append(e) }, "Updated group list \(formatSlot(g.index))") {
+            markUnsaved(.groupLists, slots: [g.index])
+        }
     }
 
     func update(_ r: DumpRadioID) {
@@ -257,7 +305,31 @@ final class CodeplugStore: ObservableObject {
         var e = RadioIDEdit(index: r.index)
         if r.name != old.name { e.name = r.name }
         if r.number != old.number { e.number = r.number }
-        stage({ $0.radioIds.append(e) }, "Updated radio ID \(formatSlot(r.index))")
+        if stage({ $0.radioIds.append(e) }, "Updated radio ID \(formatSlot(r.index))") {
+            markUnsaved(.radioIds, slots: [r.index])
+        }
+    }
+
+    /// Stage a bulk update to multiple channels at once. Each field in
+    /// `update` that is non-nil is applied to every listed channel index.
+    func bulkUpdateChannels(_ update: BulkChannelUpdate) {
+        guard !update.indices.isEmpty else { return }
+        var spec = EditSpec()
+        for index in update.indices {
+            var e = ChannelEdit(index: index)
+            if let v = update.mode { e.mode = editValue(v) }
+            if let v = update.power { e.power = editValue(v) }
+            if let v = update.bandwidth { e.bandwidth = editValue(v) }
+            if let v = update.colorCode { e.colorCode = v }
+            if let v = update.timeSlot { e.timeSlot = v }
+            if let v = update.contactIndex { e.contactIndex = v }
+            if let v = update.groupListIndex { e.groupListIndex = v }
+            if let v = update.radioIdIndex { e.radioIdIndex = v }
+            spec.channels.append(e)
+        }
+        if bulkStage(spec, "Bulk-updated \(update.indices.count) channels") {
+            markUnsaved(.channels, slots: update.indices)
+        }
     }
 
     // MARK: - Add / remove
@@ -267,30 +339,54 @@ final class CodeplugStore: ObservableObject {
     /// diffing the slot set across the reload.
 
     func addChannel() -> Int? {
-        addedSlot(of: \.channels, noun: "channel") { $0.addChannels.append(ChannelEdit()) }
+        addedSlot(of: \.channels, section: .channels, noun: "channel") { $0.addChannels.append(ChannelEdit()) }
     }
 
     func addZone() -> Int? {
-        addedSlot(of: \.zones, noun: "zone") { $0.addZones.append(ZoneEdit()) }
+        addedSlot(of: \.zones, section: .zones, noun: "zone") { $0.addZones.append(ZoneEdit()) }
     }
 
     func addContact() -> Int? {
-        addedSlot(of: \.contacts, noun: "contact") { $0.addContacts.append(ContactEdit(callType: "group")) }
+        addedSlot(of: \.contacts, section: .contacts, noun: "contact") { $0.addContacts.append(ContactEdit(callType: "group")) }
     }
 
     func addGroupList() -> Int? {
-        addedSlot(of: \.groupLists, noun: "group list") { $0.addGroupLists.append(GroupListEdit()) }
+        addedSlot(of: \.groupLists, section: .groupLists, noun: "group list") { $0.addGroupLists.append(GroupListEdit()) }
     }
 
     func addRadioId() -> Int? {
-        addedSlot(of: \.radioIds, noun: "radio ID") { $0.addRadioIds.append(RadioIDEdit()) }
+        addedSlot(of: \.radioIds, section: .radioIds, noun: "radio ID") { $0.addRadioIds.append(RadioIDEdit()) }
     }
 
-    func removeChannel(_ i: Int) { stage({ $0.removeChannels.append(i) }, "Removed channel \(formatSlot(i))") }
-    func removeZone(_ i: Int) { stage({ $0.removeZones.append(i) }, "Removed zone \(formatSlot(i))") }
-    func removeContact(_ i: Int) { stage({ $0.removeContacts.append(i) }, "Removed contact \(formatSlot(i))") }
-    func removeGroupList(_ i: Int) { stage({ $0.removeGroupLists.append(i) }, "Removed group list \(formatSlot(i))") }
-    func removeRadioId(_ i: Int) { stage({ $0.removeRadioIds.append(i) }, "Removed radio ID \(formatSlot(i))") }
+    func removeChannel(_ i: Int) {
+        if stage({ $0.removeChannels.append(i) }, "Removed channel \(formatSlot(i))") {
+            markRemoved(.channels, slot: i)
+        }
+    }
+
+    func removeZone(_ i: Int) {
+        if stage({ $0.removeZones.append(i) }, "Removed zone \(formatSlot(i))") {
+            markRemoved(.zones, slot: i)
+        }
+    }
+
+    func removeContact(_ i: Int) {
+        if stage({ $0.removeContacts.append(i) }, "Removed contact \(formatSlot(i))") {
+            markRemoved(.contacts, slot: i)
+        }
+    }
+
+    func removeGroupList(_ i: Int) {
+        if stage({ $0.removeGroupLists.append(i) }, "Removed group list \(formatSlot(i))") {
+            markRemoved(.groupLists, slot: i)
+        }
+    }
+
+    func removeRadioId(_ i: Int) {
+        if stage({ $0.removeRadioIds.append(i) }, "Removed radio ID \(formatSlot(i))") {
+            markRemoved(.radioIds, slot: i)
+        }
+    }
 
     // MARK: - Move
 
@@ -298,20 +394,90 @@ final class CodeplugStore: ObservableObject {
     /// out-of-range target, which surfaces as an error and leaves the work file
     /// untouched.
 
-    func moveChannel(_ from: Int, to: Int) { stage({ $0.moveChannels.append(MoveOp(from: from, to: to)) }, "Moved channel to #\(formatSlot(to))") }
-    func moveZone(_ from: Int, to: Int) { stage({ $0.moveZones.append(MoveOp(from: from, to: to)) }, "Moved zone to #\(formatSlot(to))") }
-    func moveContact(_ from: Int, to: Int) { stage({ $0.moveContacts.append(MoveOp(from: from, to: to)) }, "Moved contact to #\(formatSlot(to))") }
-    func moveGroupList(_ from: Int, to: Int) { stage({ $0.moveGroupLists.append(MoveOp(from: from, to: to)) }, "Moved group list to #\(formatSlot(to))") }
-    func moveRadioId(_ from: Int, to: Int) { stage({ $0.moveRadioIds.append(MoveOp(from: from, to: to)) }, "Moved radio ID to #\(formatSlot(to))") }
+    func moveChannel(_ from: Int, to: Int) {
+        if stage({ $0.moveChannels.append(MoveOp(from: from, to: to)) }, "Moved channel to #\(formatSlot(to))") {
+            markMoved(.channels, from: from, to: to)
+        }
+    }
+
+    func moveZone(_ from: Int, to: Int) {
+        if stage({ $0.moveZones.append(MoveOp(from: from, to: to)) }, "Moved zone to #\(formatSlot(to))") {
+            markMoved(.zones, from: from, to: to)
+        }
+    }
+
+    func moveContact(_ from: Int, to: Int) {
+        if stage({ $0.moveContacts.append(MoveOp(from: from, to: to)) }, "Moved contact to #\(formatSlot(to))") {
+            markMoved(.contacts, from: from, to: to)
+        }
+    }
+
+    func moveGroupList(_ from: Int, to: Int) {
+        if stage({ $0.moveGroupLists.append(MoveOp(from: from, to: to)) }, "Moved group list to #\(formatSlot(to))") {
+            markMoved(.groupLists, from: from, to: to)
+        }
+    }
+
+    func moveRadioId(_ from: Int, to: Int) {
+        if stage({ $0.moveRadioIds.append(MoveOp(from: from, to: to)) }, "Moved radio ID to #\(formatSlot(to))") {
+            markMoved(.radioIds, from: from, to: to)
+        }
+    }
+
+    // MARK: - Unsaved-change tracking
+
+    /// True when `slot` in `section` holds a staged change the document doesn't
+    /// have yet. Backs the per-row indicator in the tables.
+    func isUnsaved(_ section: CodeplugSection, slot: Int) -> Bool {
+        unsavedSlots[section]?.contains(slot) ?? false
+    }
+
+    /// True when `section` holds any staged change. Backs the sidebar dot.
+    func hasUnsavedChanges(_ section: CodeplugSection) -> Bool {
+        unsavedSections.contains(section)
+    }
+
+    private func markUnsaved(_ section: CodeplugSection, slots: [Int]) {
+        unsavedSlots[section, default: []].formUnion(slots)
+        unsavedSections.insert(section)
+    }
+
+    /// A removed record has no row left to mark, so only the section is flagged.
+    private func markRemoved(_ section: CodeplugSection, slot: Int) {
+        unsavedSlots[section]?.remove(slot)
+        unsavedSections.insert(section)
+    }
+
+    /// The record's edited state travels with it: the vacated slot is clean (it
+    /// holds nothing now) and the target slot carries the change.
+    private func markMoved(_ section: CodeplugSection, from: Int, to: Int) {
+        unsavedSlots[section]?.remove(from)
+        markUnsaved(section, slots: [to])
+    }
+
+    private func clearUnsaved() {
+        unsavedSlots = [:]
+        unsavedSections = []
+    }
 
     // MARK: - Internals
 
     /// Apply one operation to the work file and reload from it. The user's
-    /// document is untouched; only `save()` writes there.
-    private func stage(_ op: (inout EditSpec) -> Void, _ describe: String) {
-        guard let url = fileURL else { return }
+    /// document is untouched; only `save()` writes there. Returns false when the
+    /// core rejected the edit, so the caller doesn't record a change that didn't
+    /// happen.
+    @discardableResult
+    private func stage(_ op: (inout EditSpec) -> Void, _ describe: String) -> Bool {
         var spec = EditSpec()
         op(&spec)
+        return bulkStage(spec, describe)
+    }
+
+    /// Apply a pre-built edit spec to the work file and reload. Used directly by
+    /// bulk operations, which build the full spec themselves.
+    @discardableResult
+    private func bulkStage(_ spec: EditSpec, _ describe: String) -> Bool {
+        guard let url = fileURL else { return false }
         do {
             try RadioCore.applyEdits(input: Recovery.workURL.path, spec: spec,
                                      output: Recovery.workURL.path)
@@ -319,22 +485,27 @@ final class CodeplugStore: ObservableObject {
             isDirty = true
             try Recovery.mark(original: url)
             setStatus("\(describe) — unsaved")
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
     /// Run `op`, then report which slot appeared in `list`. The core picks the
     /// slot (`first_free`) and the FFI doesn't report it back, so it's recovered
-    /// by diffing the slot set. The status is set here rather than in `stage`
-    /// because the slot isn't known until the reload has happened.
-    private func addedSlot<T: Identifiable>(of list: KeyPath<CodeplugStore, [T]>, noun: String,
+    /// by diffing the slot set. The status and the unsaved mark are set here
+    /// rather than in `stage` because the slot isn't known until the reload has
+    /// happened.
+    private func addedSlot<T: Identifiable>(of list: KeyPath<CodeplugStore, [T]>,
+                                            section: CodeplugSection, noun: String,
                                             _ op: (inout EditSpec) -> Void) -> Int? where T.ID == Int {
         let before = Set(self[keyPath: list].map(\.id))
-        stage(op, "Added \(noun)")
+        guard stage(op, "Added \(noun)") else { return nil }
         guard let slot = self[keyPath: list].map(\.id).first(where: { !before.contains($0) }) else {
             return nil
         }
+        markUnsaved(section, slots: [slot])
         setStatus("Added \(noun) \(formatSlot(slot)) — unsaved")
         return slot
     }

@@ -15,7 +15,7 @@ use crate::codeplug::{
     CHANNEL_SIZE, CONTACT_BANKS, CONTACT_BITMAP, CONTACT_BLOCK, CONTACT_ID_TABLE, CONTACT_INDEX,
     GROUP_LISTS, GROUP_LIST_BITMAP, GROUP_LIST_ELEMENT, NUM_CHANNELS, NUM_CONTACTS,
     NUM_GROUP_LISTS, NUM_RADIO_IDS, NUM_ZONES, RADIO_IDS, RADIO_ID_BITMAP, RADIO_ID_SIZE,
-    ZONE_BITMAP, ZONE_CHANNELS_SLOT, ZONE_NAME_SLOT,
+    ZONE_BITMAP, ZONE_CHANNELS_SLOT, ZONE_CHANNEL_LIST, ZONE_CHANNEL_LIST_SIZE, ZONE_NAME_SLOT,
 };
 use crate::error::{Error, Result};
 use crate::protocol::{
@@ -51,6 +51,9 @@ pub struct Region {
 /// - Channel valid-bitmap: 0x024c1500, 0x200 — `Offset::channelBitmap`,
 ///   `ChannelBitmapElement::size`.
 /// - Zone names: 0x02540000, 250 × 0x20 — `Offset::zoneNames`, `Size::zoneName`.
+/// - Zone channel list: 0x02500100, 0x400 — `Offset::zoneChannelList`,
+///   `ZoneChannelListElement::size`. **Read-only**, see [`ZONE_CHANNEL_LIST`]:
+///   it lives in the radio-settings block and writing it locked a radio.
 /// - Contact banks: 0x02680000, 10 banks spaced 0x00040000, 0x186a0 (1000
 ///   contacts × 100 B) each — `Offset::contactBanks/betweenContactBanks`,
 ///   `Limit::contactsPerBank/numContacts`, `ContactElement::size` = 0x64.
@@ -79,7 +82,7 @@ const CHANNEL_BANKS: usize = 32;
 /// Number of contact banks (10 banks × 1000 contacts = 10000 contacts).
 const CONTACT_BANK_COUNT: usize = 10;
 /// Fixed regions after the channel banks (zones + bitmaps + DMR entities).
-const FIXED_REGIONS: usize = 11;
+const FIXED_REGIONS: usize = 12;
 
 /// Backing storage for [`REGIONS`], built at compile time so the channel and
 /// contact banks don't have to be written out by hand.
@@ -155,6 +158,12 @@ const fn build_regions() -> [Region; CHANNEL_BANKS + CONTACT_BANK_COUNT + FIXED_
     arr[CHANNEL_BANKS + 10] = Region {
         address: 0x024c_1320,
         length: 0x20,
+    };
+    // Zone channel list: the per-zone selected channel for VFO A and VFO B.
+    // Read-only — backups capture it, but write_codeplug must never send it.
+    arr[CHANNEL_BANKS + 11] = Region {
+        address: ZONE_CHANNEL_LIST,
+        length: ZONE_CHANNEL_LIST_SIZE,
     };
     // Contact banks: 10 banks × 1000 contacts × 0x64.
     let mut b = 0;
@@ -295,6 +304,13 @@ impl<T: Transport> Radio<T> {
     /// index / ID table sized to the contact count. This is essential: writing
     /// every nominal block (all 32 channel banks, etc.) floods the radio with
     /// tens of thousands of writes to unused slots and resets it mid-transfer.
+    ///
+    /// Nothing in the radio-settings block (0x02500000 – 0x025014FF) is ever
+    /// written. That block holds the power-on password flag and the menu
+    /// language, its D878UVII layout is unverified, and a bad byte there locks
+    /// the operator out of the radio. Regions inside it may be *read* (so a
+    /// backup captures them) but must not be added to this write path without
+    /// first confirming the offset against a real backup from the target model.
     ///
     /// Segments are written in **ascending address order** so a record is always
     /// written before the bitmap that references it — the radio commits the
@@ -623,6 +639,43 @@ mod tests {
         assert_eq!((c.name.as_str(), c.number), ("TAC 310", 310));
         assert_eq!(got.group_lists().next().unwrap().members, vec![ct as u32]);
         assert_eq!(got.radio_ids().next().unwrap().number, 3_141_592);
+    }
+
+    #[test]
+    fn write_codeplug_never_writes_the_radio_settings_block() {
+        // 0x02500000 – 0x025014FF holds the power-on password flag and the menu
+        // language, and its D878UVII layout is unverified. Writing one region
+        // inside it (the zone channel list at 0x02500100) locked a radio behind
+        // an unknown power-on password with its menus switched to Chinese. No
+        // write segment may land in this range.
+        const SETTINGS_START: u32 = 0x0250_0000;
+        const SETTINGS_END: u32 = 0x0250_1500;
+
+        let mut cp = Codeplug::parse(&empty_image()).unwrap();
+        cp.add_channel().unwrap();
+        let ci = cp.add_channel().unwrap();
+        let zi = cp.add_zone().unwrap();
+        cp.zone_mut(zi).unwrap().set_members(&[ci as u16]);
+        cp.add_contact();
+        cp.add_group_list().unwrap();
+        cp.add_radio_id().unwrap();
+        let plug = cp.serialize();
+
+        // Seed the settings block with a sentinel standing in for the operator's
+        // real settings; a write that reaches it will not leave 0xa5 behind.
+        let sentinel = vec![0xa5u8; (SETTINGS_END - SETTINGS_START) as usize];
+        let mut transport = mock();
+        transport.seed(SETTINGS_START as usize, &sentinel);
+
+        let mut radio = Radio::new(transport);
+        radio.enter().unwrap();
+        let mut noop = |_: usize, _: usize| {};
+        radio.write_codeplug(&plug, &mut noop).unwrap();
+        radio.exit().unwrap();
+
+        let memory = radio.into_transport();
+        let range = SETTINGS_START as usize..SETTINGS_END as usize;
+        assert_eq!(&memory.memory()[range], &sentinel[..]);
     }
 
     #[test]

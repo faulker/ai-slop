@@ -53,7 +53,7 @@ struct CodeplugView: View {
                 .font(.title3.weight(.medium))
             Text("Open a .bin file to view and edit channels, zones, contacts, "
                 + "group lists, and radio IDs. You can create one from the Device "
-                + "tab with Backup.")
+                + "tab with Read from Radio.")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
@@ -64,10 +64,12 @@ struct CodeplugView: View {
     }
 }
 
-/// Open/Save, shared by every codeplug pane.
+/// Open/Save/Write-to-radio, shared by every codeplug pane.
 struct CodeplugFileToolbar: ToolbarContent {
     @EnvironmentObject private var store: CodeplugStore
+    @EnvironmentObject private var device: DeviceStore
     @State private var confirmOpen = false
+    @State private var confirmWrite = false
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
@@ -89,14 +91,58 @@ struct CodeplugFileToolbar: ToolbarContent {
             }
         }
         ToolbarItem {
-            Button {
-                store.save()
+            // A split button: click Save, or pick Save As from the chevron. Save
+            // As stays live with nothing staged, since saving an unmodified
+            // codeplug under a new name is a reasonable thing to want.
+            Menu {
+                Button("Save") { store.save() }
+                    .disabled(!store.isDirty)
+                Button("Save As…") { store.saveAs() }
             } label: {
                 Label("Save", systemImage: "square.and.arrow.down")
+            } primaryAction: {
+                store.save()
             }
             .help("Write staged changes to the file")
-            .disabled(!store.isDirty)
+            // Without this the toolbar Menu takes its accessibility name from
+            // the SF Symbol and announces itself as "download".
+            .accessibilityLabel("Save")
+            .disabled(store.fileURL == nil)
         }
+        ToolbarItem {
+            Button {
+                confirmWrite = true
+            } label: {
+                Label("Write to Radio", systemImage: "antenna.radiowaves.left.and.right")
+            }
+            .help(writeHelp)
+            .disabled(store.fileURL == nil || device.selectedPort == nil || device.busy)
+            .confirmationDialog("Write this codeplug to the radio?",
+                                isPresented: $confirmWrite) {
+                Button("Write to Radio", role: .destructive) {
+                    // The work file, not the document: what gets written is what
+                    // the user is looking at, staged changes included.
+                    device.restore(from: Recovery.workURL,
+                                   displayName: store.fileURL?.lastPathComponent ?? "codeplug")
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("""
+                This OVERWRITES the radio's entire configuration with what you see \
+                here\(store.isDirty ? ", including changes you haven't saved to the file yet" : ""). \
+                Read the radio's current codeplug to a file first if you don't have a backup. \
+                Do not disconnect the cable or power off the radio during the write.
+                """)
+            }
+        }
+    }
+
+    /// Spell out why the button is dead rather than leaving the user guessing.
+    private var writeHelp: String {
+        if device.selectedPort == nil {
+            return "Connect an AnyTone radio to write this codeplug to it"
+        }
+        return "Write this codeplug, including unsaved changes, to the connected radio"
     }
 }
 
@@ -131,6 +177,18 @@ struct EntityToolbar: ToolbarContent {
     }
 }
 
+/// Marks something as carrying staged changes the file doesn't have yet: a
+/// table row, or the sidebar section that row lives in.
+struct UnsavedDot: View {
+    var body: some View {
+        Image(systemName: "circle.fill")
+            .font(.system(size: 6))
+            .foregroundStyle(.orange)
+            .help("Unsaved changes")
+            .accessibilityLabel("Unsaved changes")
+    }
+}
+
 /// Shown when a table has no rows at all, or when a filter matches nothing.
 struct TableEmptyState: View {
     let noun: String
@@ -157,14 +215,19 @@ struct TableEmptyState: View {
 
 struct ChannelsPane: View {
     @EnvironmentObject private var store: CodeplugStore
-    @State private var selected: DumpChannel.ID?
+    @State private var selected = Set<DumpChannel.ID>()
     @State private var editing: DumpChannel?
     @State private var moving: DumpChannel?
+    @State private var bulkEditing = false
     @State private var query = ""
     @State private var sortOrder = [KeyPathComparator(\DumpChannel.index)]
 
     var body: some View {
         Table(rows, selection: $selected, sortOrder: $sortOrder) {
+            TableColumn("") { row in
+                if store.isUnsaved(.channels, slot: row.index) { UnsavedDot() }
+            }
+            .width(14)
             TableColumn("#", value: \.index) { Text(verbatim: formatSlot($0.index)) }
                 .width(min: 40, ideal: 48, max: 64)
             TableColumn("Name", value: \.name) { Text($0.name) }
@@ -186,15 +249,32 @@ struct ChannelsPane: View {
         .contextMenu(forSelectionType: DumpChannel.ID.self) { ids in
             rowMenu(ids)
         } primaryAction: { ids in
-            editing = record(ids.first)
+            if ids.count == 1 { editing = record(ids.first) }
         }
         .overlay { if rows.isEmpty { TableEmptyState(noun: "channels", query: query) } }
         .searchable(text: $query, prompt: "Filter channels")
         .toolbar {
-            EntityToolbar(noun: "Channel", canEdit: selection != nil,
-                          onAdd: { selected = store.addChannel() },
-                          onEdit: { editing = selection },
+            EntityToolbar(noun: "Channel", canEdit: !selected.isEmpty,
+                          onAdd: {
+                              if let s = store.addChannel() { selected = [s] }
+                          },
+                          onEdit: {
+                              if selected.count == 1 {
+                                  editing = singleSelection
+                              } else if selected.count > 1 {
+                                  bulkEditing = true
+                              }
+                          },
                           onRemove: { remove() })
+            ToolbarItem {
+                Button {
+                    bulkEditing = true
+                } label: {
+                    Label("Bulk Edit", systemImage: "square.and.pencil")
+                }
+                .help("Edit all selected channels at once")
+                .disabled(selected.count < 2)
+            }
         }
         .sheet(item: $editing) { channel in
             ChannelEditorSheet(channel: channel, contacts: store.contacts,
@@ -206,7 +286,17 @@ struct ChannelsPane: View {
             MoveSheet(title: "Move Channel \(formatSlot(channel.index))",
                       currentIndex: channel.index) { target in
                 store.moveChannel(channel.index, to: target)
-                selected = store.channels.contains { $0.id == target } ? target : channel.index
+                selected = store.channels.contains { $0.id == target } ? [target] : [channel.index]
+            }
+        }
+        .sheet(isPresented: $bulkEditing) {
+            BulkChannelEditorSheet(
+                channels: selectedChannels,
+                contacts: store.contacts,
+                groupLists: store.groupLists,
+                radioIds: store.radioIds
+            ) { update in
+                store.bulkUpdateChannels(update)
             }
         }
     }
@@ -217,9 +307,15 @@ struct ChannelsPane: View {
             .sorted(using: sortOrder)
     }
 
-    /// The selected record, looked up by id. Nil once the selection points at a
-    /// slot that no longer holds anything.
-    private var selection: DumpChannel? { record(selected) }
+    /// The channels currently selected, for the bulk editor.
+    private var selectedChannels: [DumpChannel] {
+        store.channels.filter { selected.contains($0.id) }
+    }
+
+    /// Convenience for the single-edit path: the one selected record, or nil.
+    private var singleSelection: DumpChannel? {
+        selected.count == 1 ? record(selected.first) : nil
+    }
 
     private func record(_ id: DumpChannel.ID?) -> DumpChannel? {
         guard let id else { return nil }
@@ -228,21 +324,29 @@ struct ChannelsPane: View {
 
     @ViewBuilder
     private func rowMenu(_ ids: Set<DumpChannel.ID>) -> some View {
-        if let channel = record(ids.first) {
+        if ids.count == 1, let channel = record(ids.first) {
             Button("Edit…") { editing = channel }
             Button("Move to Slot…") { moving = channel }
             Divider()
             Button("Remove", role: .destructive) {
-                selected = nil
+                selected = []
                 store.removeChannel(channel.index)
+            }
+        } else if ids.count > 1 {
+            Button("Bulk Edit \(ids.count) Channels…") { bulkEditing = true }
+            Divider()
+            Button("Remove \(ids.count) Channels", role: .destructive) {
+                let indices = ids.sorted()
+                selected = []
+                for i in indices.reversed() { store.removeChannel(i) }
             }
         }
     }
 
     private func remove() {
-        guard let channel = selection else { return }
-        selected = nil
-        store.removeChannel(channel.index)
+        let indices = selected.sorted()
+        selected = []
+        for i in indices.reversed() { store.removeChannel(i) }
     }
 }
 
@@ -258,6 +362,10 @@ struct ZonesPane: View {
 
     var body: some View {
         Table(rows, selection: $selected, sortOrder: $sortOrder) {
+            TableColumn("") { row in
+                if store.isUnsaved(.zones, slot: row.index) { UnsavedDot() }
+            }
+            .width(14)
             TableColumn("#", value: \.index) { Text(verbatim: formatSlot($0.index)) }
                 .width(min: 40, ideal: 48, max: 64)
             TableColumn("Name", value: \.name) { Text($0.name) }
@@ -336,6 +444,10 @@ struct ContactsPane: View {
 
     var body: some View {
         Table(rows, selection: $selected, sortOrder: $sortOrder) {
+            TableColumn("") { row in
+                if store.isUnsaved(.contacts, slot: row.index) { UnsavedDot() }
+            }
+            .width(14)
             TableColumn("#", value: \.index) { Text(verbatim: formatSlot($0.index)) }
                 .width(min: 40, ideal: 48, max: 64)
             TableColumn("Name", value: \.name) { Text($0.name) }
@@ -419,6 +531,10 @@ struct GroupListsPane: View {
 
     var body: some View {
         Table(rows, selection: $selected, sortOrder: $sortOrder) {
+            TableColumn("") { row in
+                if store.isUnsaved(.groupLists, slot: row.index) { UnsavedDot() }
+            }
+            .width(14)
             TableColumn("#", value: \.index) { Text(verbatim: formatSlot($0.index)) }
                 .width(min: 40, ideal: 48, max: 64)
             TableColumn("Name", value: \.name) { Text($0.name) }
@@ -497,6 +613,10 @@ struct RadioIDsPane: View {
 
     var body: some View {
         Table(rows, selection: $selected, sortOrder: $sortOrder) {
+            TableColumn("") { row in
+                if store.isUnsaved(.radioIds, slot: row.index) { UnsavedDot() }
+            }
+            .width(14)
             TableColumn("#", value: \.index) { Text(verbatim: formatSlot($0.index)) }
                 .width(min: 40, ideal: 48, max: 64)
             TableColumn("Name", value: \.name) { Text($0.name) }

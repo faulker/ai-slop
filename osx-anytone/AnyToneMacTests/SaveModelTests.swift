@@ -18,7 +18,13 @@ final class SaveModelTests: XCTestCase {
     /// An all-zero image of the exact codeplug size parses as a valid, empty
     /// codeplug — the same synthetic fixture the Rust tests use, so no real
     /// radio data is involved.
-    private static let codeplugSize = 1_656_032
+    ///
+    /// This must equal `device::codeplug_size()`, which is the sum of the
+    /// modeled regions: adding a region to the memory map changes it, and the
+    /// core then rejects this fixture by size with every test in this file
+    /// failing at `open`. The Rust tests call the function, but it isn't exposed
+    /// across the FFI, so this side has to track it by hand.
+    private static let codeplugSize = 1_657_056
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -239,5 +245,189 @@ final class SaveModelTests: XCTestCase {
 
         XCTAssertNotNil(store.errorMessage, "moving onto an occupied slot must report an error")
         XCTAssertEqual(store.zones.count, 2)
+    }
+
+    // MARK: - Unsaved-change tracking
+
+    /// The dot next to a row and the dot next to the sidebar section both come
+    /// from here, so an edit has to light up exactly its own slot and section.
+    func testEditingARecordMarksItsSlotAndSectionUnsaved() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        let slot = try XCTUnwrap(store.addZone())
+        store.save()
+        XCTAssertFalse(store.hasUnsavedChanges(.zones), "a saved file has nothing to flag")
+
+        var zone = try XCTUnwrap(store.zones.first)
+        zone.name = "Repeaters"
+        store.update(zone)
+
+        XCTAssertTrue(store.isUnsaved(.zones, slot: slot))
+        XCTAssertTrue(store.hasUnsavedChanges(.zones))
+        XCTAssertFalse(store.hasUnsavedChanges(.channels), "an untouched section stays clean")
+    }
+
+    /// Saving is what clears the marks; otherwise the dots would outlive the
+    /// changes they describe.
+    func testSavingClearsTheUnsavedMarks() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        let slot = try XCTUnwrap(store.addZone())
+        XCTAssertTrue(store.isUnsaved(.zones, slot: slot))
+
+        store.save()
+
+        XCTAssertFalse(store.isUnsaved(.zones, slot: slot))
+        XCTAssertFalse(store.hasUnsavedChanges(.zones))
+    }
+
+    /// A removal is a real unsaved change but leaves no row to mark, so the
+    /// section dot must survive on its own.
+    func testRemovingMarksTheSectionButNotTheVacatedSlot() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        let slot = try XCTUnwrap(store.addZone())
+        store.save()
+
+        store.removeZone(slot)
+
+        XCTAssertTrue(store.hasUnsavedChanges(.zones), "the removal is still unsaved work")
+        XCTAssertFalse(store.isUnsaved(.zones, slot: slot), "the slot holds nothing to mark now")
+    }
+
+    /// A rejected edit must not leave a mark claiming a change that never landed.
+    func testARejectedEditLeavesNoUnsavedMark() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        _ = store.addZone()
+        store.save()
+
+        store.moveZone(0, to: 1) // slot 1 is occupied
+
+        XCTAssertNotNil(store.errorMessage)
+        XCTAssertFalse(store.hasUnsavedChanges(.zones), "a rejected move changed nothing")
+    }
+
+    /// Discarding returns to the saved file, marks included.
+    func testDiscardClearsTheUnsavedMarks() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        XCTAssertTrue(store.hasUnsavedChanges(.zones))
+
+        store.discardChanges()
+
+        XCTAssertFalse(store.hasUnsavedChanges(.zones))
+    }
+
+    /// Bulk edits mark every channel they touched, not just the first.
+    func testBulkUpdateMarksEveryTouchedChannel() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        let a = try XCTUnwrap(store.addChannel())
+        let b = try XCTUnwrap(store.addChannel())
+        store.save()
+
+        store.bulkUpdateChannels(BulkChannelUpdate(indices: [a, b], power: "Low"))
+
+        XCTAssertTrue(store.isUnsaved(.channels, slot: a))
+        XCTAssertTrue(store.isUnsaved(.channels, slot: b))
+    }
+
+    // MARK: - Save As
+
+    /// Save As writes a new document and continues editing it, leaving the
+    /// original exactly as it was.
+    func testSaveAsWritesANewFileAndLeavesTheOriginalAlone() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        let original = try sha(codeplug)
+        let copy = tempDir.appendingPathComponent("copy.bin")
+
+        store.write(to: copy)
+
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(try sha(codeplug), original, "Save As must not touch the old document")
+        XCTAssertEqual(store.fileURL, copy, "editing continues in the new document")
+        XCTAssertFalse(store.isDirty)
+
+        let reopened = CodeplugStore()
+        reopened.open(url: copy)
+        XCTAssertEqual(reopened.zones.count, 1, "the staged zone landed in the new file")
+    }
+
+    /// After Save As, further edits go to the new document.
+    func testEditingContinuesInTheNewDocumentAfterSaveAs() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        let copy = tempDir.appendingPathComponent("copy.bin")
+        store.write(to: copy)
+        let originalAfterSaveAs = try sha(codeplug)
+
+        _ = store.addZone()
+        store.save()
+
+        XCTAssertEqual(try sha(codeplug), originalAfterSaveAs, "the old document stays untouched")
+        let reopened = CodeplugStore()
+        reopened.open(url: copy)
+        XCTAssertEqual(reopened.zones.count, 2)
+    }
+
+    /// Bulk editing channels stages through the core and survives a save.
+    func testBulkChannelUpdateStagesThenPersists() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+
+        // Add two channels to bulk edit
+        let slot1 = try XCTUnwrap(store.addChannel())
+        let slot2 = try XCTUnwrap(store.addChannel())
+        XCTAssertEqual(store.channels.count, 2)
+
+        let before = try sha(codeplug)
+
+        let update = BulkChannelUpdate(
+            indices: [slot1, slot2],
+            mode: "Digital",
+            power: "High",
+            bandwidth: "Wide",
+            colorCode: 12,
+            timeSlot: 2,
+            contactIndex: 1,
+            groupListIndex: 255,
+            radioIdIndex: 0
+        )
+
+        store.bulkUpdateChannels(update)
+
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot1 })?.mode, "Digital")
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot1 })?.power, "High")
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot1 })?.bandwidth, "Wide")
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot1 })?.colorCode, 12)
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot1 })?.timeSlot, 2)
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot1 })?.contactIndex, 1)
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot1 })?.groupListIndex, 255)
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot1 })?.radioIdIndex, 0)
+
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot2 })?.mode, "Digital")
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot2 })?.power, "High")
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot2 })?.bandwidth, "Wide")
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot2 })?.colorCode, 12)
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot2 })?.timeSlot, 2)
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot2 })?.contactIndex, 1)
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot2 })?.groupListIndex, 255)
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot2 })?.radioIdIndex, 0)
+
+        XCTAssertEqual(try sha(codeplug), before, "bulk channel edit must not write the document until Save")
+
+        store.save()
+        let reopened = CodeplugStore()
+        reopened.open(url: codeplug)
+        XCTAssertEqual(reopened.channels.first(where: { $0.index == slot1 })?.mode, "Digital")
+        XCTAssertEqual(reopened.channels.first(where: { $0.index == slot1 })?.power, "High")
+        XCTAssertEqual(reopened.channels.first(where: { $0.index == slot1 })?.colorCode, 12)
+        XCTAssertEqual(reopened.channels.first(where: { $0.index == slot1 })?.timeSlot, 2)
     }
 }

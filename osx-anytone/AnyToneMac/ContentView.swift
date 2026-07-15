@@ -49,6 +49,13 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "")
         }
+        // Device errors surface here rather than on the Device pane: a write
+        // started from a codeplug pane has to report its failure too.
+        .alert("Radio Error", isPresented: deviceErrorBinding) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(device.errorMessage ?? "")
+        }
         .alert("Restore unsaved changes?", isPresented: recoveryBinding,
                presenting: store.pendingRecovery) { manifest in
             Button("Restore") { store.restoreRecovery(manifest) }
@@ -81,8 +88,16 @@ struct ContentView: View {
         .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
     }
 
+    /// A sidebar row, with a dot when the section it names holds staged changes.
     private func row(_ item: SidebarItem) -> some View {
-        Label(item.label, systemImage: item.symbol).tag(item)
+        HStack {
+            Label(item.label, systemImage: item.symbol)
+            Spacer()
+            if case .codeplug(let section) = item, store.hasUnsavedChanges(section) {
+                UnsavedDot()
+            }
+        }
+        .tag(item)
     }
 
     @ViewBuilder
@@ -126,7 +141,16 @@ struct ContentView: View {
     /// The status of whatever the user is looking at. The two stores report
     /// independently, and showing a codeplug message while the Device pane is up
     /// (or vice versa) would just be confusing.
+    ///
+    /// The exception is a radio operation in flight: it can be started from a
+    /// codeplug pane, and a multi-minute write with no visible progress would
+    /// look like a hang.
     private var activeStatus: String? {
+        if case .codeplug = selection, device.busy {
+            return [device.statusMessage, device.progressText.isEmpty ? nil : device.progressText]
+                .compactMap { $0 }
+                .joined(separator: " — ")
+        }
         switch selection {
         case .device: return device.statusMessage
         default: return store.statusMessage
@@ -136,6 +160,11 @@ struct ContentView: View {
     private var errorBinding: Binding<Bool> {
         Binding(get: { store.errorMessage != nil },
                 set: { if !$0 { store.errorMessage = nil } })
+    }
+
+    private var deviceErrorBinding: Binding<Bool> {
+        Binding(get: { device.errorMessage != nil },
+                set: { if !$0 { device.errorMessage = nil } })
     }
 
     private var recoveryBinding: Binding<Bool> {

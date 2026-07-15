@@ -7,6 +7,9 @@ import SwiftUI
 /// had no way to do.
 struct EditorSheet<Content: View>: View {
     let title: String
+    /// Sheets built around a `MemberTransferField` need room for two side-by-side
+    /// lists; the plain form sheets don't.
+    var width: CGFloat = 520
     let onCancel: () -> Void
     let onDone: () -> Void
     @ViewBuilder let content: Content
@@ -36,7 +39,27 @@ struct EditorSheet<Content: View>: View {
             .padding(.horizontal, Spacing.section)
             .padding(.vertical, Spacing.stack)
         }
-        .frame(width: 520)
+        .frame(width: width)
+    }
+}
+
+/// A field whose title sits above its control, left-aligned.
+///
+/// The grouped `Form` style puts labels in a right-aligned column beside the
+/// field, which pushes a lone Name box far off to the right and reads as an
+/// afterthought. Anything the user types a name into gets this instead.
+struct StackedField<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(label)
+                .font(.subheadline.weight(.medium))
+            content
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+        }
     }
 }
 
@@ -71,8 +94,10 @@ struct ChannelEditorSheet: View {
         EditorSheet(title: "Channel \(formatSlot(draft.index))",
                     onCancel: { dismiss() },
                     onDone: { onCommit(draft); dismiss() }) {
-            Form {
+            StackedField(label: "Name") {
                 TextField("Name", text: $draft.name)
+            }
+            Form {
                 TextField("Receive (MHz)", value: mhzBinding($draft.rxFrequencyHz), format: mhzFormat)
                 TextField("Transmit (MHz)", value: mhzBinding($draft.txFrequencyHz), format: mhzFormat)
 
@@ -162,14 +187,16 @@ struct ZoneEditorSheet: View {
 
     var body: some View {
         EditorSheet(title: "Zone \(formatSlot(draft.index))",
+                    width: 760,
                     onCancel: { dismiss() },
                     onDone: { onCommit(draft); dismiss() }) {
-            Form {
-                TextField("Name", text: $draft.name)
-                MemberPickerField(label: "Channels", addTitle: "Add channel",
-                                  candidates: candidates, members: $draft.channels)
+            VStack(alignment: .leading, spacing: Spacing.stack) {
+                StackedField(label: "Name") {
+                    TextField("Name", text: $draft.name)
+                }
+                MemberTransferField(label: "Channels", ownerNoun: "zone",
+                                    candidates: candidates, members: $draft.channels)
             }
-            .formStyle(.grouped)
         }
     }
 
@@ -200,8 +227,10 @@ struct ContactEditorSheet: View {
         EditorSheet(title: "Contact \(formatSlot(draft.index))",
                     onCancel: { dismiss() },
                     onDone: { onCommit(draft); dismiss() }) {
-            Form {
+            StackedField(label: "Name") {
                 TextField("Name", text: $draft.name)
+            }
+            Form {
                 TextField("DMR ID", value: dmrIDBinding($draft.number),
                           format: .number.grouping(.never))
                 Picker("Call type", selection: $draft.callType) {
@@ -236,14 +265,16 @@ struct GroupListEditorSheet: View {
 
     var body: some View {
         EditorSheet(title: "Group List \(formatSlot(draft.index))",
+                    width: 760,
                     onCancel: { dismiss() },
                     onDone: { onCommit(draft); dismiss() }) {
-            Form {
-                TextField("Name", text: $draft.name)
-                MemberPickerField(label: "Contacts", addTitle: "Add contact",
-                                  candidates: candidates, members: $draft.members)
+            VStack(alignment: .leading, spacing: Spacing.stack) {
+                StackedField(label: "Name") {
+                    TextField("Name", text: $draft.name)
+                }
+                MemberTransferField(label: "Contacts", ownerNoun: "group list",
+                                    candidates: candidates, members: $draft.members)
             }
-            .formStyle(.grouped)
         }
     }
 
@@ -271,8 +302,10 @@ struct RadioIDEditorSheet: View {
         EditorSheet(title: "Radio ID \(formatSlot(draft.index))",
                     onCancel: { dismiss() },
                     onDone: { onCommit(draft); dismiss() }) {
-            Form {
+            StackedField(label: "Name") {
                 TextField("Name", text: $draft.name)
+            }
+            Form {
                 TextField("DMR ID", value: dmrIDBinding($draft.number),
                           format: .number.grouping(.never))
             }
@@ -333,53 +366,153 @@ struct MemberCandidate: Identifiable {
     var id: Int { index }
 }
 
-/// Edits a membership list (zone channels, group-list contacts) by name instead
-/// of raw indices. Shows current members as labeled rows with Remove, and an
-/// Add menu of the candidates not yet included. The bound `members` stays a list
-/// of 0-based indices; the index bookkeeping is hidden from the user.
-struct MemberPickerField: View {
-    let label: String
-    let addTitle: String
-    let candidates: [MemberCandidate]
-    @Binding var members: [Int]
+/// The list math behind `MemberTransferField`, kept free of view state so the
+/// membership rules can be tested without standing up a sheet.
+enum MemberTransfer {
+    /// Candidates not already in the membership list. These are the left column;
+    /// filtering them out of it is what stops a member being added twice.
+    static func available(candidates: [MemberCandidate], members: [Int]) -> [MemberCandidate] {
+        let taken = Set(members)
+        return candidates.filter { !taken.contains($0.index) }
+    }
 
-    var body: some View {
-        Section(label) {
-            if members.isEmpty {
-                Text("No members yet — use “\(addTitle)”.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(members.enumerated()), id: \.offset) { pos, m in
-                    HStack {
-                        Text(labelFor(m))
-                        Spacer()
-                        Button {
-                            members.remove(at: pos)
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Remove from \(label.lowercased())")
-                    }
-                }
-            }
-            Menu(addTitle) {
-                ForEach(available) { item in
-                    Button(item.label) { members.append(item.index) }
-                }
-            }
-            .disabled(available.isEmpty)
+    /// The membership list as candidates, in membership order. A member whose
+    /// record has since been deleted still gets a row, so it can be removed
+    /// rather than being stranded in the zone invisibly.
+    static func memberItems(candidates: [MemberCandidate], members: [Int]) -> [MemberCandidate] {
+        members.map { index in
+            candidates.first { $0.index == index }
+                ?? MemberCandidate(index: index, label: "#\(formatSlot(index)) (missing)")
         }
     }
 
-    /// Candidates not already in the membership list.
-    private var available: [MemberCandidate] {
-        candidates.filter { !members.contains($0.index) }
+    /// `members` with `selection` appended, in candidate order rather than the
+    /// arbitrary order of the selection set, so a multi-select add lands
+    /// predictably.
+    static func adding(_ selection: Set<Int>, candidates: [MemberCandidate],
+                       to members: [Int]) -> [Int] {
+        members + available(candidates: candidates, members: members)
+            .filter { selection.contains($0.index) }
+            .map(\.index)
     }
 
-    /// Display label for a member index (or a fallback if it no longer exists).
-    private func labelFor(_ index: Int) -> String {
-        candidates.first { $0.index == index }?.label ?? "#\(formatSlot(index)) (missing)"
+    /// `members` with `selection` removed, preserving the order of the rest.
+    static func removing(_ selection: Set<Int>, from members: [Int]) -> [Int] {
+        members.filter { !selection.contains($0) }
+    }
+}
+
+/// Edits a membership list (zone channels, group-list contacts) as a two-column
+/// transfer: everything available on the left, everything already a member on
+/// the right, and buttons between them that move whole multi-selections at once.
+///
+/// Both lists filter, because the candidate side can run to thousands of
+/// channels and picking them one at a time out of an unfiltered list was the
+/// thing that made the old one-at-a-time menu unusable.
+///
+/// The bound `members` stays a list of 0-based indices in membership order; the
+/// index bookkeeping is hidden from the user.
+struct MemberTransferField: View {
+    /// Plural noun for the things being picked, e.g. "Channels".
+    let label: String
+    /// Singular noun for the record they belong to, e.g. "zone".
+    let ownerNoun: String
+    let candidates: [MemberCandidate]
+    @Binding var members: [Int]
+
+    @State private var availableSelection = Set<Int>()
+    @State private var memberSelection = Set<Int>()
+    @State private var availableQuery = ""
+    @State private var memberQuery = ""
+
+    private static let listHeight: CGFloat = 260
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(label)
+                .font(.subheadline.weight(.medium))
+            HStack(alignment: .center, spacing: Spacing.stack) {
+                column(title: "Available",
+                       count: available.count,
+                       items: filtered(available, by: availableQuery),
+                       query: $availableQuery,
+                       selection: $availableSelection,
+                       emptyText: "Nothing left to add")
+                transferButtons
+                column(title: "In this \(ownerNoun)",
+                       count: members.count,
+                       items: filtered(memberItems, by: memberQuery),
+                       query: $memberQuery,
+                       selection: $memberSelection,
+                       emptyText: "No \(label.lowercased()) yet")
+            }
+        }
+    }
+
+    private var transferButtons: some View {
+        VStack(spacing: Spacing.inline) {
+            Button(action: addSelected) {
+                Image(systemName: "chevron.right")
+                    .frame(width: 20)
+            }
+            .disabled(availableSelection.isEmpty)
+            .help("Add the selected \(label.lowercased())")
+
+            Button(action: removeSelected) {
+                Image(systemName: "chevron.left")
+                    .frame(width: 20)
+            }
+            .disabled(memberSelection.isEmpty)
+            .help("Remove the selected \(label.lowercased())")
+        }
+    }
+
+    private func column(title: String, count: Int, items: [MemberCandidate],
+                        query: Binding<String>, selection: Binding<Set<Int>>,
+                        emptyText: String) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text("\(title) (\(String(count)))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Filter", text: query)
+                .textFieldStyle(.roundedBorder)
+            List(items, selection: selection) { item in
+                Text(item.label)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .listStyle(.bordered(alternatesRowBackgrounds: true))
+            .frame(height: Self.listHeight)
+            .overlay {
+                if items.isEmpty {
+                    Text(query.wrappedValue.isEmpty ? emptyText : "No matches")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var available: [MemberCandidate] {
+        MemberTransfer.available(candidates: candidates, members: members)
+    }
+
+    private var memberItems: [MemberCandidate] {
+        MemberTransfer.memberItems(candidates: candidates, members: members)
+    }
+
+    private func filtered(_ items: [MemberCandidate], by query: String) -> [MemberCandidate] {
+        query.isEmpty ? items : items.filter { $0.label.localizedCaseInsensitiveContains(query) }
+    }
+
+    private func addSelected() {
+        members = MemberTransfer.adding(availableSelection, candidates: candidates, to: members)
+        availableSelection = []
+    }
+
+    private func removeSelected() {
+        members = MemberTransfer.removing(memberSelection, from: members)
+        memberSelection = []
     }
 }

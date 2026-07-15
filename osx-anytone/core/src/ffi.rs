@@ -342,7 +342,8 @@ mod tests {
     use super::*;
     use crate::codeplug::{
         channel_addr, global_offset, set_bcd8_be, write_ascii, zone_channels_addr, zone_name_addr,
-        CHANNEL_BITMAP, CONTACT_BITMAP, ZONE_BITMAP, ZONE_CHANNELS_SLOT,
+        CHANNEL_BITMAP, CONTACT_BITMAP, ZONE_BITMAP, ZONE_CHANNELS_A, ZONE_CHANNELS_B,
+        ZONE_CHANNELS_SLOT, ZONE_CHANNEL_LIST, ZONE_CHANNEL_LIST_SIZE,
     };
     use std::path::PathBuf;
 
@@ -376,6 +377,16 @@ mod tests {
             *b = 0xff;
         }
         raw[coff..coff + 2].copy_from_slice(&0u16.to_le_bytes());
+
+        // Zone channel list: unset everywhere, with zone 0 parked on channel 0
+        // for both VFOs — what a real radio holds for this zone layout.
+        let zcl = global_offset(ZONE_CHANNEL_LIST).unwrap();
+        for b in raw[zcl..zcl + ZONE_CHANNEL_LIST_SIZE].iter_mut() {
+            *b = 0xff;
+        }
+        for vfo in [ZONE_CHANNELS_A, ZONE_CHANNELS_B] {
+            raw[zcl + vfo..zcl + vfo + 2].copy_from_slice(&0u16.to_le_bytes());
+        }
 
         raw
     }

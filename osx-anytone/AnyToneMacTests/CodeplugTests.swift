@@ -197,3 +197,74 @@ final class CodeplugStoreTests: XCTestCase {
         XCTAssertEqual(store.channels.first?.id, store.channels.first?.index)
     }
 }
+
+/// The membership rules behind the two-column transfer picker used to add
+/// channels to a zone and contacts to a group list.
+final class MemberTransferTests: XCTestCase {
+
+    /// Five candidates at slots 0...4, labeled A...E.
+    private let candidates = (0..<5).map {
+        MemberCandidate(index: $0, label: String(UnicodeScalar(UInt8(65 + $0))))
+    }
+
+    private func labels(_ items: [MemberCandidate]) -> [String] { items.map(\.label) }
+
+    /// The left column offers only what isn't already a member — that exclusion
+    /// is the whole reason a member can't be added to a zone twice.
+    func testAvailableExcludesCurrentMembers() {
+        let available = MemberTransfer.available(candidates: candidates, members: [1, 3])
+        XCTAssertEqual(labels(available), ["A", "C", "E"])
+    }
+
+    /// A multi-select add lands in candidate order, not the arbitrary order a
+    /// Set iterates in — otherwise the same three picks could produce different
+    /// channel orders in the zone from run to run.
+    func testAddingAppendsInCandidateOrderNotSelectionOrder() {
+        let result = MemberTransfer.adding([4, 0, 2], candidates: candidates, to: [])
+        XCTAssertEqual(result, [0, 2, 4])
+    }
+
+    /// Adds append, so an existing zone keeps the order the user built.
+    func testAddingAppendsAfterExistingMembers() {
+        let result = MemberTransfer.adding([0, 2], candidates: candidates, to: [3])
+        XCTAssertEqual(result, [3, 0, 2])
+    }
+
+    /// Selecting something already a member can't duplicate it: it isn't in the
+    /// available column to begin with.
+    func testAddingCannotDuplicateAnExistingMember() {
+        let result = MemberTransfer.adding([1], candidates: candidates, to: [1])
+        XCTAssertEqual(result, [1])
+    }
+
+    func testRemovingDropsOnlyTheSelectionAndKeepsOrder() {
+        let result = MemberTransfer.removing([2], from: [3, 2, 0])
+        XCTAssertEqual(result, [3, 0])
+    }
+
+    func testRemovingHandlesAMultiSelection() {
+        let result = MemberTransfer.removing([3, 0], from: [3, 2, 0])
+        XCTAssertEqual(result, [2])
+    }
+
+    /// The right column shows membership order, not slot order.
+    func testMemberItemsFollowMembershipOrder() {
+        let items = MemberTransfer.memberItems(candidates: candidates, members: [4, 1])
+        XCTAssertEqual(labels(items), ["E", "B"])
+    }
+
+    /// A zone can reference a channel that was deleted. It still needs a row, or
+    /// the user has no way to remove the dangling reference.
+    func testMemberItemsKeepARowForAMissingRecord() {
+        let items = MemberTransfer.memberItems(candidates: candidates, members: [9])
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.index, 9)
+        XCTAssertEqual(items.first?.label, "#10 (missing)", "labeled by 1-based slot")
+    }
+
+    /// Removing a dangling reference has to work, since that's the only way to
+    /// clean one up.
+    func testRemovingAMissingMemberWorks() {
+        XCTAssertEqual(MemberTransfer.removing([9], from: [0, 9]), [0])
+    }
+}

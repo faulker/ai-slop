@@ -39,6 +39,29 @@ field layouts are in each module's header doc comment.
 | Group-list bitmap | 0x025C0B10, 0x20 | normal |
 | Radio IDs | 0x02580000, 250 × 0x20 | number@0x00 (BCD8-be), name@0x05 (16) |
 | Radio-ID bitmap | 0x024C1320, 0x20 | normal |
+| Zone channel list (**read-only**) | 0x02500100, 0x400 | `ZoneChannelListElement`: VFO A@0x000, VFO B@0x200, each 250 × u16-le channel index; 0xffff = unset |
+
+## Never write the radio-settings block (0x02500000 – 0x025014FF)
+
+The zone channel list address above is a **D878UV** offset that lands inside the
+radio-settings block, which also holds the power-on password flag and the menu
+language. It was briefly added to the write path so zone up/down would follow
+zone membership. On a real D878UVII that write locked the radio: it came up
+demanding a power-on password nobody had set, with its menus switched to
+Chinese. So either the offset is wrong for this model, the element is a
+different size here, or neighbouring bytes carry meaning the model does not
+capture.
+
+The region stays in `REGIONS` so backups capture the bytes and existing `.bin`
+files still parse, but `Radio::write_codeplug` skips it, `serialize` passes it
+through untouched, and two tests pin that down
+(`serialize_never_touches_the_radio_settings_block`,
+`write_codeplug_never_writes_the_radio_settings_block`).
+
+Nothing in this range may be added to the write path until the layout is
+confirmed against a real D878UVII backup — a wrong byte here locks the operator
+out of the radio, and the tool cannot undo it because it never captured the
+original settings.
 
 Channel record DMR fields (64-byte `ChannelElement`): contactIndex@0x14 (u32-le),
 radioIdIndex@0x18 (u8), scanListIndex@0x1b (u8), groupListIndex@0x1c (u8),
