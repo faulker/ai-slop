@@ -1,5 +1,23 @@
 # osx-anytone
 
+> # ⚠️ THE WRITE PATH IS FIXED IN CODE BUT NOT YET HARDWARE-VERIFIED ⚠️
+>
+> The radio erases flash in **32 KB sectors**: any write into a sector erases the
+> whole sector. An earlier version rewrote only the blocks it models, destroying
+> ~43 KB of everything else (scan lists, tones, roaming, undocumented regions) on
+> every write and leaving the **official CPS unable to read the radio**
+> (`GetOptionFromCommData_Error`).
+>
+> `write_codeplug` now does **sector read-modify-write**: it reads every 32 KB
+> sector it will touch, overlays only the modelled blocks, and writes the sector
+> back, preserving everything else. This is covered by tests against a mock that
+> reproduces the sector erase — but it has **not yet been confirmed on real
+> hardware with a vendor CPS read**. Until it is, treat `restore` / "Write to
+> Radio" as unproven: back up with the vendor CPS first and be ready to reflash.
+> See [`docs/diagnosing-cps-breakage.md`](docs/diagnosing-cps-breakage.md).
+>
+> **`backup`, `dump`, `dump-range` and `edit` are read-only and safe.**
+>
 > # ⚠️ USE AT YOUR OWN RISK ⚠️
 >
 > ## THIS SOFTWARE WRITES DIRECTLY TO YOUR RADIO. IT CAN CORRUPT ITS MEMORY AND LEAVE IT UNUSABLE.
@@ -30,20 +48,39 @@ ham radio over the USB programming cable, without the Windows-only vendor CPS.
 
 See `PLAN.md` for the full design and phased roadmap. This repo implements
 **Phase 0 (scaffolding + port discovery)**, **Phase 1 (protocol + full codeplug
-backup/restore)**, a **Phase 2 codeplug model** covering channels, zones, DMR
-contacts / talk groups, RX group lists, and radio IDs (full add / remove /
-update), and the **Phase 3 SwiftUI GUI** (`AnyToneMac`). The firmware `UPDATE`
-path is deliberately excluded because it can brick the radio.
+backup/restore)**, a **Phase 2 codeplug model** covering channels, zones, scan
+lists, DMR contacts / talk groups, RX group lists, and radio IDs (full add /
+remove / update), and the **Phase 3 SwiftUI GUI** (`AnyToneMac`). The firmware
+`UPDATE` path is deliberately excluded because it can brick the radio.
+
+### CPS-parity settings (added for closer feature parity with the vendor CPS)
+
+- **Channels** now model ~30 fields: analog CTCSS/DCS encode+decode, squelch
+  mode, optional signaling, DTMF/2-Tone/5-Tone IDs, TX-permit (admit), scan-list
+  assignment, and the flags (PTT-prohibit, talk-around, work-alone, call-confirm,
+  APRS-RX, simplex-TDMA). All read+write, offsets from qdmr.
+- **Scan lists** are a full read+write tab: members, priority channels 1/2,
+  revert channel, look-back A/B, dropout delay, dwell time.
+- **APRS** and **Zone A/B channel** are shown **read-only**. They live in a
+  protected radio-settings region that must never be written (writing it once
+  locked a radio behind an unknown power-on password with Chinese menus), so the
+  tool displays them for reference but does not write them back. See
+  [`docs/codeplug-memory-map.md`](docs/codeplug-memory-map.md).
+
+> **⚠️ Codeplug size changed.** Adding the scan-list and APRS regions to the
+> read path grew the backup size, so **`.bin` backups made before this change no
+> longer parse**. Read a fresh backup from the radio after upgrading.
 
 ## Layout
 
 - `core/` — `anytone-core` library: serial transport (real + mock), the
   byte-level programming protocol, high-level backup/restore, port enumeration,
-  the codeplug model (channels, zones, DMR contacts/talk groups, RX group lists,
-  radio IDs) with lossless parse → edit → re-serialize and JSON batch editing
+  the codeplug model (channels, zones, scan lists, DMR contacts/talk groups, RX
+  group lists, radio IDs, plus read-only APRS + zone A/B) with lossless
+  parse → edit → re-serialize and JSON batch editing
   (`src/codeplug/edits.rs`), and the C FFI for the GUI (`src/ffi.rs`, header in
   `core/include/anytone_core.h`).
-- `cli/` — `anytone-cli` binary: `ports`, `info`, `backup`, `restore`, `dump`,
+- `cli/` — `anytone-cli` binary: `ports`, `info`, `backup`, `restore`, `dump-range`, `dump`,
   `edit`.
 - `AnyToneMac/` — SwiftUI macOS app (Device backup/restore + offline codeplug
   editor with add/remove/edit for every entity family), linked against the
@@ -53,6 +90,10 @@ path is deliberately excluded because it can brick the radio.
   encoding, and the save/recovery model).
 - `tools/make-icon.swift` — draws the app icon with CoreGraphics and writes the
   asset catalog's PNGs. Re-run after changing it.
+- `docs/` — [`codeplug-memory-map.md`](docs/codeplug-memory-map.md) (region
+  addresses and layouts, including the regions that must never be written) and
+  [`diagnosing-cps-breakage.md`](docs/diagnosing-cps-breakage.md) (playbook for
+  when the vendor CPS can no longer read a radio this tool has written).
 
 ## Setup
 
@@ -109,10 +150,21 @@ anytone-cli dump my-codeplug.bin
 
 # Apply a JSON edit batch offline (same schema as the GUI / anytone_apply_edits).
 anytone-cli edit my-codeplug.bin edits.json -o edited.bin
+
+# Read an arbitrary address range off the radio (read-only diagnostic).
+# Hexdump the radio-settings block, which backups do not cover:
+anytone-cli dump-range --address 0x02500000 --length 0x1500
+
+# ...or save it raw for diffing.
+anytone-cli dump-range --address 0x02500000 --length 0x1500 -o settings.bin
 ```
 
 Use `--port /dev/cu.usbmodemXXXX` to select a specific port when auto-detect is
 ambiguous.
+
+`dump-range` never writes; it is there to inspect regions outside the codeplug
+region map. `--address` and `--length` take decimal or `0x`-prefixed hex, and
+the length must be a multiple of the 16-byte block size.
 
 The `edit` batch object has, for each entity family, an update array
 (`channels`/`zones`/`contacts`/`group_lists`/`radio_ids`, each element an index
@@ -140,15 +192,28 @@ Both are thin shells over the Rust core.
   none connected the list is replaced by a Refresh button. Identify shows the
   model string, **Read from Radio…** reads the full codeplug to a `.bin`, and
   **Write to Radio…** writes a `.bin` back after a prominent confirmation
-  dialog. Progress and errors are shown inline; the same safety gates as the CLI
-  apply (model check, per-block read-back verification).
+  dialog. A read or write shows a centered progress overlay while it runs (it can
+  take minutes) and a completion dialog when it finishes; the read's dialog offers
+  to open the file it just produced straight in the editor. The same safety gates
+  as the CLI apply (model check, per-block read-back verification).
 - **Codeplug** — opens a `.bin` offline (no radio needed) and lists Channels,
-  Zones, Contacts, Group Lists, and Radio IDs. Every table sorts by any column
-  and filters from the toolbar's search field. Double-click a row (or press
+  Zones, Contacts, Group Lists, and Radio IDs. The app starts with **no codeplug
+  open**; the toolbar's **Open** (folder) button is always available, and a
+  **Close** button appears once a file is open — neither needs the File menu.
+  Opening a file whose size doesn't match this build's radio is refused up front
+  with a plain-language message, so a codeplug from a different model or an older,
+  incompatible firmware version can't be half-loaded. Every table sorts by any column
+  and filters from the toolbar's search field; the Channels tab adds a filter bar
+  to narrow by mode, color code, and time slot (with a Clear button once any is
+  set). Double-click a row (or press
   Edit) to open its editor in a centered sheet: Escape or Cancel closes it
-  without keeping anything, Done stages the change. Channels expose name, RX/TX,
-  mode, power, bandwidth, color code, time slot, and the DMR contact /
-  group-list / radio-ID selection (name pickers, not raw indices); contacts
+  without keeping anything, Done stages the change. Adding an entry opens that
+  same editor immediately, so a new record is never left as a blank "NEW" row;
+  a new channel starts with its RX group list set to "None". Channels expose
+  name, RX/TX, mode, power, bandwidth, color code, time slot, and the DMR contact /
+  group-list / radio-ID selection (name pickers, not raw indices). The digital
+  fields (color code, time slot, contact, RX group list, radio ID) are disabled
+  for pure Analog channels, since they carry no DMR data. Contacts
   expose name, DMR ID, and call type (a talk group is a Group call); radio IDs
   edit name and DMR ID. Every change round-trips through the Rust `Codeplug`
   model, which re-verifies the result by re-parsing. Removing a channel scrubs
@@ -157,13 +222,18 @@ Both are thin shells over the Rust core.
   list's contacts are edited as a two-column transfer: everything available on
   the left, everything already a member on the right, and buttons between them
   that move a whole multi-selection at once (⌘-click / shift-click to pick
-  several). Both columns filter, which is what makes the left one usable when a
-  codeplug carries thousands of channels or contacts. Membership is still chosen
-  by name; the slot indices stay hidden.
+  several). Double-clicking a single row moves just that one across — the fast
+  path for adding or removing one member. Both columns filter, which is what
+  makes the left one usable when a codeplug carries thousands of channels or
+  contacts. Membership is still chosen by name; the slot indices stay hidden.
 - **Writing from the Codeplug tab.** The Codeplug toolbar has its own **Write to
-  Radio** button, so you don't have to save and switch tabs to try an edit on the
-  radio. It writes what you are looking at, staged changes included, and says so
+  Radio** dropdown, so you don't have to save and switch tabs to try an edit on the
+  radio. The menu lists every connected radio (with a Refresh entry to re-scan);
+  picking one writes what you are looking at, staged changes included, and says so
   in the confirmation.
+- **Undo and redo.** ⌘Z reverses the last staged change and ⇧⌘Z reapplies it,
+  across every kind of edit — field changes, Add, Remove, Move, and bulk edits.
+  History is per document and resets when you open another one.
 - **Seeing what's unsaved.** A record with staged changes gets an orange dot in
   its row, and any section holding staged changes gets one next to it in the
   sidebar, so you can find your edits without remembering where you made them.
@@ -190,8 +260,10 @@ original as it was. It works on an unmodified codeplug too, which is the easy wa
 to fork a working setup before experimenting on it.
 
 That work file doubles as crash protection: if the app dies (or is force-quit)
-with unsaved changes, the next launch offers to restore them. Quitting or
-opening another codeplug with unsaved work prompts first.
+with unsaved changes, the next launch offers to restore them. Quitting, closing,
+or opening another codeplug with unsaved work prompts first. Closing (or a clean
+launch with nothing to recover) clears the work file, so no stale staging buffer
+is ever left behind.
 
 This matters for a codeplug specifically — it can represent hours of work and is
 often the only copy. `SaveModelTests` enforces the guarantee by hashing the file

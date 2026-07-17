@@ -90,6 +90,9 @@ final class CodeplugStore: ObservableObject {
     @Published private(set) var fileURL: URL?
     @Published private(set) var channels: [DumpChannel] = []
     @Published private(set) var zones: [DumpZone] = []
+    @Published private(set) var scanLists: [DumpScanList] = []
+    /// Read-only APRS settings (no edit path — the block is never written).
+    @Published private(set) var aprs: DumpAprs?
     @Published private(set) var contacts: [DumpContact] = []
     @Published private(set) var groupLists: [DumpGroupList] = []
     @Published private(set) var radioIds: [DumpRadioID] = []
@@ -108,6 +111,19 @@ final class CodeplugStore: ObservableObject {
 
     @Published private(set) var statusMessage: String?
     @Published var errorMessage: String?
+
+    /// Whether an undo or redo is currently available. Drives the Edit-menu
+    /// items; the stacks themselves are private.
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
+
+    /// Undo/redo history as full work-file snapshots. Each staged edit pushes the
+    /// pre-edit state; undo/redo swap whole snapshots in and out. Snapshotting the
+    /// bytes rather than inverting each operation keeps the Rust core the single
+    /// source of truth and makes every edit — add, remove, move, bulk — reversible
+    /// through one path.
+    private var undoStack: [EditSnapshot] = []
+    private var redoStack: [EditSnapshot] = []
 
     /// A previous session's unsaved work, found at launch. The UI offers to
     /// restore it; `nil` once handled.
@@ -136,6 +152,7 @@ final class CodeplugStore: ObservableObject {
             // alternative — showing nothing as edited — would be a lie.
             unsavedSlots = [:]
             unsavedSections = Set(CodeplugSection.allCases)
+            clearHistory()
             pendingRecovery = nil
             setStatus("Restored unsaved changes to \(original.lastPathComponent)")
         } catch {
@@ -166,12 +183,22 @@ final class CodeplugStore: ObservableObject {
     /// Open and parse a codeplug .bin (offline, no radio), seeding the work file
     /// with a pristine copy.
     func open(url: URL) {
+        // Reject an incompatible file up front. A codeplug from a different radio
+        // model or an older firmware has a different total size, so a length
+        // mismatch is a clear "wrong version" signal — and catching it here gives
+        // the user a plain-language reason instead of a low-level parse error
+        // after the file has already been copied into the work slot.
+        if let incompatibility = incompatibilityReason(for: url) {
+            errorMessage = incompatibility
+            return
+        }
         do {
             try Recovery.ensureDirectory()
             try replaceFile(at: Recovery.workURL, withContentsOf: url)
             load(try RadioCore.dump(binPath: Recovery.workURL.path), url: url)
             isDirty = false
             clearUnsaved()
+            clearHistory()
             Recovery.clearManifest()
             setStatus("Opened \(url.lastPathComponent): \(channels.count) channels, "
                 + "\(zones.count) zones, \(contacts.count) contacts, "
@@ -181,11 +208,50 @@ final class CodeplugStore: ObservableObject {
         }
     }
 
+    /// A plain-language reason `url` is not a codeplug this build can open, or
+    /// nil if its size matches what the core expects. Split out of `open` so the
+    /// version gate can be exercised in tests without a modal panel.
+    func incompatibilityReason(for url: URL) -> String? {
+        let expected = RadioCore.expectedCodeplugSize
+        guard let size = try? FileManager.default
+            .attributesOfItem(atPath: url.path)[.size] as? Int else {
+            return nil // Unreadable size: let the normal open path report the I/O error.
+        }
+        guard size != expected else { return nil }
+        return "“\(url.lastPathComponent)” isn’t a compatible codeplug. It is "
+            + "\(size) bytes, but this app expects \(expected) bytes for the AnyTone "
+            + "D878UV. It looks like it came from a different radio model or an older, "
+            + "incompatible firmware version."
+    }
+
+    /// Close the open codeplug and return to the empty state. Clears the staging
+    /// work file and undo history too, so nothing from this document lingers to
+    /// be picked up or half-applied later. Callers guard against discarding
+    /// unsaved changes before calling this.
+    func close() {
+        fileURL = nil
+        channels = []
+        zones = []
+        scanLists = []
+        aprs = nil
+        contacts = []
+        groupLists = []
+        radioIds = []
+        isDirty = false
+        errorMessage = nil
+        clearUnsaved()
+        clearHistory()
+        Recovery.clear()
+        setStatus("Closed codeplug")
+    }
+
     /// Populate the records from a parsed dump. Split out of `open` so it can be
     /// driven from a synthetic dump without the FFI or a real file.
     func load(_ dump: CodeplugDump, url: URL) {
         channels = dump.channels
         zones = dump.zones
+        scanLists = dump.scanLists
+        aprs = dump.aprs
         contacts = dump.contacts
         groupLists = dump.groupLists
         radioIds = dump.radioIds
@@ -264,8 +330,46 @@ final class CodeplugStore: ObservableObject {
         if ch.contactIndex != old.contactIndex { e.contactIndex = ch.contactIndex }
         if ch.radioIdIndex != old.radioIdIndex { e.radioIdIndex = ch.radioIdIndex }
         if ch.groupListIndex != old.groupListIndex { e.groupListIndex = ch.groupListIndex }
+        if ch.rxSignalingMode != old.rxSignalingMode { e.rxSignalingMode = snakeEditValue(ch.rxSignalingMode) }
+        if ch.txSignalingMode != old.txSignalingMode { e.txSignalingMode = snakeEditValue(ch.txSignalingMode) }
+        if ch.rxCtcss != old.rxCtcss { e.rxCtcss = ch.rxCtcss }
+        if ch.txCtcss != old.txCtcss { e.txCtcss = ch.txCtcss }
+        if ch.rxDcs != old.rxDcs { e.rxDcs = ch.rxDcs }
+        if ch.txDcs != old.txDcs { e.txDcs = ch.txDcs }
+        if ch.squelchMode != old.squelchMode { e.squelchMode = snakeEditValue(ch.squelchMode) }
+        if ch.optionalSignaling != old.optionalSignaling { e.optionalSignaling = snakeEditValue(ch.optionalSignaling) }
+        if ch.admit != old.admit { e.admit = snakeEditValue(ch.admit) }
+        if ch.scanListIndex != old.scanListIndex { e.scanListIndex = ch.scanListIndex }
+        if ch.dtmfIdIndex != old.dtmfIdIndex { e.dtmfIdIndex = ch.dtmfIdIndex }
+        if ch.twoToneIdIndex != old.twoToneIdIndex { e.twoToneIdIndex = ch.twoToneIdIndex }
+        if ch.fiveToneIdIndex != old.fiveToneIdIndex { e.fiveToneIdIndex = ch.fiveToneIdIndex }
+        if ch.twoToneDecodeIndex != old.twoToneDecodeIndex { e.twoToneDecodeIndex = ch.twoToneDecodeIndex }
+        if ch.rxOnly != old.rxOnly { e.rxOnly = ch.rxOnly }
+        if ch.talkAround != old.talkAround { e.talkAround = ch.talkAround }
+        if ch.callConfirm != old.callConfirm { e.callConfirm = ch.callConfirm }
+        if ch.workAlone != old.workAlone { e.workAlone = ch.workAlone }
+        if ch.simplexTdma != old.simplexTdma { e.simplexTdma = ch.simplexTdma }
+        if ch.rxAprs != old.rxAprs { e.rxAprs = ch.rxAprs }
         if stage({ $0.channels.append(e) }, "Updated channel \(formatSlot(ch.index))") {
             markUnsaved(.channels, slots: [ch.index])
+        }
+    }
+
+    func update(_ sl: DumpScanList) {
+        guard let old = scanLists.first(where: { $0.index == sl.index }), old != sl else { return }
+        var e = ScanListEdit(index: sl.index)
+        if sl.name != old.name { e.name = sl.name }
+        if sl.members != old.members { e.members = sl.members }
+        if sl.priorityChannelSelect != old.priorityChannelSelect { e.priorityChannelSelect = sl.priorityChannelSelect }
+        if sl.priorityChannel1 != old.priorityChannel1 { e.priorityChannel1 = sl.priorityChannel1 }
+        if sl.priorityChannel2 != old.priorityChannel2 { e.priorityChannel2 = sl.priorityChannel2 }
+        if sl.lookBackA != old.lookBackA { e.lookBackA = sl.lookBackA }
+        if sl.lookBackB != old.lookBackB { e.lookBackB = sl.lookBackB }
+        if sl.dropoutDelay != old.dropoutDelay { e.dropoutDelay = sl.dropoutDelay }
+        if sl.dwellTime != old.dwellTime { e.dwellTime = sl.dwellTime }
+        if sl.revertChannel != old.revertChannel { e.revertChannel = sl.revertChannel }
+        if stage({ $0.scanLists.append(e) }, "Updated scan list \(formatSlot(sl.index))") {
+            markUnsaved(.scanLists, slots: [sl.index])
         }
     }
 
@@ -339,11 +443,19 @@ final class CodeplugStore: ObservableObject {
     /// diffing the slot set across the reload.
 
     func addChannel() -> Int? {
-        addedSlot(of: \.channels, section: .channels, noun: "channel") { $0.addChannels.append(ChannelEdit()) }
+        // A fresh channel points at RX group list "None" (0xff) rather than the
+        // core's default of slot 0, which would silently attach group list #1.
+        addedSlot(of: \.channels, section: .channels, noun: "channel") {
+            $0.addChannels.append(ChannelEdit(groupListIndex: 255))
+        }
     }
 
     func addZone() -> Int? {
         addedSlot(of: \.zones, section: .zones, noun: "zone") { $0.addZones.append(ZoneEdit()) }
+    }
+
+    func addScanList() -> Int? {
+        addedSlot(of: \.scanLists, section: .scanLists, noun: "scan list") { $0.addScanLists.append(ScanListEdit()) }
     }
 
     func addContact() -> Int? {
@@ -367,6 +479,12 @@ final class CodeplugStore: ObservableObject {
     func removeZone(_ i: Int) {
         if stage({ $0.removeZones.append(i) }, "Removed zone \(formatSlot(i))") {
             markRemoved(.zones, slot: i)
+        }
+    }
+
+    func removeScanList(_ i: Int) {
+        if stage({ $0.removeScanLists.append(i) }, "Removed scan list \(formatSlot(i))") {
+            markRemoved(.scanLists, slot: i)
         }
     }
 
@@ -403,6 +521,12 @@ final class CodeplugStore: ObservableObject {
     func moveZone(_ from: Int, to: Int) {
         if stage({ $0.moveZones.append(MoveOp(from: from, to: to)) }, "Moved zone to #\(formatSlot(to))") {
             markMoved(.zones, from: from, to: to)
+        }
+    }
+
+    func moveScanList(_ from: Int, to: Int) {
+        if stage({ $0.moveScanLists.append(MoveOp(from: from, to: to)) }, "Moved scan list to #\(formatSlot(to))") {
+            markMoved(.scanLists, from: from, to: to)
         }
     }
 
@@ -460,6 +584,75 @@ final class CodeplugStore: ObservableObject {
         unsavedSections = []
     }
 
+    // MARK: - Undo / redo
+
+    /// A full staged-state snapshot: the work-file bytes plus the unsaved-change
+    /// bookkeeping that rides alongside them. Restoring one returns the editor to
+    /// exactly the state it was in when the snapshot was taken.
+    private struct EditSnapshot {
+        let workData: Data
+        let isDirty: Bool
+        let unsavedSlots: [CodeplugSection: Set<Int>]
+        let unsavedSections: Set<CodeplugSection>
+    }
+
+    /// Reverse the last staged edit, if any.
+    func undo() {
+        guard let url = fileURL, let previous = undoStack.popLast() else { return }
+        if let current = snapshot() { redoStack.append(current) }
+        restore(previous, url: url, verb: "Undo")
+        refreshUndoRedo()
+    }
+
+    /// Re-apply the last undone edit, if any.
+    func redo() {
+        guard let url = fileURL, let next = redoStack.popLast() else { return }
+        if let current = snapshot() { undoStack.append(current) }
+        restore(next, url: url, verb: "Redo")
+        refreshUndoRedo()
+    }
+
+    /// Snapshot the current staged state. Returns nil if the work file can't be
+    /// read, in which case the edit simply isn't made undoable.
+    private func snapshot() -> EditSnapshot? {
+        guard let workData = try? Data(contentsOf: Recovery.workURL) else { return nil }
+        return EditSnapshot(workData: workData, isDirty: isDirty,
+                            unsavedSlots: unsavedSlots, unsavedSections: unsavedSections)
+    }
+
+    /// Write a snapshot's bytes back to the work file and reload from them,
+    /// restoring the change bookkeeping and recovery marker to match.
+    private func restore(_ snap: EditSnapshot, url: URL, verb: String) {
+        do {
+            try snap.workData.write(to: Recovery.workURL, options: .atomic)
+            load(try RadioCore.dump(binPath: Recovery.workURL.path), url: url)
+            isDirty = snap.isDirty
+            unsavedSlots = snap.unsavedSlots
+            unsavedSections = snap.unsavedSections
+            if isDirty {
+                try? Recovery.mark(original: url)
+            } else {
+                Recovery.clearManifest()
+            }
+            setStatus(verb)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Drop all history. Called when a new document is opened or recovered, since
+    /// a snapshot only makes sense against the document it was taken from.
+    private func clearHistory() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+        refreshUndoRedo()
+    }
+
+    private func refreshUndoRedo() {
+        canUndo = !undoStack.isEmpty
+        canRedo = !redoStack.isEmpty
+    }
+
     // MARK: - Internals
 
     /// Apply one operation to the work file and reload from it. The user's
@@ -478,12 +671,20 @@ final class CodeplugStore: ObservableObject {
     @discardableResult
     private func bulkStage(_ spec: EditSpec, _ describe: String) -> Bool {
         guard let url = fileURL else { return false }
+        // Capture the pre-edit state before touching the work file, so a
+        // successful edit can be pushed onto the undo stack.
+        let pre = snapshot()
         do {
             try RadioCore.applyEdits(input: Recovery.workURL.path, spec: spec,
                                      output: Recovery.workURL.path)
             load(try RadioCore.dump(binPath: Recovery.workURL.path), url: url)
             isDirty = true
             try Recovery.mark(original: url)
+            if let pre {
+                undoStack.append(pre)
+                redoStack.removeAll()
+                refreshUndoRedo()
+            }
             setStatus("\(describe) — unsaved")
             return true
         } catch {

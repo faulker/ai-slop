@@ -9,6 +9,7 @@
 
 use serde::Deserialize;
 
+use super::channel::{Admit, OptSignaling, SignalingMode, SquelchMode};
 use super::{Bandwidth, CallType, Channel, ChannelMode, Codeplug, Power};
 
 /// Maximum name length for the 16-byte Latin1 name slots.
@@ -34,6 +35,14 @@ pub struct EditSpec {
     remove_zones: Vec<usize>,
     #[serde(default)]
     move_zones: Vec<MoveOp>,
+    #[serde(default)]
+    scan_lists: Vec<ScanListEdit>,
+    #[serde(default)]
+    add_scan_lists: Vec<ScanListFields>,
+    #[serde(default)]
+    remove_scan_lists: Vec<usize>,
+    #[serde(default)]
+    move_scan_lists: Vec<MoveOp>,
     #[serde(default)]
     contacts: Vec<ContactEdit>,
     #[serde(default)]
@@ -85,6 +94,46 @@ struct ChannelFields {
     contact_index: Option<u32>,
     radio_id_index: Option<u8>,
     group_list_index: Option<u8>,
+    /// RX-only / "PTT prohibit".
+    rx_only: Option<bool>,
+    /// Talk-around / simplex.
+    talk_around: Option<bool>,
+    /// Call confirmation.
+    call_confirm: Option<bool>,
+    /// Lone-worker / "work alone".
+    work_alone: Option<bool>,
+    /// Simplex TDMA.
+    simplex_tdma: Option<bool>,
+    /// Receive APRS.
+    rx_aprs: Option<bool>,
+    /// "TX permit": "always" | "channel_free" | "different_color_code" | "same_color_code".
+    admit: Option<String>,
+    /// "carrier" | "tone".
+    squelch_mode: Option<String>,
+    /// "off" | "dtmf" | "two_tone" | "five_tone".
+    optional_signaling: Option<String>,
+    /// RX signaling type: "none" | "ctcss" | "dcs".
+    rx_signaling_mode: Option<String>,
+    /// TX signaling type: "none" | "ctcss" | "dcs".
+    tx_signaling_mode: Option<String>,
+    /// RX CTCSS tone index.
+    rx_ctcss: Option<u8>,
+    /// TX CTCSS tone index.
+    tx_ctcss: Option<u8>,
+    /// RX DCS code word.
+    rx_dcs: Option<u16>,
+    /// TX DCS code word.
+    tx_dcs: Option<u16>,
+    /// Scan-list index (`0xff` = none).
+    scan_list_index: Option<u8>,
+    /// DTMF ID index.
+    dtmf_id_index: Option<u8>,
+    /// 2-tone ID index.
+    two_tone_id_index: Option<u8>,
+    /// 5-tone ID index.
+    five_tone_id_index: Option<u8>,
+    /// 2-tone decode index.
+    two_tone_decode_index: Option<u16>,
 }
 
 /// Update to a single active channel, addressed by its index.
@@ -109,6 +158,31 @@ struct ZoneEdit {
     index: usize,
     #[serde(flatten)]
     fields: ZoneFields,
+}
+
+/// Editable scan-list fields (no index); shared by add and update. Absent
+/// fields are left untouched.
+#[derive(Deserialize, Default)]
+struct ScanListFields {
+    name: Option<String>,
+    /// Full replacement member channel-index list.
+    members: Option<Vec<u16>>,
+    priority_channel_select: Option<u8>,
+    priority_channel_1: Option<u16>,
+    priority_channel_2: Option<u16>,
+    look_back_a: Option<u16>,
+    look_back_b: Option<u16>,
+    dropout_delay: Option<u16>,
+    dwell_time: Option<u16>,
+    revert_channel: Option<u8>,
+}
+
+/// Update to a single active scan list, addressed by its index.
+#[derive(Deserialize)]
+struct ScanListEdit {
+    index: usize,
+    #[serde(flatten)]
+    fields: ScanListFields,
 }
 
 /// Editable contact fields (no index); shared by add and update.
@@ -181,6 +255,12 @@ pub fn apply_edits(data: &[u8], edits_json: &str) -> Result<Vec<u8>, String> {
             .ok_or_else(|| format!("zone {} is not active in this codeplug", z.index))?;
         apply_zone_fields(zone, z.index, &z.fields)?;
     }
+    for s in &spec.scan_lists {
+        let sl = cp
+            .scan_list_mut(s.index)
+            .ok_or_else(|| format!("scan list {} is not active in this codeplug", s.index))?;
+        apply_scan_list_fields(sl, s.index, &s.fields)?;
+    }
     for c in &spec.contacts {
         apply_contact_fields(&mut cp, c.index, &c.fields)?;
     }
@@ -205,6 +285,9 @@ pub fn apply_edits(data: &[u8], edits_json: &str) -> Result<Vec<u8>, String> {
     for m in &spec.move_zones {
         cp.move_zone(m.from, m.to)?;
     }
+    for m in &spec.move_scan_lists {
+        cp.move_scan_list(m.from, m.to)?;
+    }
     for m in &spec.move_contacts {
         cp.move_contact(m.from, m.to)?;
     }
@@ -224,6 +307,11 @@ pub fn apply_edits(data: &[u8], edits_json: &str) -> Result<Vec<u8>, String> {
     for &i in &spec.remove_zones {
         if !cp.remove_zone(i) {
             return Err(format!("cannot remove zone {i}: not active"));
+        }
+    }
+    for &i in &spec.remove_scan_lists {
+        if !cp.remove_scan_list(i) {
+            return Err(format!("cannot remove scan list {i}: not active"));
         }
     }
     for &i in &spec.remove_contacts {
@@ -250,6 +338,10 @@ pub fn apply_edits(data: &[u8], edits_json: &str) -> Result<Vec<u8>, String> {
     for f in &spec.add_zones {
         let i = cp.add_zone().ok_or("no free zone slots")?;
         apply_zone_fields(cp.zone_mut(i).unwrap(), i, f)?;
+    }
+    for f in &spec.add_scan_lists {
+        let i = cp.add_scan_list().ok_or("no free scan-list slots")?;
+        apply_scan_list_fields(cp.scan_list_mut(i).unwrap(), i, f)?;
     }
     for f in &spec.add_contacts {
         let i = cp.add_contact().ok_or("no free contact slots")?;
@@ -311,6 +403,9 @@ pub fn apply_edits(data: &[u8], edits_json: &str) -> Result<Vec<u8>, String> {
     }
     verify_moved("channel", &spec.move_channels, |i| check.channels().any(|c| c.index == i))?;
     verify_moved("zone", &spec.move_zones, |i| check.zones().any(|z| z.index == i))?;
+    verify_moved("scan list", &spec.move_scan_lists, |i| {
+        check.scan_lists().any(|s| s.index == i)
+    })?;
     verify_moved("contact", &spec.move_contacts, |i| check.contacts().any(|c| c.index == i))?;
     verify_moved("group list", &spec.move_group_lists, |i| {
         check.group_lists().any(|g| g.index == i)
@@ -410,6 +505,47 @@ fn parse_bandwidth(s: &str) -> Result<Bandwidth, String> {
     }
 }
 
+/// Parse the channel `admit` ("TX permit") string into an [`Admit`].
+fn parse_admit(s: &str) -> Result<Admit, String> {
+    match s {
+        "always" => Ok(Admit::Always),
+        "channel_free" => Ok(Admit::ChannelFree),
+        "different_color_code" => Ok(Admit::DifferentColorCode),
+        "same_color_code" => Ok(Admit::SameColorCode),
+        other => Err(format!("unknown admit/TX-permit {other:?}")),
+    }
+}
+
+/// Parse the channel `squelch_mode` string into a [`SquelchMode`].
+fn parse_squelch_mode(s: &str) -> Result<SquelchMode, String> {
+    match s {
+        "carrier" => Ok(SquelchMode::Carrier),
+        "tone" => Ok(SquelchMode::Tone),
+        other => Err(format!("unknown squelch mode {other:?}")),
+    }
+}
+
+/// Parse the channel `optional_signaling` string into an [`OptSignaling`].
+fn parse_optional_signaling(s: &str) -> Result<OptSignaling, String> {
+    match s {
+        "off" => Ok(OptSignaling::Off),
+        "dtmf" => Ok(OptSignaling::Dtmf),
+        "two_tone" => Ok(OptSignaling::TwoTone),
+        "five_tone" => Ok(OptSignaling::FiveTone),
+        other => Err(format!("unknown optional signaling {other:?}")),
+    }
+}
+
+/// Parse a channel signaling-mode string into a [`SignalingMode`].
+fn parse_signaling_mode(s: &str) -> Result<SignalingMode, String> {
+    match s {
+        "none" => Ok(SignalingMode::None),
+        "ctcss" => Ok(SignalingMode::Ctcss),
+        "dcs" => Ok(SignalingMode::Dcs),
+        other => Err(format!("unknown signaling mode {other:?}")),
+    }
+}
+
 /// Parse the contact `call_type` string into a [`CallType`].
 fn parse_call_type(s: &str) -> Result<CallType, String> {
     match s {
@@ -464,6 +600,66 @@ fn apply_channel_fields(ch: &mut Channel, index: usize, f: &ChannelFields) -> Re
     if let Some(gi) = f.group_list_index {
         ch.set_group_list_index(gi);
     }
+    if let Some(on) = f.rx_only {
+        ch.set_rx_only(on);
+    }
+    if let Some(on) = f.talk_around {
+        ch.set_talk_around(on);
+    }
+    if let Some(on) = f.call_confirm {
+        ch.set_call_confirm(on);
+    }
+    if let Some(on) = f.work_alone {
+        ch.set_work_alone(on);
+    }
+    if let Some(on) = f.simplex_tdma {
+        ch.set_simplex_tdma(on);
+    }
+    if let Some(on) = f.rx_aprs {
+        ch.set_rx_aprs(on);
+    }
+    if let Some(a) = &f.admit {
+        ch.set_admit(parse_admit(a)?);
+    }
+    if let Some(sq) = &f.squelch_mode {
+        ch.set_squelch_mode(parse_squelch_mode(sq)?);
+    }
+    if let Some(os) = &f.optional_signaling {
+        ch.set_optional_signaling(parse_optional_signaling(os)?);
+    }
+    if let Some(m) = &f.rx_signaling_mode {
+        ch.set_rx_signaling_mode(parse_signaling_mode(m)?);
+    }
+    if let Some(m) = &f.tx_signaling_mode {
+        ch.set_tx_signaling_mode(parse_signaling_mode(m)?);
+    }
+    if let Some(t) = f.rx_ctcss {
+        ch.set_rx_ctcss(t);
+    }
+    if let Some(t) = f.tx_ctcss {
+        ch.set_tx_ctcss(t);
+    }
+    if let Some(c) = f.rx_dcs {
+        ch.set_rx_dcs(c);
+    }
+    if let Some(c) = f.tx_dcs {
+        ch.set_tx_dcs(c);
+    }
+    if let Some(si) = f.scan_list_index {
+        ch.set_scan_list_index(si);
+    }
+    if let Some(di) = f.dtmf_id_index {
+        ch.set_dtmf_id_index(di);
+    }
+    if let Some(ti) = f.two_tone_id_index {
+        ch.set_two_tone_id_index(ti);
+    }
+    if let Some(fi) = f.five_tone_id_index {
+        ch.set_five_tone_id_index(fi);
+    }
+    if let Some(di) = f.two_tone_decode_index {
+        ch.set_two_tone_decode_index(di);
+    }
     Ok(())
 }
 
@@ -475,6 +671,47 @@ fn apply_zone_fields(zone: &mut super::Zone, index: usize, f: &ZoneFields) -> Re
     }
     if let Some(members) = &f.members {
         zone.set_members(members);
+    }
+    Ok(())
+}
+
+/// Apply scan-list field edits to a mutable scan-list record. Absent fields are
+/// left untouched.
+fn apply_scan_list_fields(
+    sl: &mut super::ScanList,
+    index: usize,
+    f: &ScanListFields,
+) -> Result<(), String> {
+    if let Some(name) = &f.name {
+        validate_name("scan list", index, name)?;
+        sl.set_name(name);
+    }
+    if let Some(members) = &f.members {
+        sl.set_members(members);
+    }
+    if let Some(v) = f.priority_channel_select {
+        sl.set_priority_channel_select(v);
+    }
+    if let Some(v) = f.priority_channel_1 {
+        sl.set_priority_channel_1(v);
+    }
+    if let Some(v) = f.priority_channel_2 {
+        sl.set_priority_channel_2(v);
+    }
+    if let Some(v) = f.look_back_a {
+        sl.set_look_back_a(v);
+    }
+    if let Some(v) = f.look_back_b {
+        sl.set_look_back_b(v);
+    }
+    if let Some(v) = f.dropout_delay {
+        sl.set_dropout_delay(v);
+    }
+    if let Some(v) = f.dwell_time {
+        sl.set_dwell_time(v);
+    }
+    if let Some(v) = f.revert_channel {
+        sl.set_revert_channel(v);
     }
     Ok(())
 }

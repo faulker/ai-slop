@@ -73,6 +73,7 @@ struct ChannelEditorSheet: View {
     let contacts: [DumpContact]
     let groupLists: [DumpGroupList]
     let radioIds: [DumpRadioID]
+    let scanLists: [DumpScanList]
     let onCommit: (DumpChannel) -> Void
 
     @State private var draft: DumpChannel
@@ -80,12 +81,16 @@ struct ChannelEditorSheet: View {
 
     /// `0xff` in the group-list index means "no RX group list".
     private static let groupListNone = 255
+    /// `0xff` in the scan-list index means "no scan list".
+    private static let scanListNone = 255
 
     init(channel: DumpChannel, contacts: [DumpContact], groupLists: [DumpGroupList],
-         radioIds: [DumpRadioID], onCommit: @escaping (DumpChannel) -> Void) {
+         radioIds: [DumpRadioID], scanLists: [DumpScanList] = [],
+         onCommit: @escaping (DumpChannel) -> Void) {
         self.contacts = contacts
         self.groupLists = groupLists
         self.radioIds = radioIds
+        self.scanLists = scanLists
         self.onCommit = onCommit
         _draft = State(initialValue: channel)
     }
@@ -113,11 +118,13 @@ struct ChannelEditorSheet: View {
 
                 Stepper("Color code: \(String(draft.colorCode))",
                         value: $draft.colorCode, in: 0...15)
+                    .disabled(!isDigital)
                 Picker("Time slot", selection: $draft.timeSlot) {
                     Text("1").tag(1)
                     Text("2").tag(2)
                 }
                 .pickerStyle(.segmented)
+                .disabled(!isDigital)
 
                 Picker("Contact", selection: $draft.contactIndex) {
                     // A channel can reference a contact that was removed; without
@@ -131,7 +138,7 @@ struct ChannelEditorSheet: View {
                         Text(verbatim: "\(c.name) (\(formatDMRID(c.number)))").tag(UInt32(c.index))
                     }
                 }
-                .disabled(contacts.isEmpty)
+                .disabled(contacts.isEmpty || !isDigital)
 
                 Picker("RX group list", selection: $draft.groupListIndex) {
                     Text("None").tag(Self.groupListNone)
@@ -141,6 +148,7 @@ struct ChannelEditorSheet: View {
                     }
                     ForEach(groupLists) { g in Text(g.name).tag(g.index) }
                 }
+                .disabled(!isDigital)
 
                 Picker("Radio ID", selection: $draft.radioIdIndex) {
                     if !radioIds.contains(where: { $0.index == draft.radioIdIndex }) {
@@ -150,11 +158,62 @@ struct ChannelEditorSheet: View {
                         Text(verbatim: "\(r.name) (\(formatDMRID(r.number)))").tag(r.index)
                     }
                 }
-                .disabled(radioIds.isEmpty)
+                .disabled(radioIds.isEmpty || !isDigital)
+
+                Picker("Scan list", selection: $draft.scanListIndex) {
+                    Text("None").tag(Self.scanListNone)
+                    if draft.scanListIndex != Self.scanListNone
+                        && !scanLists.contains(where: { $0.index == draft.scanListIndex }) {
+                        Text("#\(formatSlot(draft.scanListIndex)) (missing)").tag(draft.scanListIndex)
+                    }
+                    ForEach(scanLists) { s in Text(s.name).tag(s.index) }
+                }
+
+                Picker("TX permit", selection: $draft.admit) {
+                    ForEach(admitOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                }
+
+                Section("Analog") {
+                    Picker("RX signaling", selection: $draft.rxSignalingMode) {
+                        ForEach(signalingModeOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
+                    Picker("TX signaling", selection: $draft.txSignalingMode) {
+                        ForEach(signalingModeOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
+                    Stepper("RX CTCSS index: \(String(draft.rxCtcss))", value: $draft.rxCtcss, in: 0...255)
+                    Stepper("TX CTCSS index: \(String(draft.txCtcss))", value: $draft.txCtcss, in: 0...255)
+                    Stepper("RX DCS code: \(String(draft.rxDcs))", value: $draft.rxDcs, in: 0...65535)
+                    Stepper("TX DCS code: \(String(draft.txDcs))", value: $draft.txDcs, in: 0...65535)
+                    Picker("Squelch mode", selection: $draft.squelchMode) {
+                        ForEach(squelchModeOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
+                    Picker("Optional signal", selection: $draft.optionalSignaling) {
+                        ForEach(optionalSignalingOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
+                    Stepper("DTMF ID index: \(String(draft.dtmfIdIndex))", value: $draft.dtmfIdIndex, in: 0...255)
+                    Stepper("2-Tone ID index: \(String(draft.twoToneIdIndex))", value: $draft.twoToneIdIndex, in: 0...255)
+                    Stepper("5-Tone ID index: \(String(draft.fiveToneIdIndex))", value: $draft.fiveToneIdIndex, in: 0...255)
+                }
+                .disabled(!hasAnalog)
+
+                Section("Flags") {
+                    Toggle("PTT prohibit (RX only)", isOn: $draft.rxOnly)
+                    Toggle("Talk around (simplex)", isOn: $draft.talkAround)
+                    Toggle("Work alone", isOn: $draft.workAlone)
+                    Toggle("Call confirmation", isOn: $draft.callConfirm)
+                    Toggle("APRS RX", isOn: $draft.rxAprs)
+                    Toggle("Simplex TDMA", isOn: $draft.simplexTdma)
+                }
             }
             .formStyle(.grouped)
         }
     }
+
+    /// Analog-only channels carry no DMR data, so the digital fields are disabled.
+    private var isDigital: Bool { modeHasDigital(draft.mode) }
+
+    /// Pure-digital channels carry no analog signaling, so those rows are disabled.
+    private var hasAnalog: Bool { draft.mode != "Digital" }
 
     /// Bridge a Hz field to an editable MHz value, rounded to the codeplug's
     /// 10 Hz BCD resolution.
@@ -205,6 +264,78 @@ struct ZoneEditorSheet: View {
         channels.map {
             MemberCandidate(index: $0.index,
                             label: "\(formatSlot($0.index)) — \($0.name) (\(formatMHz($0.rxFrequencyHz)))")
+        }
+    }
+}
+
+// MARK: - Scan List
+
+/// Editor for one scan list: name, member channels, priority/revert channels,
+/// and the scan timing parameters (look-back, dropout, dwell — raw values).
+struct ScanListEditorSheet: View {
+    let channels: [DumpChannel]
+    let onCommit: (DumpScanList) -> Void
+
+    @State private var draft: DumpScanList
+    @Environment(\.dismiss) private var dismiss
+
+    init(scanList: DumpScanList, channels: [DumpChannel], onCommit: @escaping (DumpScanList) -> Void) {
+        self.channels = channels
+        self.onCommit = onCommit
+        _draft = State(initialValue: scanList)
+    }
+
+    var body: some View {
+        EditorSheet(title: "Scan List \(formatSlot(draft.index))",
+                    width: 760,
+                    onCancel: { dismiss() },
+                    onDone: { onCommit(draft); dismiss() }) {
+            VStack(alignment: .leading, spacing: Spacing.stack) {
+                StackedField(label: "Name") {
+                    TextField("Name", text: $draft.name)
+                }
+                MemberTransferField(label: "Channels", ownerNoun: "scan list",
+                                    candidates: candidates, members: $draft.members)
+                Form {
+                    Picker("Priority channel select", selection: $draft.priorityChannelSelect) {
+                        ForEach(priorityChannelSelectOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
+                    priorityPicker("Priority channel 1", selection: $draft.priorityChannel1)
+                    priorityPicker("Priority channel 2", selection: $draft.priorityChannel2)
+                    Stepper("Revert channel (raw): \(String(draft.revertChannel))",
+                            value: $draft.revertChannel, in: 0...255)
+                    Stepper("Look back A (raw): \(String(draft.lookBackA))",
+                            value: $draft.lookBackA, in: 0...65535)
+                    Stepper("Look back B (raw): \(String(draft.lookBackB))",
+                            value: $draft.lookBackB, in: 0...65535)
+                    Stepper("Dropout delay (raw): \(String(draft.dropoutDelay))",
+                            value: $draft.dropoutDelay, in: 0...65535)
+                    Stepper("Dwell time (raw): \(String(draft.dwellTime))",
+                            value: $draft.dwellTime, in: 0...65535)
+                }
+                .formStyle(.grouped)
+            }
+        }
+    }
+
+    /// Channels as pickable members, labeled by slot, name, and RX frequency.
+    private var candidates: [MemberCandidate] {
+        channels.map {
+            MemberCandidate(index: $0.index,
+                            label: "\(formatSlot($0.index)) — \($0.name) (\(formatMHz($0.rxFrequencyHz)))")
+        }
+    }
+
+    /// A channel picker with an "Off" (0xffff) option, tolerant of a stale index.
+    @ViewBuilder
+    private func priorityPicker(_ label: String, selection: Binding<Int>) -> some View {
+        Picker(label, selection: selection) {
+            Text("Off").tag(channelRefNone)
+            if selection.wrappedValue != channelRefNone
+                && !channels.contains(where: { $0.index == selection.wrappedValue }) {
+                Text("#\(formatSlot(selection.wrappedValue)) (missing)").tag(selection.wrappedValue)
+            }
+            ForEach(channels) { c in Text(verbatim: "\(formatSlot(c.index)) — \(c.name)").tag(c.index) }
         }
     }
 }
@@ -437,14 +568,16 @@ struct MemberTransferField: View {
                        items: filtered(available, by: availableQuery),
                        query: $availableQuery,
                        selection: $availableSelection,
-                       emptyText: "Nothing left to add")
+                       emptyText: "Nothing left to add",
+                       onDoubleClick: addOne)
                 transferButtons
                 column(title: "In this \(ownerNoun)",
                        count: members.count,
                        items: filtered(memberItems, by: memberQuery),
                        query: $memberQuery,
                        selection: $memberSelection,
-                       emptyText: "No \(label.lowercased()) yet")
+                       emptyText: "No \(label.lowercased()) yet",
+                       onDoubleClick: removeOne)
             }
         }
     }
@@ -469,7 +602,8 @@ struct MemberTransferField: View {
 
     private func column(title: String, count: Int, items: [MemberCandidate],
                         query: Binding<String>, selection: Binding<Set<Int>>,
-                        emptyText: String) -> some View {
+                        emptyText: String,
+                        onDoubleClick: @escaping (MemberCandidate) -> Void) -> some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             Text("\(title) (\(String(count)))")
                 .font(.caption)
@@ -480,6 +614,12 @@ struct MemberTransferField: View {
                 Text(item.label)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    // Double-click moves that one row across, the fast path for
+                    // picking members by hand. `simultaneousGesture` so it rides
+                    // alongside the List's own single-click selection rather than
+                    // swallowing it.
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleClick(item) })
             }
             .listStyle(.bordered(alternatesRowBackgrounds: true))
             .frame(height: Self.listHeight)
@@ -514,5 +654,17 @@ struct MemberTransferField: View {
     private func removeSelected() {
         members = MemberTransfer.removing(memberSelection, from: members)
         memberSelection = []
+    }
+
+    /// Add one candidate (the double-click path on the Available column).
+    private func addOne(_ item: MemberCandidate) {
+        members = MemberTransfer.adding([item.index], candidates: candidates, to: members)
+        availableSelection.remove(item.index)
+    }
+
+    /// Remove one member (the double-click path on the members column).
+    private func removeOne(_ item: MemberCandidate) {
+        members = MemberTransfer.removing([item.index], from: members)
+        memberSelection.remove(item.index)
     }
 }

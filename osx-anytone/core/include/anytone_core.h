@@ -31,6 +31,11 @@ typedef void (*anytone_progress_cb)(size_t done, size_t total, void *user);
 /* Free a string previously returned by any function below. NULL is a no-op. */
 void anytone_string_free(char *s);
 
+/* Exact byte length of a full codeplug image for the supported radio. A .bin of
+ * any other length is from a different model/firmware version and is
+ * incompatible with this build. */
+size_t anytone_codeplug_size(void);
+
 /* Enumerate serial ports as a JSON array:
  * [{"name","vid","pid","product","likely_radio"}, ...]. */
 char *anytone_ports_json(char **err_out);

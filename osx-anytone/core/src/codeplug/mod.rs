@@ -41,21 +41,25 @@
 //!   for both the channel and zone bitmaps.
 //! - `readASCII`/`writeASCII`: fixed-length, padded/terminated with the fill byte.
 
+pub mod aprs;
 pub mod channel;
 pub mod contact;
 pub mod edits;
 pub mod group_list;
 pub mod radio_id;
+pub mod scan_list;
 pub mod zone;
 
 use crate::device::REGIONS;
 use crate::error::{Error, Result};
 
+pub use aprs::{AprsConfig, APRS_SETTINGS_SIZE};
 pub use channel::{Bandwidth, Channel, ChannelMode, Power, RepeaterMode, CHANNEL_SIZE};
 pub use edits::apply_edits;
 pub use contact::{CallType, Contact, CONTACT_SIZE};
 pub use group_list::{GroupList, GROUP_LIST_ELEMENT, GROUP_LIST_SLOT};
 pub use radio_id::{RadioId, RADIO_ID_SIZE};
+pub use scan_list::{ScanList, SCAN_LIST_SIZE};
 pub use zone::{Zone, ZONE_CHANNELS_SLOT, ZONE_NAME_SLOT};
 
 use serde::Serialize;
@@ -102,15 +106,12 @@ pub const ZONE_CHANNEL_LIST: u32 = 0x0250_0100;
 pub const ZONE_CHANNEL_LIST_SIZE: usize = 0x400;
 /// Offset of the VFO A selections within the zone channel list
 /// (qdmr `ZoneChannelListElement::Offset::channelsA`).
-#[cfg(test)]
 pub(crate) const ZONE_CHANNELS_A: usize = 0x000;
 /// Offset of the VFO B selections within the zone channel list
 /// (qdmr `ZoneChannelListElement::Offset::channelsB`).
-#[cfg(test)]
 pub(crate) const ZONE_CHANNELS_B: usize = 0x200;
 /// Sentinel for an unset zone channel selection (qdmr `hasChannelA` tests
 /// against `0xffff`).
-#[cfg(test)]
 const ZONE_CHANNEL_UNSET: u16 = 0xffff;
 
 /// Radio address of the first contact bank.
@@ -126,7 +127,12 @@ pub const CONTACT_BITMAP: u32 = 0x0264_0000;
 /// Radio address of the contact index (u32-le list of active contact indices).
 pub const CONTACT_INDEX: u32 = 0x0260_0000;
 /// Radio address of the contact ID table (id→index map, 8 bytes per entry).
-pub const CONTACT_ID_TABLE: u32 = 0x0434_0000;
+///
+/// The vendor CPS writes this table to **0x04800000**, confirmed by a CPS write
+/// trace on firmware `D878UV2V101`; qdmr's D868UV `0x04340000` is wrong for the
+/// II Plus. Our per-entry encoding is byte-identical to the vendor's — only the
+/// base address differs. See `docs/diagnosing-cps-breakage.md`.
+pub const CONTACT_ID_TABLE: u32 = 0x0480_0000;
 /// Byte size of one contact ID-table entry (qdmr `ContactMapElement::size`).
 pub const CONTACT_MAP_ENTRY: usize = 8;
 /// Byte size of a contact storage block (4 contacts × 0x64, qdmr
@@ -134,6 +140,32 @@ pub const CONTACT_MAP_ENTRY: usize = 8;
 pub const CONTACT_BLOCK: usize = 0x190;
 /// Contacts stored per block (qdmr `Limit::contactsPerBlock`).
 pub const CONTACTS_PER_BLOCK: usize = 4;
+
+/// Radio address of the APRS settings block (qdmr
+/// `D878UVCodeplug::Offset::aprsSettings`).
+///
+/// **Read-only.** Sits inside the radio-settings block
+/// (0x02500000 – 0x025014FF) that must never be written. Captured for display /
+/// backup only; `serialize` and `write_codeplug` never touch it.
+pub const APRS_SETTINGS: u32 = 0x0250_1000;
+/// Byte length of the APRS region captured for backup / display
+/// (0x02501000 – 0x02501490, per `docs/codeplug-memory-map.md`).
+pub const APRS_REGION_SIZE: usize = 0x490;
+
+/// Radio address of the first scan-list bank (qdmr `Offset::scanListBanks`).
+pub const SCAN_LISTS: u32 = 0x0108_0000;
+/// Address spacing between successive scan lists within a bank
+/// (qdmr `Offset::betweenScanLists`).
+pub const BETWEEN_SCAN_LISTS: u32 = 0x0000_0200;
+/// Address spacing between successive scan-list banks
+/// (qdmr `Offset::betweenScanListBanks`).
+pub const BETWEEN_SCAN_LIST_BANKS: u32 = 0x0004_0000;
+/// Scan lists stored per bank (qdmr `Limit::numScanListsPerBank`).
+pub const SCAN_LISTS_PER_BANK: usize = 16;
+/// Maximum number of scan lists the radio supports (qdmr `Limit::numScanLists`).
+pub const NUM_SCAN_LISTS: usize = 250;
+/// Radio address of the scan-list valid-bitmap (qdmr `Offset::scanListBitmap`).
+pub const SCAN_LIST_BITMAP: u32 = 0x024c_1340;
 
 /// Radio address of the first RX group list.
 pub const GROUP_LISTS: u32 = 0x0298_0000;
@@ -166,6 +198,9 @@ pub struct Codeplug {
     /// One slot per zone index (`0..NUM_ZONES`); `Some` when the zone
     /// valid-bitmap marks it active.
     zones: Vec<Option<Zone>>,
+    /// One slot per scan-list index (`0..NUM_SCAN_LISTS`); `Some` when the
+    /// scan-list valid-bitmap marks it active.
+    scan_lists: Vec<Option<ScanList>>,
     /// One slot per contact index (`0..NUM_CONTACTS`); `Some` when the
     /// (inverted) contact valid-bitmap marks it active.
     contacts: Vec<Option<Contact>>,
@@ -173,6 +208,8 @@ pub struct Codeplug {
     group_lists: Vec<Option<GroupList>>,
     /// One slot per radio-ID index (`0..NUM_RADIO_IDS`); `Some` when active.
     radio_ids: Vec<Option<RadioId>>,
+    /// Read-only APRS settings decoded for display; never serialized back.
+    aprs: Option<AprsConfig>,
     /// Set when a contact was added, removed, or had its number/type changed —
     /// the only mutations that require rebuilding the reverse-lookup tables. Any
     /// other edit leaves the contact index / ID table exactly as parsed, so
@@ -187,12 +224,16 @@ pub struct CodeplugJson<'a> {
     pub channels: Vec<&'a Channel>,
     /// The active zones, in ascending index order.
     pub zones: Vec<&'a Zone>,
+    /// The active scan lists, in ascending index order.
+    pub scan_lists: Vec<&'a ScanList>,
     /// The active contacts / talk groups, in ascending index order.
     pub contacts: Vec<&'a Contact>,
     /// The active RX group lists, in ascending index order.
     pub group_lists: Vec<&'a GroupList>,
     /// The active radio IDs, in ascending index order.
     pub radio_ids: Vec<&'a RadioId>,
+    /// Read-only APRS settings, if present.
+    pub aprs: Option<&'a AprsConfig>,
 }
 
 impl Codeplug {
@@ -234,9 +275,26 @@ impl Codeplug {
                     .ok_or_else(|| Error::Parse(format!("zone {i} channels address unmapped")))?;
                 let name = &raw[name_off..name_off + ZONE_NAME_SLOT];
                 let chans = &raw[chan_off..chan_off + ZONE_CHANNELS_SLOT];
-                zones.push(Some(Zone::parse(i, name, chans)?));
+                let mut zone = Zone::parse(i, name, chans)?;
+                zone.set_display_ab(zone_channel_selection(&raw, ZONE_CHANNELS_A, i),
+                    zone_channel_selection(&raw, ZONE_CHANNELS_B, i));
+                zones.push(Some(zone));
             } else {
                 zones.push(None);
+            }
+        }
+
+        // Scan lists: honor the (normal) scan-list valid-bitmap.
+        let scan_bitmap = read_region(&raw, SCAN_LIST_BITMAP, 0x20)?;
+        let mut scan_lists = Vec::with_capacity(NUM_SCAN_LISTS);
+        for i in 0..NUM_SCAN_LISTS {
+            if bit_set(scan_bitmap, i) {
+                let off = global_offset(scan_list_addr(i))
+                    .ok_or_else(|| Error::Parse(format!("scan list {i} address unmapped")))?;
+                let rec = &raw[off..off + SCAN_LIST_SIZE];
+                scan_lists.push(Some(ScanList::parse(i, rec)?));
+            } else {
+                scan_lists.push(None);
             }
         }
 
@@ -284,13 +342,20 @@ impl Codeplug {
             }
         }
 
+        // APRS settings: read-only display projection (never written back).
+        let aprs = global_offset(APRS_SETTINGS)
+            .and_then(|off| raw.get(off..off + APRS_SETTINGS_SIZE))
+            .and_then(AprsConfig::parse);
+
         Ok(Codeplug {
             raw,
             channels,
             zones,
+            scan_lists,
             contacts,
             group_lists,
             radio_ids,
+            aprs,
             contacts_dirty: false,
         })
     }
@@ -324,6 +389,16 @@ impl Codeplug {
                 }
             }
             write_bit(&mut out, ZONE_BITMAP, i, slot.is_some(), false);
+        }
+
+        // Scan lists + their (normal) valid-bitmap.
+        for (i, slot) in self.scan_lists.iter().enumerate() {
+            if let Some(sl) = slot {
+                if let Some(off) = global_offset(scan_list_addr(i)) {
+                    out[off..off + SCAN_LIST_SIZE].copy_from_slice(sl.encode());
+                }
+            }
+            write_bit(&mut out, SCAN_LIST_BITMAP, i, slot.is_some(), false);
         }
 
         // Contacts + their INVERTED valid-bitmap (active = bit clear).
@@ -481,6 +556,22 @@ impl Codeplug {
         self.zones.get_mut(index).and_then(|z| z.as_mut())
     }
 
+    /// Iterate the active scan lists in ascending index order.
+    pub fn scan_lists(&self) -> impl Iterator<Item = &ScanList> {
+        self.scan_lists.iter().filter_map(|s| s.as_ref())
+    }
+
+    /// Mutable access to an active scan list by index, or `None` if the index is
+    /// out of range or the slot is inactive.
+    pub fn scan_list_mut(&mut self, index: usize) -> Option<&mut ScanList> {
+        self.scan_lists.get_mut(index).and_then(|s| s.as_mut())
+    }
+
+    /// The active scan-list indices in ascending order.
+    pub fn active_scan_list_indices(&self) -> Vec<usize> {
+        self.scan_lists().map(|s| s.index).collect()
+    }
+
     /// Iterate the active contacts in ascending index order.
     pub fn contacts(&self) -> impl Iterator<Item = &Contact> {
         self.contacts.iter().filter_map(|c| c.as_ref())
@@ -494,6 +585,11 @@ impl Codeplug {
     /// Iterate the active radio IDs in ascending index order.
     pub fn radio_ids(&self) -> impl Iterator<Item = &RadioId> {
         self.radio_ids.iter().filter_map(|r| r.as_ref())
+    }
+
+    /// The read-only APRS settings, if the block was present.
+    pub fn aprs(&self) -> Option<&AprsConfig> {
+        self.aprs.as_ref()
     }
 
     /// Mutable access to an active group list by index.
@@ -576,6 +672,19 @@ impl Codeplug {
                 zone.set_members(&kept);
             }
         }
+        for sl in self.scan_lists.iter_mut().flatten() {
+            if sl.members.contains(&target) {
+                let kept: Vec<u16> =
+                    sl.members.iter().copied().filter(|&c| c != target).collect();
+                sl.set_members(&kept);
+            }
+            if sl.priority_channel_1 == target {
+                sl.set_priority_channel_1(0xffff);
+            }
+            if sl.priority_channel_2 == target {
+                sl.set_priority_channel_2(0xffff);
+            }
+        }
         true
     }
 
@@ -595,6 +704,30 @@ impl Codeplug {
             }
             _ => false,
         }
+    }
+
+    /// Add a scan list at the first free slot; returns its index or `None`.
+    pub fn add_scan_list(&mut self) -> Option<usize> {
+        let i = first_free(&self.scan_lists)?;
+        self.scan_lists[i] = Some(ScanList::default_record(i));
+        Some(i)
+    }
+
+    /// Remove scan list `index`, clearing it from every channel's
+    /// `scan_list_index` (reset to the `0xff` = none sentinel). Returns false if
+    /// it was not active.
+    pub fn remove_scan_list(&mut self, index: usize) -> bool {
+        if self.scan_lists.get(index).map(|s| s.is_none()).unwrap_or(true) {
+            return false;
+        }
+        self.scan_lists[index] = None;
+        let target = index as u8;
+        for ch in self.channels.iter_mut().flatten() {
+            if ch.scan_list_index == target {
+                ch.set_scan_list_index(0xff);
+            }
+        }
+        true
     }
 
     /// Add a contact at the first free slot; returns its index or `None` if full.
@@ -678,6 +811,19 @@ impl Codeplug {
                 zone.set_members(&remapped);
             }
         }
+        for sl in self.scan_lists.iter_mut().flatten() {
+            if sl.members.contains(&a) {
+                let remapped: Vec<u16> =
+                    sl.members.iter().map(|&c| if c == a { b } else { c }).collect();
+                sl.set_members(&remapped);
+            }
+            if sl.priority_channel_1 == a {
+                sl.set_priority_channel_1(b);
+            }
+            if sl.priority_channel_2 == a {
+                sl.set_priority_channel_2(b);
+            }
+        }
         Ok(())
     }
 
@@ -685,6 +831,20 @@ impl Codeplug {
     /// index, so only the slot changes.
     pub fn move_zone(&mut self, from: usize, to: usize) -> std::result::Result<(), String> {
         relocate(&mut self.zones, from, to, "zone", |r, i| r.index = i)
+    }
+
+    /// Move scan list `from` to the free slot `to`, remapping every channel's
+    /// `scan_list_index` that referenced it (the `0xff` = none sentinel never
+    /// matches a real slot).
+    pub fn move_scan_list(&mut self, from: usize, to: usize) -> std::result::Result<(), String> {
+        relocate(&mut self.scan_lists, from, to, "scan list", |r, i| r.index = i)?;
+        let (a, b) = (from as u8, to as u8);
+        for ch in self.channels.iter_mut().flatten() {
+            if ch.scan_list_index == a {
+                ch.set_scan_list_index(b);
+            }
+        }
+        Ok(())
     }
 
     /// Move contact `from` to the free slot `to`, remapping every channel's
@@ -739,9 +899,11 @@ impl Codeplug {
         CodeplugJson {
             channels: self.channels().collect(),
             zones: self.zones().collect(),
+            scan_lists: self.scan_lists().collect(),
             contacts: self.contacts().collect(),
             group_lists: self.group_lists().collect(),
             radio_ids: self.radio_ids().collect(),
+            aprs: self.aprs(),
         }
     }
 }
@@ -797,6 +959,17 @@ pub fn zone_channels_addr(i: usize) -> u32 {
     ZONE_CHANNELS + (i as u32) * BETWEEN_ZONE_CHANNELS
 }
 
+/// The read-only VFO channel selection for zone `i` from the zone channel list
+/// (`vfo_offset` is [`ZONE_CHANNELS_A`] or [`ZONE_CHANNELS_B`]). `None` when the
+/// entry is unset (`0xffff`) or the region is unmapped. Display only — this
+/// region sits in the radio-settings block and is never written.
+fn zone_channel_selection(raw: &[u8], vfo_offset: usize, i: usize) -> Option<u16> {
+    let base = global_offset(ZONE_CHANNEL_LIST)?;
+    let off = base + vfo_offset + i * 2;
+    let v = u16::from_le_bytes([*raw.get(off)?, *raw.get(off + 1)?]);
+    (v != ZONE_CHANNEL_UNSET).then_some(v)
+}
+
 /// Radio address of contact `i`: `banks + (i/1000)*bankStride + (i%1000)*100`
 /// (qdmr `encodeContacts` packs contacts contiguously within each bank).
 pub fn contact_addr(i: usize) -> u32 {
@@ -812,6 +985,14 @@ pub fn contact_block_addr(i: usize) -> u32 {
     let bank = (i / CONTACTS_PER_BANK) as u32;
     let local_block = ((i % CONTACTS_PER_BANK) / CONTACTS_PER_BLOCK) as u32;
     CONTACT_BANKS + bank * BETWEEN_CONTACT_BANKS + local_block * CONTACT_BLOCK as u32
+}
+
+/// Radio address of scan list `i`:
+/// `banks + (i/16)*bankStride + (i%16)*recordStride`.
+pub fn scan_list_addr(i: usize) -> u32 {
+    let bank = (i / SCAN_LISTS_PER_BANK) as u32;
+    let idx = (i % SCAN_LISTS_PER_BANK) as u32;
+    SCAN_LISTS + bank * BETWEEN_SCAN_LIST_BANKS + idx * BETWEEN_SCAN_LISTS
 }
 
 /// Radio address of group list `i`'s slot.
@@ -1355,5 +1536,161 @@ mod tests {
         assert!(cp.move_channel(1, NUM_CHANNELS).is_err());
         // Both failures leave channel 1 where it was.
         assert!(cp.channels().any(|c| c.index == 1));
+    }
+
+    #[test]
+    fn aprs_settings_parse_readonly() {
+        let mut raw = synthetic_codeplug();
+        let base = global_offset(APRS_SETTINGS).unwrap();
+        // Source call "K7AOS", SSID 7, symbol table '/', icon '<'.
+        write_ascii(&mut raw[base + 0x1d..base + 0x1d + 6], "K7AOS", 0x00);
+        raw[base + 0x23] = 7;
+        raw[base + 0x39] = b'/';
+        raw[base + 0x3a] = b'<';
+        // FM TX frequency 144.390 MHz at 0xac (BCD8-be, ×10 Hz).
+        set_bcd8_be(&mut raw[base + 0xac..base + 0xac + 4], 144_390_000 / 10);
+
+        let cp = Codeplug::parse(&raw).unwrap();
+        let a = cp.aprs().expect("APRS block present");
+        assert_eq!(a.source_call, "K7AOS");
+        assert_eq!(a.source_ssid, 7);
+        assert_eq!(a.symbol_table, b'/');
+        assert_eq!(a.symbol, b'<');
+        assert_eq!(a.fm_tx_frequency_hz, 144_390_000);
+
+        // APRS is read-only: a no-op serialize leaves those bytes untouched.
+        let out = cp.serialize();
+        assert_eq!(&out[base..base + APRS_SETTINGS_SIZE], &raw[base..base + APRS_SETTINGS_SIZE]);
+    }
+
+    #[test]
+    fn zone_reads_readonly_ab_channel_selection() {
+        // synthetic_codeplug parks zone 0 on channel 0 for both VFOs.
+        let cp = Codeplug::parse(&synthetic_codeplug()).unwrap();
+        let z = cp.zones().next().unwrap();
+        assert_eq!(z.a_channel, Some(0));
+        assert_eq!(z.b_channel, Some(0));
+    }
+
+    #[test]
+    fn add_scan_list_flips_only_its_bitmap_bit() {
+        let base = synthetic_codeplug();
+        let mut cp = Codeplug::parse(&base).unwrap();
+        let i = cp.add_scan_list().unwrap();
+        assert_eq!(i, 0, "synthetic image has no scan lists, so first free is 0");
+        let out = cp.serialize();
+
+        // Exactly bit 0 of the scan-list bitmap flips.
+        let bm = global_offset(SCAN_LIST_BITMAP).unwrap();
+        assert_eq!(base[bm], 0b0000_0000);
+        assert_eq!(out[bm], 0b0000_0001);
+
+        // Re-parsing sees one active scan list at index 0.
+        let back = Codeplug::parse(&out).unwrap();
+        assert_eq!(back.scan_lists().count(), 1);
+        assert_eq!(back.scan_lists().next().unwrap().index, 0);
+    }
+
+    #[test]
+    fn scan_list_fields_roundtrip_through_serialize() {
+        let mut cp = Codeplug::parse(&synthetic_codeplug()).unwrap();
+        let i = cp.add_scan_list().unwrap();
+        let sl = cp.scan_list_mut(i).unwrap();
+        sl.set_name("Personal");
+        sl.set_members(&[0, 1]);
+        sl.set_priority_channel_select(3);
+        sl.set_priority_channel_1(0);
+        sl.set_priority_channel_2(1);
+        sl.set_look_back_a(20);
+        sl.set_look_back_b(30);
+        sl.set_dropout_delay(31);
+        sl.set_dwell_time(31);
+        sl.set_revert_channel(2);
+
+        let back = Codeplug::parse(&cp.serialize()).unwrap();
+        let sl = back.scan_lists().next().unwrap();
+        assert_eq!(sl.name, "Personal");
+        assert_eq!(sl.members, vec![0, 1]);
+        assert_eq!(sl.priority_channel_select, 3);
+        assert_eq!(sl.priority_channel_1, 0);
+        assert_eq!(sl.priority_channel_2, 1);
+        assert_eq!(sl.look_back_a, 20);
+        assert_eq!(sl.look_back_b, 30);
+        assert_eq!(sl.dropout_delay, 31);
+        assert_eq!(sl.dwell_time, 31);
+        assert_eq!(sl.revert_channel, 2);
+    }
+
+    #[test]
+    fn removing_channel_scrubs_it_from_scan_lists() {
+        let mut cp = Codeplug::parse(&synthetic_codeplug()).unwrap();
+        let i = cp.add_scan_list().unwrap();
+        let sl = cp.scan_list_mut(i).unwrap();
+        sl.set_members(&[0, 1]);
+        sl.set_priority_channel_1(1);
+        sl.set_priority_channel_2(0);
+
+        assert!(cp.remove_channel(1));
+        let back = Codeplug::parse(&cp.serialize()).unwrap();
+        let sl = back.scan_lists().next().unwrap();
+        assert_eq!(sl.members, vec![0], "channel 1 scrubbed from members");
+        assert_eq!(sl.priority_channel_1, 0xffff, "priority channel 1 cleared");
+        assert_eq!(sl.priority_channel_2, 0, "priority channel 2 untouched");
+    }
+
+    #[test]
+    fn move_channel_remaps_scan_list_references() {
+        let mut cp = Codeplug::parse(&synthetic_codeplug()).unwrap();
+        let i = cp.add_scan_list().unwrap();
+        let sl = cp.scan_list_mut(i).unwrap();
+        sl.set_members(&[0, 1]);
+        sl.set_priority_channel_1(1);
+
+        cp.move_channel(1, 5).unwrap();
+        let back = Codeplug::parse(&cp.serialize()).unwrap();
+        let sl = back.scan_lists().next().unwrap();
+        assert_eq!(sl.members, vec![0, 5]);
+        assert_eq!(sl.priority_channel_1, 5);
+    }
+
+    #[test]
+    fn removing_scan_list_clears_channel_scan_list_index() {
+        let mut cp = Codeplug::parse(&synthetic_codeplug()).unwrap();
+        let i = cp.add_scan_list().unwrap();
+        cp.channel_mut(0).unwrap().set_scan_list_index(i as u8);
+        cp.channel_mut(1).unwrap().set_scan_list_index(0xff); // none
+
+        assert!(cp.remove_scan_list(i));
+        let back = Codeplug::parse(&cp.serialize()).unwrap();
+        assert_eq!(back.channels().find(|c| c.index == 0).unwrap().scan_list_index, 0xff);
+        assert_eq!(back.channels().find(|c| c.index == 1).unwrap().scan_list_index, 0xff);
+    }
+
+    #[test]
+    fn move_scan_list_remaps_channel_scan_list_index() {
+        let mut cp = Codeplug::parse(&synthetic_codeplug()).unwrap();
+        let i = cp.add_scan_list().unwrap();
+        cp.scan_list_mut(i).unwrap().set_name("LOCAL");
+        cp.channel_mut(0).unwrap().set_scan_list_index(i as u8);
+        cp.channel_mut(1).unwrap().set_scan_list_index(0xff); // none
+
+        cp.move_scan_list(i, 4).unwrap();
+        let back = Codeplug::parse(&cp.serialize()).unwrap();
+        assert!(back.scan_lists().any(|s| s.index == 4 && s.name == "LOCAL"));
+        assert_eq!(back.channels().find(|c| c.index == 0).unwrap().scan_list_index, 4);
+        assert_eq!(back.channels().find(|c| c.index == 1).unwrap().scan_list_index, 0xff);
+    }
+
+    #[test]
+    fn scan_list_addr_matches_bank_formula() {
+        // pos-1 == index: index 0 -> base; index 15 -> last of bank 0;
+        // index 16 -> first of bank 1.
+        assert_eq!(scan_list_addr(0), 0x0108_0000);
+        assert_eq!(scan_list_addr(15), 0x0108_0000 + 15 * 0x200);
+        assert_eq!(scan_list_addr(16), 0x0108_0000 + 0x0004_0000);
+        // Every scan-list address must be mapped to a read region.
+        for i in 0..NUM_SCAN_LISTS {
+            assert!(global_offset(scan_list_addr(i)).is_some(), "scan list {i} unmapped");
+        }
     }
 }

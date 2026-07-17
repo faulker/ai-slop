@@ -22,9 +22,10 @@ final class SaveModelTests: XCTestCase {
     /// This must equal `device::codeplug_size()`, which is the sum of the
     /// modeled regions: adding a region to the memory map changes it, and the
     /// core then rejects this fixture by size with every test in this file
-    /// failing at `open`. The Rust tests call the function, but it isn't exposed
-    /// across the FFI, so this side has to track it by hand.
-    private static let codeplugSize = 1_657_056
+    /// failing at `open`. `RadioCore.expectedCodeplugSize` now exposes the real
+    /// value across the FFI; `testExpectedCodeplugSizeMatchesTheFixture` asserts
+    /// this hand-tracked constant still agrees with it.
+    private static let codeplugSize = 1_789_328
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -195,6 +196,61 @@ final class SaveModelTests: XCTestCase {
         _ = store.addZone()
         try FileManager.default.removeItem(at: codeplug)
 
+        XCTAssertNil(Recovery.pending())
+    }
+
+    // MARK: - Version compatibility
+
+    /// The FFI-reported expected size is the single source of truth the open
+    /// path checks against, and it must match the fixture these tests use.
+    func testExpectedCodeplugSizeMatchesTheFixture() {
+        XCTAssertEqual(RadioCore.expectedCodeplugSize, Self.codeplugSize)
+    }
+
+    /// A file that isn't the right size is from a different model or an older
+    /// firmware, and opening it must be refused with a message instead of
+    /// seeding the work file with something the core can't parse.
+    func testOpeningAWrongSizeFileIsRejectedAsIncompatible() throws {
+        let wrong = tempDir.appendingPathComponent("old.bin")
+        try Data(count: Self.codeplugSize - 16).write(to: wrong)
+        let store = CodeplugStore()
+
+        store.open(url: wrong)
+
+        XCTAssertNil(store.fileURL, "an incompatible file must not become the open document")
+        XCTAssertEqual(store.zones.count, 0)
+        let message = try XCTUnwrap(store.errorMessage)
+        XCTAssertTrue(message.contains("incompatible") || message.contains("different radio"),
+                      "the error should explain the file is the wrong version")
+        XCTAssertNil(Recovery.pending(), "a rejected open leaves no staged session")
+    }
+
+    /// A correctly sized file still opens — the gate rejects only mismatches.
+    func testOpeningACompatibleFileSucceeds() {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(store.fileURL, codeplug)
+    }
+
+    // MARK: - Closing
+
+    /// Close returns the editor to the empty state and clears the staging work
+    /// file, so nothing from the closed document lingers to be half-applied.
+    func testCloseResetsToTheEmptyStateAndClearsTheWorkFile() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: Recovery.workURL.path))
+
+        store.close()
+
+        XCTAssertNil(store.fileURL)
+        XCTAssertEqual(store.zones.count, 0)
+        XCTAssertFalse(store.isDirty)
+        XCTAssertFalse(store.canUndo)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: Recovery.workURL.path),
+                       "closing clears the work file so no orphan is left behind")
         XCTAssertNil(Recovery.pending())
     }
 
@@ -429,5 +485,112 @@ final class SaveModelTests: XCTestCase {
         XCTAssertEqual(reopened.channels.first(where: { $0.index == slot1 })?.power, "High")
         XCTAssertEqual(reopened.channels.first(where: { $0.index == slot1 })?.colorCode, 12)
         XCTAssertEqual(reopened.channels.first(where: { $0.index == slot1 })?.timeSlot, 2)
+    }
+
+    // MARK: - New-channel defaults
+
+    /// A freshly added channel points at RX group list "None" (0xff), not the
+    /// core's raw default of slot 0, which would silently attach group list #1.
+    func testAddedChannelDefaultsToNoRXGroup() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+
+        let slot = try XCTUnwrap(store.addChannel())
+
+        XCTAssertEqual(store.channels.first(where: { $0.index == slot })?.groupListIndex, 255)
+    }
+
+    // MARK: - Undo / redo
+
+    /// Undo reverses the last staged edit and re-derives the records from the
+    /// restored work file.
+    func testUndoReversesTheLastEdit() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        XCTAssertFalse(store.canUndo)
+
+        _ = store.addZone()
+        XCTAssertEqual(store.zones.count, 1)
+        XCTAssertTrue(store.canUndo)
+
+        store.undo()
+
+        XCTAssertEqual(store.zones.count, 0, "undo removes the staged zone")
+        XCTAssertFalse(store.canUndo, "nothing left to undo")
+        XCTAssertTrue(store.canRedo)
+    }
+
+    /// Undoing back to the opened state clears the dirty flag and the recovery
+    /// marker, since there is no longer anything staged.
+    func testUndoToOpenedStateIsClean() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        XCTAssertTrue(store.isDirty)
+
+        store.undo()
+
+        XCTAssertFalse(store.isDirty, "back at the opened state, nothing is staged")
+        XCTAssertNil(Recovery.pending(), "and there is nothing to recover")
+    }
+
+    /// Redo re-applies an undone edit.
+    func testRedoReappliesAnUndoneEdit() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        store.undo()
+        XCTAssertEqual(store.zones.count, 0)
+
+        store.redo()
+
+        XCTAssertEqual(store.zones.count, 1, "redo brings the zone back")
+        XCTAssertTrue(store.isDirty)
+        XCTAssertFalse(store.canRedo)
+    }
+
+    /// A new edit after an undo drops the redo stack, so redo can't resurrect a
+    /// branch the user has moved past.
+    func testANewEditClearsTheRedoStack() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        store.undo()
+        XCTAssertTrue(store.canRedo)
+
+        _ = store.addChannel()
+
+        XCTAssertFalse(store.canRedo, "a fresh edit invalidates the redo branch")
+    }
+
+    /// Undo restores the per-slot unsaved marks it captured, not a guess.
+    func testUndoRestoresUnsavedMarks() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        let a = try XCTUnwrap(store.addZone())
+        store.save()
+        XCTAssertFalse(store.hasUnsavedChanges(.zones))
+
+        let b = try XCTUnwrap(store.addZone())
+        XCTAssertTrue(store.isUnsaved(.zones, slot: b))
+
+        store.undo()
+
+        XCTAssertFalse(store.isUnsaved(.zones, slot: b), "the undone zone's mark is gone")
+        XCTAssertFalse(store.hasUnsavedChanges(.zones), "back to the saved state's marks")
+        XCTAssertEqual(store.zones.map(\.index), [a])
+    }
+
+    /// Opening a document wipes any history from a previous one.
+    func testOpeningClearsHistory() throws {
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+        _ = store.addZone()
+        XCTAssertTrue(store.canUndo)
+
+        store.open(url: codeplug)
+
+        XCTAssertFalse(store.canUndo, "a freshly opened document has no history")
+        XCTAssertFalse(store.canRedo)
     }
 }

@@ -1,6 +1,7 @@
 //! `anytone-cli`: back up and restore AnyTone AT-D878UVII Plus codeplugs over
 //! the USB programming cable. Phase 0/1 commands: `ports`, `info`, `backup`,
-//! `restore`. The firmware UPDATE path is intentionally absent.
+//! `restore`, plus the offline `dump`/`edit` and the `dump-range` read-only
+//! diagnostic. The firmware UPDATE path is intentionally absent.
 
 use std::fs;
 use std::io::Write;
@@ -60,6 +61,22 @@ enum Command {
         /// Codeplug image to parse.
         file: String,
     },
+    /// Read an arbitrary address range from the radio and save or hexdump it.
+    ///
+    /// Read-only diagnostic: it never writes. Use it to capture regions the
+    /// codeplug region map does not cover, notably the radio-settings block at
+    /// 0x02500000 length 0x1500, which backups do not include.
+    DumpRange {
+        /// Start address, decimal or 0x-prefixed hex (e.g. 0x02500000).
+        #[arg(long, value_parser = parse_u32_auto)]
+        address: u32,
+        /// Byte count, decimal or 0x-prefixed hex. Must be a multiple of 16.
+        #[arg(long, value_parser = parse_u32_auto)]
+        length: u32,
+        /// Destination file for the raw bytes. Omit to hexdump to stdout.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
     /// Apply a JSON edit batch to a codeplug .bin offline (no radio). The edits
     /// file has the same schema as the GUI / `anytone_apply_edits`.
     Edit {
@@ -93,6 +110,11 @@ fn run(cli: &Cli) -> anytone_core::Result<()> {
         Command::Backup { file } => cmd_backup(&resolve_port(cli)?, file),
         Command::Restore { file, force } => cmd_restore(&resolve_port(cli)?, file, *force),
         Command::Dump { file } => cmd_dump(file),
+        Command::DumpRange {
+            address,
+            length,
+            output,
+        } => cmd_dump_range(&resolve_port(cli)?, *address, *length, output.as_deref()),
         Command::Edit {
             file,
             edits,
@@ -122,6 +144,68 @@ fn cmd_dump(file: &str) -> anytone_core::Result<()> {
     let json = serde_json::to_string_pretty(&codeplug.to_json())
         .map_err(|e| anytone_core::Error::Parse(format!("failed to encode JSON: {e}")))?;
     println!("{json}");
+    Ok(())
+}
+
+/// Parse a CLI address or length written as decimal or `0x`-prefixed hex,
+/// ignoring `_` separators. Addresses in the memory map are quoted in hex, so
+/// accepting both spellings avoids error-prone hand conversion.
+fn parse_u32_auto(s: &str) -> std::result::Result<u32, String> {
+    let t = s.trim().replace('_', "");
+    let (body, radix) = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(rest) => (rest.to_string(), 16),
+        None => (t, 10),
+    };
+    u32::from_str_radix(&body, radix).map_err(|e| format!("invalid number {s:?}: {e}"))
+}
+
+/// Format `data` as a hexdump: 16 bytes per line, each line prefixed with its
+/// absolute radio address and followed by an ASCII gutter.
+fn hexdump(base: u32, data: &[u8]) -> String {
+    let mut out = String::new();
+    for (i, chunk) in data.chunks(16).enumerate() {
+        let addr = base + (i * 16) as u32;
+        let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+        let ascii: String = chunk
+            .iter()
+            .map(|&b| {
+                if (0x20..0x7f).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        out.push_str(&format!("{addr:08x}  {:<47}  |{ascii}|\n", hex.join(" ")));
+    }
+    out
+}
+
+/// `dump-range`: read `length` bytes at `address` straight off the radio and
+/// either save them or hexdump them. Read-only; nothing is written. Program
+/// mode is always exited, even if the read fails partway.
+fn cmd_dump_range(
+    port: &str,
+    address: u32,
+    length: u32,
+    output: Option<&str>,
+) -> anytone_core::Result<()> {
+    let mut radio = open_radio(port)?;
+    radio.enter()?;
+    let model = radio.identify()?;
+    eprintln!("radio: {model}");
+    let read = radio.read_region(address, length as usize);
+    let exit = radio.exit();
+    let data = read?;
+    exit?;
+
+    match output {
+        Some(path) => {
+            fs::write(path, &data)?;
+            println!("wrote {} bytes from 0x{address:08x} to {path}", data.len());
+        }
+        None => print!("{}", hexdump(address, &data)),
+    }
     Ok(())
 }
 
@@ -245,5 +329,70 @@ fn make_progress(label: &'static str) -> impl FnMut(usize, usize) {
         // Overwrite the same line; flush so it appears promptly.
         eprint!("\r{label} {done}/{total} blocks");
         let _ = std::io::stderr().flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_u32_auto_accepts_hex_and_decimal() {
+        assert_eq!(parse_u32_auto("0x02500000").unwrap(), 0x0250_0000);
+        assert_eq!(parse_u32_auto("0X02500000").unwrap(), 0x0250_0000);
+        assert_eq!(parse_u32_auto("0x0250_0000").unwrap(), 0x0250_0000);
+        assert_eq!(parse_u32_auto("  0x1500 ").unwrap(), 0x1500);
+        // No prefix means decimal, so this is not 0x1500.
+        assert_eq!(parse_u32_auto("1500").unwrap(), 1500);
+        assert_eq!(parse_u32_auto("0").unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_u32_auto_rejects_garbage_and_overflow() {
+        assert!(parse_u32_auto("nope").is_err());
+        assert!(parse_u32_auto("0xzz").is_err());
+        assert!(parse_u32_auto("").is_err());
+        // Decimal digits that are not valid hex must not sneak through.
+        assert!(parse_u32_auto("0x1g").is_err());
+        // Wider than u32.
+        assert!(parse_u32_auto("0x100000000").is_err());
+    }
+
+    #[test]
+    fn hexdump_labels_lines_with_absolute_addresses() {
+        let data: Vec<u8> = (0u8..32).collect();
+        let out = hexdump(0x0250_0000, &data);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "32 bytes is two 16-byte lines");
+        assert!(lines[0].starts_with("02500000  00 01 02"));
+        // The second line's address advances by one block, not one byte.
+        assert!(lines[1].starts_with("02500010  10 11 12"));
+    }
+
+    #[test]
+    fn hexdump_renders_ascii_gutter_and_pads_short_lines() {
+        let out = hexdump(0, b"HI\x00\xff");
+        assert!(out.contains("|HI..|"), "non-printables become dots: {out}");
+        // The hex column stays 47 wide so the gutter lines up with full rows.
+        assert!(out.contains("48 49 00 ff"), "got {out}");
+        assert!(
+            out.contains("                                   |"),
+            "short row should pad: {out}"
+        );
+    }
+
+    #[test]
+    fn hexdump_of_erased_flash_is_recognisable() {
+        // The diagnostic this exists for: an erased settings block reads 0xff.
+        let out = hexdump(0x0250_0000, &[0xffu8; 16]);
+        assert_eq!(
+            out.trim_end(),
+            "02500000  ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|"
+        );
+    }
+
+    #[test]
+    fn hexdump_of_empty_input_is_empty() {
+        assert_eq!(hexdump(0x1000, &[]), "");
     }
 }

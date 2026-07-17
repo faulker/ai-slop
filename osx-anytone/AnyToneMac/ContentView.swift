@@ -36,9 +36,16 @@ struct ContentView: View {
         } detail: {
             detail
                 .safeAreaInset(edge: .bottom, spacing: 0) { statusBar }
+                // Open/Close ride here, above the panes, so they're reachable
+                // even with no file open (when the codeplug panes are disabled).
+                .toolbar { FileToolbar() }
         }
         .navigationTitle(store.fileURL?.lastPathComponent ?? "AnyTone Mac")
         .navigationSubtitle(store.isDirty ? "Edited" : "")
+        // A radio read/write can run for minutes and can be kicked off from any
+        // pane, so its progress takes over the center of the window rather than
+        // hiding in a corner.
+        .overlay { if device.busy { busyOverlay } }
         .onAppear { store.checkForRecovery() }
         // A closed file can't have a section selected.
         .onChange(of: store.fileURL) { url in
@@ -66,6 +73,53 @@ struct ContentView: View {
             "\(URL(fileURLWithPath: manifest.originalPath).lastPathComponent)". \
             You can pick up where you left off, or discard them and open the file as saved.
             """)
+        }
+        // Read/write completion. A finished read offers to load the file it just
+        // produced straight into the editor.
+        .alert(device.completion?.title ?? "", isPresented: completionBinding,
+               presenting: device.completion) { completion in
+            if completion.kind == .read, let url = completion.fileURL {
+                Button("Open in Editor") {
+                    store.open(url: url)
+                    selection = .codeplug(.channels)
+                }
+                Button("Not Now", role: .cancel) {}
+            } else {
+                Button("OK", role: .cancel) {}
+            }
+        } message: { completion in
+            Text(completion.message)
+        }
+    }
+
+    /// Full-window scrim with a progress card, shown while a radio read or write
+    /// is in flight.
+    private var busyOverlay: some View {
+        ZStack {
+            Rectangle()
+                .fill(.black.opacity(0.25))
+                .ignoresSafeArea()
+            VStack(spacing: Spacing.stack) {
+                if let fraction = device.progressFraction {
+                    ProgressView(value: fraction)
+                        .frame(width: 220)
+                    Text(device.progressText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                        .controlSize(.large)
+                }
+                if let status = device.statusMessage {
+                    Text(status)
+                        .font(.callout)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(Spacing.section)
+            .frame(minWidth: 260)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .shadow(radius: 20)
         }
     }
 
@@ -170,5 +224,10 @@ struct ContentView: View {
     private var recoveryBinding: Binding<Bool> {
         Binding(get: { store.pendingRecovery != nil },
                 set: { if !$0 { store.pendingRecovery = nil } })
+    }
+
+    private var completionBinding: Binding<Bool> {
+        Binding(get: { device.completion != nil },
+                set: { if !$0 { device.completion = nil } })
     }
 }

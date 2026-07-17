@@ -152,6 +152,16 @@ pub unsafe extern "C" fn anytone_string_free(s: *mut c_char) {
     }
 }
 
+/// The exact byte length of a full codeplug image for the supported radio
+/// (the sum of every modeled region). A `.bin` of any other length is from a
+/// different model or firmware version and cannot be parsed or written by this
+/// build — the app uses this to reject an incompatible file up front with a
+/// clear message rather than a low-level size error.
+#[no_mangle]
+pub extern "C" fn anytone_codeplug_size() -> usize {
+    codeplug_size()
+}
+
 /// Enumerate serial ports as a JSON array:
 /// `[{"name","vid","pid","product","likely_radio"}, ...]`.
 /// Returns null and sets `err_out` on failure.
@@ -409,6 +419,14 @@ mod tests {
             anytone_string_free(p);
             s
         }
+    }
+
+    #[test]
+    fn codeplug_size_matches_the_modeled_regions() {
+        // The FFI must report the same length the parser enforces, or the app's
+        // up-front version check would reject valid files (or admit bad ones).
+        assert_eq!(anytone_codeplug_size(), codeplug_size());
+        assert_eq!(anytone_codeplug_size(), synthetic_image().len());
     }
 
     #[test]

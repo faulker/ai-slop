@@ -16,22 +16,49 @@ struct AnyToneMacApp: App {
                 .frame(minWidth: 900, minHeight: 560)
         }
         .commands {
-            // There is no "new codeplug" concept: a codeplug only comes from a
-            // radio backup or an existing file.
-            CommandGroup(replacing: .newItem) {
-                Button("Open Codeplug…") { delegate.codeplug.openWithPanel() }
-                    .keyboardShortcut("o")
-            }
-            CommandGroup(replacing: .saveItem) {
-                Button("Save") { delegate.codeplug.save() }
-                    .keyboardShortcut("s")
-                    .disabled(!delegate.codeplug.isDirty)
-                Button("Save As…") { delegate.codeplug.saveAs() }
-                    .keyboardShortcut("s", modifiers: [.command, .shift])
-                    .disabled(delegate.codeplug.fileURL == nil)
-                Button("Revert to Saved") { delegate.codeplug.discardChanges() }
-                    .disabled(!delegate.codeplug.isDirty)
-            }
+            CodeplugCommands(codeplug: delegate.codeplug)
+        }
+    }
+}
+
+/// File and Edit menu items for the codeplug editor.
+///
+/// This is a separate `Commands` struct, holding the store as `@ObservedObject`,
+/// specifically so the menu items re-validate. Built inline in the App's
+/// `.commands`, the `.disabled(...)` state is captured once at scene-build time
+/// (when the store is empty and clean) and never updates — which leaves Save and
+/// its ⌘S shortcut permanently disabled. A disabled menu item also swallows its
+/// key equivalent, so the shortcut silently does nothing. Observing the store
+/// here makes SwiftUI re-evaluate enablement whenever the store publishes.
+struct CodeplugCommands: Commands {
+    @ObservedObject var codeplug: CodeplugStore
+
+    var body: some Commands {
+        // There is no "new codeplug" concept: a codeplug only comes from a
+        // radio backup or an existing file.
+        CommandGroup(replacing: .newItem) {
+            Button("Open Codeplug…") { codeplug.openWithPanel() }
+                .keyboardShortcut("o")
+        }
+        // ⌘Z / ⇧⌘Z drive the codeplug editor's own history, not AppKit's text
+        // undo. The stacks live in the store because the edits do.
+        CommandGroup(replacing: .undoRedo) {
+            Button("Undo") { codeplug.undo() }
+                .keyboardShortcut("z")
+                .disabled(!codeplug.canUndo)
+            Button("Redo") { codeplug.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!codeplug.canRedo)
+        }
+        CommandGroup(replacing: .saveItem) {
+            Button("Save") { codeplug.save() }
+                .keyboardShortcut("s")
+                .disabled(!codeplug.isDirty)
+            Button("Save As…") { codeplug.saveAs() }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .disabled(codeplug.fileURL == nil)
+            Button("Revert to Saved") { codeplug.discardChanges() }
+                .disabled(!codeplug.isDirty)
         }
     }
 }

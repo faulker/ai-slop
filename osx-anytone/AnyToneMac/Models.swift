@@ -32,11 +32,34 @@ struct DumpChannel: Codable, Identifiable, Hashable {
     var contactIndex: UInt32
     var radioIdIndex: Int
     var groupListIndex: Int
+    // --- Analog / signaling (defaults keep the memberwise init usable from
+    // tests; the real dump always supplies every key). ---
+    var rxSignalingMode: String = "None"
+    var txSignalingMode: String = "None"
+    var rxCtcss: Int = 0
+    var txCtcss: Int = 0
+    var rxDcs: Int = 0
+    var txDcs: Int = 0
+    var squelchMode: String = "Carrier"
+    var optionalSignaling: String = "Off"
+    var admit: String = "Always"
+    var scanListIndex: Int = 255
+    var dtmfIdIndex: Int = 0
+    var twoToneIdIndex: Int = 0
+    var fiveToneIdIndex: Int = 0
+    var twoToneDecodeIndex: Int = 0
+    // --- Flags ---
+    var rxOnly: Bool = false
+    var talkAround: Bool = false
+    var callConfirm: Bool = false
+    var workAlone: Bool = false
+    var simplexTdma: Bool = false
+    var rxAprs: Bool = false
 
     var id: Int { index }
 
     enum CodingKeys: String, CodingKey {
-        case index, name, mode, power, bandwidth
+        case index, name, mode, power, bandwidth, admit
         case rxFrequencyHz = "rx_frequency_hz"
         case txFrequencyHz = "tx_frequency_hz"
         case colorCode = "color_code"
@@ -44,6 +67,25 @@ struct DumpChannel: Codable, Identifiable, Hashable {
         case contactIndex = "contact_index"
         case radioIdIndex = "radio_id_index"
         case groupListIndex = "group_list_index"
+        case rxSignalingMode = "rx_signaling_mode"
+        case txSignalingMode = "tx_signaling_mode"
+        case rxCtcss = "rx_ctcss"
+        case txCtcss = "tx_ctcss"
+        case rxDcs = "rx_dcs"
+        case txDcs = "tx_dcs"
+        case squelchMode = "squelch_mode"
+        case optionalSignaling = "optional_signaling"
+        case scanListIndex = "scan_list_index"
+        case dtmfIdIndex = "dtmf_id_index"
+        case twoToneIdIndex = "two_tone_id_index"
+        case fiveToneIdIndex = "five_tone_id_index"
+        case twoToneDecodeIndex = "two_tone_decode_index"
+        case rxOnly = "rx_only"
+        case talkAround = "talk_around"
+        case callConfirm = "call_confirm"
+        case workAlone = "work_alone"
+        case simplexTdma = "simplex_tdma"
+        case rxAprs = "rx_aprs"
     }
 }
 
@@ -54,6 +96,36 @@ struct DumpZone: Codable, Identifiable, Hashable {
     var channels: [Int]
 
     var id: Int { index }
+}
+
+/// One decoded scan list from `anytone_dump_json`. Field names match the Rust
+/// `ScanList` serialization.
+struct DumpScanList: Codable, Identifiable, Hashable {
+    let index: Int
+    var name: String
+    var members: [Int]
+    var priorityChannelSelect: Int
+    var priorityChannel1: Int
+    var priorityChannel2: Int
+    var lookBackA: Int
+    var lookBackB: Int
+    var dropoutDelay: Int
+    var dwellTime: Int
+    var revertChannel: Int
+
+    var id: Int { index }
+
+    enum CodingKeys: String, CodingKey {
+        case index, name, members
+        case priorityChannelSelect = "priority_channel_select"
+        case priorityChannel1 = "priority_channel_1"
+        case priorityChannel2 = "priority_channel_2"
+        case lookBackA = "look_back_a"
+        case lookBackB = "look_back_b"
+        case dropoutDelay = "dropout_delay"
+        case dwellTime = "dwell_time"
+        case revertChannel = "revert_channel"
+    }
 }
 
 /// One decoded DMR contact / talk group from `anytone_dump_json`.
@@ -94,14 +166,45 @@ struct DumpRadioID: Codable, Identifiable, Hashable {
 struct CodeplugDump: Codable {
     let channels: [DumpChannel]
     let zones: [DumpZone]
+    var scanLists: [DumpScanList] = []
     let contacts: [DumpContact]
     let groupLists: [DumpGroupList]
     let radioIds: [DumpRadioID]
+    var aprs: DumpAprs?
 
     enum CodingKeys: String, CodingKey {
-        case channels, zones, contacts
+        case channels, zones, contacts, aprs
+        case scanLists = "scan_lists"
         case groupLists = "group_lists"
         case radioIds = "radio_ids"
+    }
+}
+
+/// Read-only APRS settings from `anytone_dump_json` (the core exposes a focused
+/// subset; there is no edit path — this block is never written to the radio).
+struct DumpAprs: Codable, Hashable {
+    var sourceCall: String
+    var sourceSsid: Int
+    var destinationCall: String
+    var destinationSsid: Int
+    var symbolTable: Int
+    var symbol: Int
+    var manualTxInterval: Int
+    var autoTxInterval: Int
+    var fmPower: Int
+    var fmTxFrequencyHz: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        case sourceCall = "source_call"
+        case sourceSsid = "source_ssid"
+        case destinationCall = "destination_call"
+        case destinationSsid = "destination_ssid"
+        case symbolTable = "symbol_table"
+        case symbol
+        case manualTxInterval = "manual_tx_interval"
+        case autoTxInterval = "auto_tx_interval"
+        case fmPower = "fm_power"
+        case fmTxFrequencyHz = "fm_tx_frequency_hz"
     }
 }
 
@@ -122,9 +225,29 @@ struct ChannelEdit: Encodable {
     var contactIndex: UInt32?
     var radioIdIndex: Int?
     var groupListIndex: Int?
+    var rxSignalingMode: String?
+    var txSignalingMode: String?
+    var rxCtcss: Int?
+    var txCtcss: Int?
+    var rxDcs: Int?
+    var txDcs: Int?
+    var squelchMode: String?
+    var optionalSignaling: String?
+    var admit: String?
+    var scanListIndex: Int?
+    var dtmfIdIndex: Int?
+    var twoToneIdIndex: Int?
+    var fiveToneIdIndex: Int?
+    var twoToneDecodeIndex: Int?
+    var rxOnly: Bool?
+    var talkAround: Bool?
+    var callConfirm: Bool?
+    var workAlone: Bool?
+    var simplexTdma: Bool?
+    var rxAprs: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case index, name, mode, power, bandwidth
+        case index, name, mode, power, bandwidth, admit
         case rxFrequencyHz = "rx_frequency_hz"
         case txFrequencyHz = "tx_frequency_hz"
         case colorCode = "color_code"
@@ -132,6 +255,25 @@ struct ChannelEdit: Encodable {
         case contactIndex = "contact_index"
         case radioIdIndex = "radio_id_index"
         case groupListIndex = "group_list_index"
+        case rxSignalingMode = "rx_signaling_mode"
+        case txSignalingMode = "tx_signaling_mode"
+        case rxCtcss = "rx_ctcss"
+        case txCtcss = "tx_ctcss"
+        case rxDcs = "rx_dcs"
+        case txDcs = "tx_dcs"
+        case squelchMode = "squelch_mode"
+        case optionalSignaling = "optional_signaling"
+        case scanListIndex = "scan_list_index"
+        case dtmfIdIndex = "dtmf_id_index"
+        case twoToneIdIndex = "two_tone_id_index"
+        case fiveToneIdIndex = "five_tone_id_index"
+        case twoToneDecodeIndex = "two_tone_decode_index"
+        case rxOnly = "rx_only"
+        case talkAround = "talk_around"
+        case callConfirm = "call_confirm"
+        case workAlone = "work_alone"
+        case simplexTdma = "simplex_tdma"
+        case rxAprs = "rx_aprs"
     }
 }
 
@@ -140,6 +282,34 @@ struct ZoneEdit: Encodable {
     var index: Int?
     var name: String?
     var members: [Int]?
+}
+
+/// One scan-list update or add (`index` omitted for adds). Nil fields are
+/// omitted by the encoder, so only present fields are applied.
+struct ScanListEdit: Encodable {
+    var index: Int?
+    var name: String?
+    var members: [Int]?
+    var priorityChannelSelect: Int?
+    var priorityChannel1: Int?
+    var priorityChannel2: Int?
+    var lookBackA: Int?
+    var lookBackB: Int?
+    var dropoutDelay: Int?
+    var dwellTime: Int?
+    var revertChannel: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case index, name, members
+        case priorityChannelSelect = "priority_channel_select"
+        case priorityChannel1 = "priority_channel_1"
+        case priorityChannel2 = "priority_channel_2"
+        case lookBackA = "look_back_a"
+        case lookBackB = "look_back_b"
+        case dropoutDelay = "dropout_delay"
+        case dwellTime = "dwell_time"
+        case revertChannel = "revert_channel"
+    }
 }
 
 /// One contact update or add (`index` omitted for adds).
@@ -187,6 +357,10 @@ struct EditSpec: Encodable {
     var addZones: [ZoneEdit] = []
     var removeZones: [Int] = []
     var moveZones: [MoveOp] = []
+    var scanLists: [ScanListEdit] = []
+    var addScanLists: [ScanListEdit] = []
+    var removeScanLists: [Int] = []
+    var moveScanLists: [MoveOp] = []
     var contacts: [ContactEdit] = []
     var addContacts: [ContactEdit] = []
     var removeContacts: [Int] = []
@@ -204,6 +378,7 @@ struct EditSpec: Encodable {
     var isEmpty: Bool {
         channels.isEmpty && addChannels.isEmpty && removeChannels.isEmpty && moveChannels.isEmpty
             && zones.isEmpty && addZones.isEmpty && removeZones.isEmpty && moveZones.isEmpty
+            && scanLists.isEmpty && addScanLists.isEmpty && removeScanLists.isEmpty && moveScanLists.isEmpty
             && contacts.isEmpty && addContacts.isEmpty && removeContacts.isEmpty && moveContacts.isEmpty
             && groupLists.isEmpty && addGroupLists.isEmpty && removeGroupLists.isEmpty
             && moveGroupLists.isEmpty
@@ -218,6 +393,10 @@ struct EditSpec: Encodable {
         case addZones = "add_zones"
         case removeZones = "remove_zones"
         case moveZones = "move_zones"
+        case scanLists = "scan_lists"
+        case addScanLists = "add_scan_lists"
+        case removeScanLists = "remove_scan_lists"
+        case moveScanLists = "move_scan_lists"
         case addContacts = "add_contacts"
         case removeContacts = "remove_contacts"
         case moveContacts = "move_contacts"
@@ -240,6 +419,25 @@ let channelModeOptions: [(tag: String, label: String)] = [
     ("Analog", "Analog"), ("Digital", "Digital"),
     ("MixedAnalog", "Mixed (A)"), ("MixedDigital", "Mixed (D)"),
 ]
+
+/// Whether a channel mode carries a digital (DMR) component. Only pure "Analog"
+/// has none, so its color code / time slot / contact / group list / radio ID
+/// fields are meaningless and get disabled in the editor. The two mixed modes
+/// still carry digital, so those fields stay live for them.
+func modeHasDigital(_ mode: String) -> Bool {
+    mode != "Analog"
+}
+
+/// Whether a channel passes the Channels-pane filters. Kept out of the view so
+/// the mode / color-code / slot matching can be tested without SwiftUI. A nil
+/// component means "no constraint on that field".
+func channelMatchesFilter(_ channel: DumpChannel, query: String,
+                          mode: String?, colorCode: Int?, slot: Int?) -> Bool {
+    (query.isEmpty || channel.name.localizedCaseInsensitiveContains(query))
+        && (mode == nil || channel.mode == mode)
+        && (colorCode == nil || channel.colorCode == colorCode)
+        && (slot == nil || channel.timeSlot == slot)
+}
 
 /// Picker options for transmit power (dump-valued tags).
 let channelPowerOptions: [(tag: String, label: String)] = [
@@ -265,6 +463,48 @@ func editValue(_ dumped: String) -> String {
     default: return dumped.lowercased()
     }
 }
+
+/// Convert a CamelCase dump enum value ("ChannelFree", "TwoTone", "Dcs") to the
+/// snake_case string the edit API parses ("channel_free", "two_tone", "dcs").
+/// An underscore is inserted before each interior capital, then lowercased.
+func snakeEditValue(_ dumped: String) -> String {
+    var out = ""
+    for (i, ch) in dumped.enumerated() {
+        if i > 0 && ch.isUppercase { out.append("_") }
+        out.append(Character(ch.lowercased()))
+    }
+    return out
+}
+
+/// Picker options for a channel's signaling type (RX/TX), dump-valued tags.
+let signalingModeOptions: [(tag: String, label: String)] = [
+    ("None", "None"), ("Ctcss", "CTCSS"), ("Dcs", "DCS"),
+]
+
+/// Picker options for squelch mode (dump-valued tags).
+let squelchModeOptions: [(tag: String, label: String)] = [
+    ("Carrier", "Carrier"), ("Tone", "Tone (CTCSS/DCS)"),
+]
+
+/// Picker options for the TX-permit / admit criterion (dump-valued tags).
+let admitOptions: [(tag: String, label: String)] = [
+    ("Always", "Always"), ("ChannelFree", "Channel Free"),
+    ("DifferentColorCode", "Different CC"), ("SameColorCode", "Same CC"),
+]
+
+/// Picker options for optional signaling (dump-valued tags).
+let optionalSignalingOptions: [(tag: String, label: String)] = [
+    ("Off", "Off"), ("Dtmf", "DTMF"), ("TwoTone", "2-Tone"), ("FiveTone", "5-Tone"),
+]
+
+/// Picker options for a scan list's priority-channel-select (raw index values).
+let priorityChannelSelectOptions: [(tag: Int, label: String)] = [
+    (0, "Off"), (1, "Primary"), (2, "Secondary"), (3, "Both"),
+]
+
+/// Sentinel for an unset channel reference (priority channel, etc.) — matches the
+/// core's `0xffff`.
+let channelRefNone = 65535
 
 /// Shared MHz display/edit format: fixed 5 decimals (the codeplug's 10 Hz BCD
 /// resolution), no grouping, dot decimal separator. Pinned to POSIX because

@@ -47,6 +47,50 @@ final class FormattingTests: XCTestCase {
     }
 }
 
+/// Channel mode semantics and the Channels-pane filter matching.
+final class ChannelFilterTests: XCTestCase {
+
+    private func channel(mode: String = "Digital", colorCode: Int = 1,
+                         timeSlot: Int = 1, name: String = "Repeater") -> DumpChannel {
+        DumpChannel(index: 0, name: name, rxFrequencyHz: 146_520_000,
+                    txFrequencyHz: 146_520_000, mode: mode, power: "High",
+                    bandwidth: "Wide", colorCode: colorCode, timeSlot: timeSlot,
+                    contactIndex: 0, radioIdIndex: 0, groupListIndex: 255)
+    }
+
+    /// Only pure "Analog" lacks a digital component; the two mixed modes keep it.
+    func testModeHasDigital() {
+        XCTAssertFalse(modeHasDigital("Analog"))
+        XCTAssertTrue(modeHasDigital("Digital"))
+        XCTAssertTrue(modeHasDigital("MixedAnalog"))
+        XCTAssertTrue(modeHasDigital("MixedDigital"))
+    }
+
+    func testNilFiltersMatchEverything() {
+        let ch = channel(mode: "Analog", colorCode: 7, timeSlot: 2)
+        XCTAssertTrue(channelMatchesFilter(ch, query: "", mode: nil, colorCode: nil, slot: nil))
+    }
+
+    func testEachFilterComponentNarrows() {
+        let ch = channel(mode: "Digital", colorCode: 3, timeSlot: 2)
+        XCTAssertTrue(channelMatchesFilter(ch, query: "", mode: "Digital", colorCode: nil, slot: nil))
+        XCTAssertFalse(channelMatchesFilter(ch, query: "", mode: "Analog", colorCode: nil, slot: nil))
+        XCTAssertTrue(channelMatchesFilter(ch, query: "", mode: nil, colorCode: 3, slot: nil))
+        XCTAssertFalse(channelMatchesFilter(ch, query: "", mode: nil, colorCode: 4, slot: nil))
+        XCTAssertTrue(channelMatchesFilter(ch, query: "", mode: nil, colorCode: nil, slot: 2))
+        XCTAssertFalse(channelMatchesFilter(ch, query: "", mode: nil, colorCode: nil, slot: 1))
+    }
+
+    /// The text query and the dropdown filters combine with AND.
+    func testQueryAndFiltersCombine() {
+        let ch = channel(mode: "Digital", colorCode: 1, timeSlot: 1, name: "Local Repeater")
+        XCTAssertTrue(channelMatchesFilter(ch, query: "repeater", mode: "Digital",
+                                           colorCode: 1, slot: 1))
+        XCTAssertFalse(channelMatchesFilter(ch, query: "simplex", mode: "Digital",
+                                            colorCode: 1, slot: 1))
+    }
+}
+
 /// `EditSpec` encoding. This is the highest-consequence pure logic in the Swift
 /// layer: the core matches on snake_case keys, so one wrong key silently drops
 /// an edit to a radio's configuration with no error anywhere.
@@ -142,21 +186,48 @@ final class CodeplugDumpTests: XCTestCase {
             "index": 0, "name": "Simplex", "rx_frequency_hz": 146520000,
             "tx_frequency_hz": 146520000, "mode": "Analog", "power": "High",
             "bandwidth": "Wide", "color_code": 1, "time_slot": 1,
-            "contact_index": 0, "radio_id_index": 0, "group_list_index": 255
+            "contact_index": 0, "radio_id_index": 0, "group_list_index": 255,
+            "rx_signaling_mode": "Ctcss", "tx_signaling_mode": "None",
+            "rx_ctcss": 12, "tx_ctcss": 0, "rx_dcs": 0, "tx_dcs": 0,
+            "squelch_mode": "Carrier", "optional_signaling": "Off", "admit": "Always",
+            "scan_list_index": 255, "dtmf_id_index": 0, "two_tone_id_index": 0,
+            "five_tone_id_index": 0, "two_tone_decode_index": 0,
+            "rx_only": true, "talk_around": false, "call_confirm": false,
+            "work_alone": false, "simplex_tdma": false, "rx_aprs": false
           }],
           "zones": [{"index": 0, "name": "Local", "channels": [0]}],
+          "scan_lists": [{
+            "index": 0, "name": "Personal", "members": [0], "priority_channel_select": 3,
+            "priority_channel_1": 0, "priority_channel_2": 65535, "look_back_a": 20,
+            "look_back_b": 30, "dropout_delay": 31, "dwell_time": 31, "revert_channel": 2
+          }],
           "contacts": [{"index": 0, "name": "Parrot", "number": 9990, "call_type": "Private"}],
           "group_lists": [{"index": 0, "name": "Wide", "members": [0]}],
-          "radio_ids": [{"index": 0, "name": "Me", "number": 3113043}]
+          "radio_ids": [{"index": 0, "name": "Me", "number": 3113043}],
+          "aprs": {
+            "source_call": "K7AOS", "source_ssid": 7, "destination_call": "APAT81",
+            "destination_ssid": 0, "symbol_table": 47, "symbol": 60,
+            "manual_tx_interval": 5, "auto_tx_interval": 45, "fm_power": 3,
+            "fm_tx_frequency_hz": 144390000
+          }
         }
         """
         let dump = try JSONDecoder().decode(CodeplugDump.self, from: Data(json.utf8))
 
         XCTAssertEqual(dump.channels.first?.rxFrequencyHz, 146_520_000)
         XCTAssertEqual(dump.channels.first?.groupListIndex, 255)
+        XCTAssertEqual(dump.channels.first?.rxSignalingMode, "Ctcss")
+        XCTAssertEqual(dump.channels.first?.rxCtcss, 12)
+        XCTAssertEqual(dump.channels.first?.rxOnly, true)
+        XCTAssertEqual(dump.channels.first?.admit, "Always")
+        XCTAssertEqual(dump.scanLists.first?.name, "Personal")
+        XCTAssertEqual(dump.scanLists.first?.members, [0])
+        XCTAssertEqual(dump.scanLists.first?.priorityChannel2, 65535)
         XCTAssertEqual(dump.contacts.first?.callType, "Private")
         XCTAssertEqual(dump.groupLists.first?.members, [0])
         XCTAssertEqual(dump.radioIds.first?.number, 3_113_043)
+        XCTAssertEqual(dump.aprs?.sourceCall, "K7AOS")
+        XCTAssertEqual(dump.aprs?.fmTxFrequencyHz, 144_390_000)
     }
 }
 
@@ -237,7 +308,20 @@ final class MemberTransferTests: XCTestCase {
         XCTAssertEqual(result, [1])
     }
 
+    /// Double-clicking a single available row moves just that one across,
+    /// appended after the existing members like any other add.
+    func testDoubleClickAddMovesOneMemberAppended() {
+        let result = MemberTransfer.adding([2], candidates: candidates, to: [3])
+        XCTAssertEqual(result, [3, 2])
+    }
+
     func testRemovingDropsOnlyTheSelectionAndKeepsOrder() {
+        let result = MemberTransfer.removing([2], from: [3, 2, 0])
+        XCTAssertEqual(result, [3, 0])
+    }
+
+    /// Double-clicking a single member row removes just that one.
+    func testDoubleClickRemoveMovesOneMemberOut() {
         let result = MemberTransfer.removing([2], from: [3, 2, 0])
         XCTAssertEqual(result, [3, 0])
     }

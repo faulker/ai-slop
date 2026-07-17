@@ -32,6 +32,13 @@ pub struct Zone {
     pub name: String,
     /// Member channel indices, in order (unused `0xffff` slots dropped).
     pub channels: Vec<u16>,
+    /// The channel selected on VFO A for this zone (read-only display; sourced
+    /// from the zone channel list in the radio-settings block, which this tool
+    /// never writes). `None` when unset (`0xffff`).
+    pub a_channel: Option<u16>,
+    /// The channel selected on VFO B for this zone (read-only display). `None`
+    /// when unset.
+    pub b_channel: Option<u16>,
     /// Authoritative raw 32-byte name slot; skipped in JSON output.
     #[serde(skip)]
     name_raw: [u8; ZONE_NAME_SLOT],
@@ -73,9 +80,18 @@ impl Zone {
             index,
             name: read_ascii(&name_raw[..ZONE_NAME_LEN], 0x00),
             channels: members,
+            a_channel: None,
+            b_channel: None,
             name_raw,
             channels_raw,
         })
+    }
+
+    /// Set the read-only VFO A/B channel selections for display. These come from
+    /// the zone channel list (a read-only region) and are never serialized back.
+    pub fn set_display_ab(&mut self, a: Option<u16>, b: Option<u16>) {
+        self.a_channel = a;
+        self.b_channel = b;
     }
 
     /// The raw 32-byte name slot for serialization.
@@ -115,6 +131,8 @@ impl Zone {
             index,
             name: read_ascii(&name_raw[..ZONE_NAME_LEN], 0x00),
             channels: Vec::new(),
+            a_channel: None,
+            b_channel: None,
             name_raw,
             channels_raw,
         }

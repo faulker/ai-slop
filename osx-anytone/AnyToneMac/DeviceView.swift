@@ -2,6 +2,18 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// A finished read or write, surfaced as a modal so the result can't be missed
+/// the way a one-line status message can. A completed read carries the file it
+/// produced, so the dialog can offer to open it in the editor.
+struct DeviceCompletion: Identifiable {
+    enum Kind { case read, write }
+    let id = UUID()
+    let kind: Kind
+    let title: String
+    let message: String
+    let fileURL: URL?
+}
+
 /// State and device operations for the Device tab. All radio I/O runs on a
 /// background task; published state is only touched on the main actor.
 @MainActor
@@ -14,6 +26,9 @@ final class DeviceStore: ObservableObject {
     @Published var progressText = ""
     @Published var statusMessage: String?
     @Published var errorMessage: String?
+
+    /// The last completed read/write, shown as a modal. Cleared when dismissed.
+    @Published var completion: DeviceCompletion?
 
     /// The connected AnyTone radios. The raw port list is mostly Bluetooth and
     /// debug serial devices that can't be programmed, so only VID/PID matches
@@ -54,6 +69,12 @@ final class DeviceStore: ObservableObject {
             }
             await MainActor.run {
                 self?.statusMessage = "Read complete — saved to \(url.lastPathComponent)"
+                self?.completion = DeviceCompletion(
+                    kind: .read,
+                    title: "Read Complete",
+                    message: "The radio's codeplug was read and saved to "
+                        + "\(url.lastPathComponent). Open it in the editor to view or change it.",
+                    fileURL: url)
             }
         }
     }
@@ -73,6 +94,12 @@ final class DeviceStore: ObservableObject {
             }
             await MainActor.run {
                 self?.statusMessage = "Write complete and verified (\(name))"
+                self?.completion = DeviceCompletion(
+                    kind: .write,
+                    title: "Write Complete",
+                    message: "\(name) was written to the radio and verified. "
+                        + "You can safely disconnect the radio now.",
+                    fileURL: nil)
             }
         }
     }
@@ -134,17 +161,9 @@ struct DeviceView: View {
             if let model = store.model {
                 Text("Model: \(model)").font(.callout).textSelection(.enabled)
             }
-
-            if store.busy {
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    if let fraction = store.progressFraction {
-                        ProgressView(value: fraction)
-                        Text(store.progressText).font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        ProgressView()
-                    }
-                }
-            }
+            // In-flight progress is shown as a centered overlay on the whole
+            // window (see ContentView.busyOverlay), since a read/write can be
+            // started from a Codeplug pane too.
         }
         .padding(Spacing.section)
         .onAppear { store.refreshPorts() }

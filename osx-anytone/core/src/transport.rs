@@ -90,7 +90,17 @@ pub struct MockTransport {
     /// When true, read responses carry a deliberately wrong checksum so tests
     /// can exercise the protocol layer's checksum rejection.
     pub corrupt_read_checksum: bool,
+    /// Sectors already erased in the current program-mode session. The radio
+    /// erases flash in [`MOCK_SECTOR_SIZE`]-byte sectors: the first write into a
+    /// sector blanks the whole sector to `0xff` before programming the block.
+    /// Modelling this is the only way a test can catch a write that destroys
+    /// neighbouring bytes it never sent — the bug that cost a debugging session.
+    erased_sectors: std::collections::HashSet<u32>,
 }
+
+/// Flash erase granularity the mock models. Mirrors `crate::device::SECTOR_SIZE`;
+/// a test asserts the mock actually erases at this boundary.
+const MOCK_SECTOR_SIZE: u32 = 0x8000;
 
 impl MockTransport {
     /// Build a mock radio with a memory image of `size` zero bytes and the
@@ -104,6 +114,7 @@ impl MockTransport {
             pending_in: Vec::new(),
             written: Vec::new(),
             corrupt_read_checksum: false,
+            erased_sectors: std::collections::HashSet::new(),
         }
     }
 
@@ -137,6 +148,8 @@ impl MockTransport {
                     }
                     self.pending_in.drain(..CMD.len());
                     self.in_program_mode = true;
+                    // A fresh session: no sector has been erased yet.
+                    self.erased_sectors.clear();
                     self.out.extend([b'Q', b'X', 0x06]);
                 }
                 // Identify (0x02) -> 'I' + model + ACK.
@@ -188,9 +201,19 @@ impl MockTransport {
                         // Real device would reject; signal with a NAK byte.
                         self.out.push_back(0x15);
                     } else {
+                        // First write into a sector erases the whole sector to
+                        // 0xff before the block is programmed, exactly as the
+                        // radio's flash does.
+                        let sector = addr / MOCK_SECTOR_SIZE;
+                        if self.erased_sectors.insert(sector) {
+                            let s = (sector * MOCK_SECTOR_SIZE) as usize;
+                            let e = (s + MOCK_SECTOR_SIZE as usize).min(self.memory.len());
+                            for byte in &mut self.memory[s..e] {
+                                *byte = 0xff;
+                            }
+                        }
                         let start = addr as usize;
-                        self.memory[start..start + len]
-                            .copy_from_slice(&body[5..5 + len]);
+                        self.memory[start..start + len].copy_from_slice(&body[5..5 + len]);
                         self.out.push_back(0x06);
                     }
                 }

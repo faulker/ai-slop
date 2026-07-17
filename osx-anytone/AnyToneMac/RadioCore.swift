@@ -49,6 +49,12 @@ enum RadioCore {
         }
     }
 
+    /// The exact byte length this build expects a full codeplug .bin to be. A
+    /// file of any other length is from a different radio model or firmware
+    /// version and can't be parsed or written; callers use this to reject an
+    /// incompatible file with a clear message before touching it.
+    static var expectedCodeplugSize: Int { anytone_codeplug_size() }
+
     /// Enumerate serial ports, flagging likely radios.
     static func listPorts() throws -> [PortEntry] {
         var err: UnsafeMutablePointer<CChar>? = nil
