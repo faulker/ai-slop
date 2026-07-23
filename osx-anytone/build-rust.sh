@@ -2,26 +2,44 @@
 # Builds the anytone-core Rust static library (release) and copies it next to
 # the Xcode project so the AnyToneMac target can link it. Runs standalone or
 # as an Xcode pre-build phase (where Xcode sets SRCROOT/ARCHS).
+#
+# One slice is built per requested arch and the slices are lipo'd together, so a
+# universal build (ARCHS="arm64 x86_64") yields a universal static library.
 
 set -euo pipefail
 
 SRCROOT="${SRCROOT:-$(cd "$(dirname "$0")" && pwd)}"
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# Pick the Rust target from Xcode's ARCHS when present, else the host arch.
-if [[ "${ARCHS:-}" == *"arm64"* ]]; then
-    TARGET="aarch64-apple-darwin"
-elif [[ "${ARCHS:-}" == *"x86_64"* ]]; then
-    TARGET="x86_64-apple-darwin"
-elif [ "$(uname -m)" = "arm64" ]; then
-    TARGET="aarch64-apple-darwin"
-else
-    TARGET="x86_64-apple-darwin"
-fi
+# Requested archs come from Xcode's ARCHS when present, else the host arch.
+ARCH_LIST="${ARCHS:-$(uname -m)}"
 
-echo "Building anytone-core (release) for $TARGET..."
+# Maps an Xcode arch name to its Rust target triple.
+rust_target_for_arch() {
+    case "$1" in
+        arm64|aarch64) echo "aarch64-apple-darwin" ;;
+        x86_64) echo "x86_64-apple-darwin" ;;
+        *) echo "error: unsupported arch '$1'" >&2; return 1 ;;
+    esac
+}
+
 cd "$SRCROOT"
-cargo build --release -p anytone-core --target "$TARGET"
 
-cp "target/$TARGET/release/libanytone_core.a" "$SRCROOT/libanytone_core.a"
-echo "Copied libanytone_core.a to $SRCROOT"
+SLICES=()
+for arch in $ARCH_LIST; do
+    target="$(rust_target_for_arch "$arch")"
+    if ! rustup target list --installed 2>/dev/null | grep -qx "$target"; then
+        echo "Installing Rust target $target..."
+        rustup target add "$target"
+    fi
+    echo "Building anytone-core (release) for $target..."
+    cargo build --release -p anytone-core --target "$target"
+    SLICES+=("target/$target/release/libanytone_core.a")
+done
+
+if [ "${#SLICES[@]}" -eq 1 ]; then
+    cp "${SLICES[0]}" "$SRCROOT/libanytone_core.a"
+else
+    lipo -create "${SLICES[@]}" -output "$SRCROOT/libanytone_core.a"
+fi
+echo "Copied libanytone_core.a ($(lipo -archs "$SRCROOT/libanytone_core.a")) to $SRCROOT"

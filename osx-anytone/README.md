@@ -123,6 +123,35 @@ xcodebuild test -project AnyToneMac.xcodeproj -scheme AnyToneMac \
 swift tools/make-icon.swift
 ```
 
+### Release build
+
+`./build.sh release` produces a distributable app: a universal (arm64 + x86_64)
+Release build, signed with a Developer ID certificate and the hardened runtime,
+packaged as a DMG in `dist/`.
+
+```sh
+./build.sh release
+# → dist/AnyToneMac.app and dist/AnyToneMac-<version>.dmg
+```
+
+It picks the first "Developer ID Application" certificate in your keychain, or
+set `SIGNING_IDENTITY` to choose one. With no such certificate it falls back to
+an ad-hoc signature, which runs on your own machine but is blocked by Gatekeeper
+everywhere else.
+
+For a DMG that opens cleanly on someone else's Mac you also need notarization.
+Store an app-specific password once, then pass the profile name:
+
+```sh
+xcrun notarytool store-credentials anytone-notary \
+  --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
+
+NOTARY_PROFILE=anytone-notary ./build.sh release
+```
+
+The DMG and app are then submitted to Apple and stapled, so they work offline.
+Bump `MARKETING_VERSION` in `project.yml` to change the version in the DMG name.
+
 All protocol and device logic is unit-tested against an in-memory `MockTransport`
 that emulates the radio, so the full suite runs with no hardware attached. The
 Swift tests likewise need no radio: they drive the real core against a synthetic

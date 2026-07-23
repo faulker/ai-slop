@@ -10,3 +10,4 @@ Cargo.lock
 /AnyToneMac.xcodeproj
 /libanytone_core.a
 build_output.log
+/dist

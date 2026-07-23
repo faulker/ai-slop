@@ -569,7 +569,8 @@ struct MemberTransferField: View {
                        query: $availableQuery,
                        selection: $availableSelection,
                        emptyText: "Nothing left to add",
-                       onDoubleClick: addOne)
+                       primaryVerb: "Add",
+                       onPrimary: add)
                 transferButtons
                 column(title: "In this \(ownerNoun)",
                        count: members.count,
@@ -577,7 +578,8 @@ struct MemberTransferField: View {
                        query: $memberQuery,
                        selection: $memberSelection,
                        emptyText: "No \(label.lowercased()) yet",
-                       onDoubleClick: removeOne)
+                       primaryVerb: "Remove",
+                       onPrimary: remove)
             }
         }
     }
@@ -602,8 +604,8 @@ struct MemberTransferField: View {
 
     private func column(title: String, count: Int, items: [MemberCandidate],
                         query: Binding<String>, selection: Binding<Set<Int>>,
-                        emptyText: String,
-                        onDoubleClick: @escaping (MemberCandidate) -> Void) -> some View {
+                        emptyText: String, primaryVerb: String,
+                        onPrimary: @escaping (Set<Int>) -> Void) -> some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             Text("\(title) (\(String(count)))")
                 .font(.caption)
@@ -614,12 +616,23 @@ struct MemberTransferField: View {
                 Text(item.label)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    // Double-click moves that one row across, the fast path for
-                    // picking members by hand. `simultaneousGesture` so it rides
-                    // alongside the List's own single-click selection rather than
-                    // swallowing it.
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(TapGesture(count: 2).onEnded { onDoubleClick(item) })
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // The label takes itself out of hit testing so every click
+                    // lands on the row itself. Clicking directly on the text was
+                    // otherwise eaten before the list saw it, so only clicks on
+                    // the blank part of a row changed the selection.
+                    .allowsHitTesting(false)
+            }
+            // Double-click moves the clicked rows across. This has to go through
+            // `primaryAction` rather than a `TapGesture(count: 2)` on the row: a
+            // tap gesture inside the row competes with the list's own click
+            // handling, which swallowed or delayed single-click selection.
+            .contextMenu(forSelectionType: Int.self) { ids in
+                if !ids.isEmpty {
+                    Button("\(primaryVerb) \(ids.count) \(label.lowercased())") { onPrimary(ids) }
+                }
+            } primaryAction: { ids in
+                onPrimary(ids)
             }
             .listStyle(.bordered(alternatesRowBackgrounds: true))
             .frame(height: Self.listHeight)
@@ -656,15 +669,17 @@ struct MemberTransferField: View {
         memberSelection = []
     }
 
-    /// Add one candidate (the double-click path on the Available column).
-    private func addOne(_ item: MemberCandidate) {
-        members = MemberTransfer.adding([item.index], candidates: candidates, to: members)
-        availableSelection.remove(item.index)
+    /// Add specific candidates (the double-click / context-menu path on the
+    /// Available column), independent of what the column has selected.
+    private func add(_ ids: Set<Int>) {
+        members = MemberTransfer.adding(ids, candidates: candidates, to: members)
+        availableSelection.subtract(ids)
     }
 
-    /// Remove one member (the double-click path on the members column).
-    private func removeOne(_ item: MemberCandidate) {
-        members = MemberTransfer.removing([item.index], from: members)
-        memberSelection.remove(item.index)
+    /// Remove specific members (the double-click / context-menu path on the
+    /// members column).
+    private func remove(_ ids: Set<Int>) {
+        members = MemberTransfer.removing(ids, from: members)
+        memberSelection.subtract(ids)
     }
 }
