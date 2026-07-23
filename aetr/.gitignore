@@ -1,0 +1,5 @@
+/target
+/macos/build
+/macos/build_output.log
+/macos/libaetr_core.a
+/macos/Aetr.xcodeproj

@@ -15,6 +15,7 @@ Treat each subproject folder as a separate project:
 
 ## Subprojects
 
+- **aetr/** (Rust core + Swift macOS app + Kotlin Android app): encrypted text/voice sent as COFDM audio bursts through analog FM radios; shared `aetr-core` does all crypto/FEC/modem work via UniFFI. Has its own `docs/`; `cargo test -p aetr-core --release`, `macos/build.sh`, `android/gradlew assembleDebug`.
 - **AudioMerge/** (Rust CLI): recursively merges MP3 files from subdirectories into consolidated files (e.g. audiobooks). `cargo build`, `cargo run`.
 - **BookmarkCleaner/** (Rust TUI): scans exported browser bookmarks for dead links, lets you review/remove them, upgrades HTTP to HTTPS. `cargo run`.
 - **claude-usage/** (Rust CLI): pulls Claude Code usage from the Anthropic API using the OAuth token in the macOS Keychain. `cargo run`.
