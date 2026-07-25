@@ -40,7 +40,7 @@ class SessionLoopbackTest {
             "unit-test-passphrase", ModemMode.B170, 30u, txDelayMs = 0u, voxPrimer = false
         )
         AetrSession(config).use { session ->
-            val burst = session.encodeText("hello from android")
+            val burst = session.encodeText("hello from android", true)
             session.pushRx(burst)
             // A second of trailing silence flushes the demodulator.
             session.pushRx(List(48_000) { 0.0f })
@@ -54,6 +54,39 @@ class SessionLoopbackTest {
 
             assertNotNull("no Text event decoded from loopback burst", text)
             assertEquals("hello from android", text!!.text)
+        }
+    }
+
+    /**
+     * A plaintext (unencrypted) message round-trips even between two sessions
+     * that do not share a passphrase, and arrives flagged as not encrypted.
+     */
+    @Test
+    fun plaintextRoundTripsWithoutSharedPassphrase() {
+        assumeTrue(
+            "host libaetr_core not built; run scripts/gen-bindings.sh first",
+            hostLibraryAvailable()
+        )
+
+        val sender = SessionConfig("phrase-a", ModemMode.B170, 30u, txDelayMs = 0u, voxPrimer = false)
+        val receiver = SessionConfig("phrase-b", ModemMode.B170, 30u, txDelayMs = 0u, voxPrimer = false)
+        AetrSession(sender).use { tx ->
+            AetrSession(receiver).use { rx ->
+                val burst = tx.encodeText("clear over the air", false)
+                rx.pushRx(burst)
+                rx.pushRx(List(48_000) { 0.0f })
+
+                val deadline = System.currentTimeMillis() + 10_000
+                var text: RxEvent.Text? = null
+                while (text == null && System.currentTimeMillis() < deadline) {
+                    text = rx.pollEvents().filterIsInstance<RxEvent.Text>().firstOrNull()
+                    if (text == null) Thread.sleep(50)
+                }
+
+                assertNotNull("no Text event decoded from plaintext loopback burst", text)
+                assertEquals("clear over the air", text!!.text)
+                assertTrue("plaintext message must arrive unencrypted", !text.encrypted)
+            }
         }
     }
 
@@ -85,7 +118,7 @@ class SessionLoopbackTest {
                 // 500 ms at 48 kHz is 24 000 samples of extra lead-in; allow
                 // slack for symbol-boundary rounding in the core.
                 val delta =
-                    padded.encodeText("delay").size - plain.encodeText("delay").size
+                    padded.encodeText("delay", true).size - plain.encodeText("delay", true).size
                 assertTrue(
                     "expected ~24000 extra lead-in samples, got $delta",
                     delta in 19_200..28_800

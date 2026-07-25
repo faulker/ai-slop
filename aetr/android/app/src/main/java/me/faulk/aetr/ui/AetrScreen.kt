@@ -267,7 +267,8 @@ private fun SettingsCard(vm: AetrViewModel) {
                     if (allGranted) vm.connect()
                     else permissionLauncher.launch(needed.toTypedArray())
                 },
-                enabled = !vm.connecting && vm.passphrase.isNotEmpty(),
+                // Empty passphrase is allowed: it makes a plaintext-only session.
+                enabled = !vm.connecting,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 if (vm.connecting) {
@@ -436,14 +437,20 @@ private fun LogRow(vm: AetrViewModel, entry: LogEntry) {
         ) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 when (entry) {
-                    is LogEntry.SentText -> Text(entry.text)
+                    is LogEntry.SentText -> {
+                        Text(entry.text)
+                        if (!entry.encrypted) ClearBadge()
+                    }
 
                     is LogEntry.SentVoice -> {
                         Label("Voice · ${clipSecs(entry.pcm)} (~%.1f s airtime)".format(entry.airtimeSecs))
                         TextButton(onClick = { vm.playClip(entry.pcm) }) { Text("Play") }
                     }
 
-                    is LogEntry.ReceivedText -> Text(entry.text)
+                    is LogEntry.ReceivedText -> {
+                        Text(entry.text)
+                        if (!entry.encrypted) ClearBadge()
+                    }
 
                     is LogEntry.ReceivedVoice -> {
                         Label("Voice · ${clipSecs(entry.pcm)}")
@@ -516,6 +523,17 @@ private fun Label(text: String) {
     )
 }
 
+/** Badge on a text bubble that was sent or received in the clear. */
+@Composable
+private fun ClearBadge() {
+    Text(
+        "🔓 CLEAR",
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.error,
+    )
+}
+
 /** Formats a 48 kHz clip length as "N.N s". */
 private fun clipSecs(pcm: FloatArray): String =
     "%.1f s".format(pcm.size / AudioEngine.SAMPLE_RATE.toFloat())
@@ -534,6 +552,13 @@ private fun ComposeBar(vm: AetrViewModel) {
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Encrypt-on-send toggle. Disabled (forced clear) with no passphrase.
+                TextButton(
+                    onClick = { vm.sendEncrypted = !vm.sendEncrypted },
+                    enabled = vm.passphrase.isNotEmpty(),
+                ) {
+                    Text(if (vm.sendEncrypted) "🔒" else "🔓")
+                }
                 OutlinedTextField(
                     value = vm.draft,
                     onValueChange = { vm.draft = it },

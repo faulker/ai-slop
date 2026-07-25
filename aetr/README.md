@@ -18,15 +18,21 @@ The platform apps only move PCM and pixels. All crypto and DSP is Rust/C++ insid
 |---|---|
 | Modem | aicodix COFDM at 48 kHz; payload modes 85/128/170 bytes per burst (default 170) |
 | KDF | Argon2id, m=19456 KiB, t=2, p=1, fixed salt `aetr-v1` |
-| Encryption | XChaCha20-Poly1305 per chunk; 11-byte header as AAD |
-| Header (11 B) | `message_id(8)` `chunk_index(1)` `chunk_count(1)` `flags(1)` (repair / voice / last / control bits) |
+| Encryption | XChaCha20-Poly1305 per chunk; 11-byte header as AAD. Optional per-message clear mode (see below) swaps the tag for a keyless checksum |
+| Header (11 B) | `message_id(8)` `chunk_index(1)` `chunk_count(1)` `flags(1)` (repair / voice / last / control / plaintext bits) |
 | Nonce | `message_id \|\| chunk_index`, zero-padded to 24 B, never transmitted |
 | Text FEC | K source chunks + ceil(0.25 K) Reed-Solomon parity, interleaved; none for single-chunk |
 | Voice | codec2 1200 bps, ~0.95 s per chunk, no FEC; lost chunks play as silence at the right offset |
 | ARQ | Receiver-initiated, one round: control frame with a received-shard bitmask; sender answers from a cached parity pool |
 | Usable payload | 143 B per chunk in 170-mode (header + 16 B tag overhead) |
 
-Both ends must share the passphrase and the modem mode.
+Both ends must share the modem mode; encrypted traffic also needs a shared passphrase.
+
+## Unencrypted (clear) text mode
+
+Encrypted content is illegal on most radio services (amateur, FRS/GMRS, and most Part 95 bands), where a digital mode is fine but *obscuring* the meaning is not. So text can be sent per message in the clear: flip the lock toggle in the compose bar off (🔓) and that message goes out unencrypted. The frame sets a `plaintext` header flag; receivers see it and read the body directly instead of decrypting, so they need no shared passphrase to display it. Both apps badge clear messages ("CLEAR" / 🔓) on send and receive so it's always obvious a message had no confidentiality.
+
+Clear frames keep the same size and reliability machinery as encrypted ones: the 16-byte AEAD tag is replaced by a keyless checksum (corruption rejection only, no authenticity), and Reed-Solomon parity plus the ARQ repair round work exactly the same, in the clear. Voice stays encrypted-only. You can leave the passphrase empty to run a clear-only session (no key is derived); encrypting then requires setting one. Encrypted and plaintext messages can freely mix on the same channel and in the same session.
 
 ## Voice cap and airtime
 

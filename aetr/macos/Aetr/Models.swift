@@ -19,6 +19,9 @@ struct ChatMessage: Identifiable {
     var messageId: UInt64?
     let outgoing: Bool
     var isVoice: Bool
+    /// False for a message sent or received in the clear (no encryption).
+    /// Drives the "CLEAR" badge; text messages only.
+    var encrypted: Bool = true
     var text: String = ""
     /// Received voice clip, 48 kHz mono, ready to play.
     var pcm: [Float] = []

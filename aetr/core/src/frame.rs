@@ -15,7 +15,12 @@ use std::time::{Duration, Instant};
 
 /// Chunk header length in bytes.
 pub const HEADER_LEN: usize = 11;
-/// Fixed per-frame overhead: header plus Poly1305 tag.
+/// Keyless trailer length on a plaintext frame; deliberately equal to the
+/// AEAD tag length so encrypted and plaintext frames share the same geometry
+/// (`chunk_payload_bytes`, FEC shard sizes, and airtime all stay identical).
+pub const CHECKSUM_LEN: usize = crypto::TAG_LEN;
+/// Fixed per-frame overhead: header plus the 16-byte trailer (AEAD tag on an
+/// encrypted frame, keyless checksum on a plaintext one).
 pub const FRAME_OVERHEAD: usize = HEADER_LEN + crypto::TAG_LEN;
 /// Highest chunk index the one-byte field may carry (255 is reserved).
 pub const MAX_CHUNK_INDEX: usize = 254;
@@ -28,6 +33,12 @@ pub const FLAG_VOICE: u8 = 1 << 1;
 pub const FLAG_LAST: u8 = 1 << 2;
 /// Header flag bit 3: ARQ control frame (payload = target id + bitmask).
 pub const FLAG_CONTROL: u8 = 1 << 3;
+/// Header flag bit 4: the body is sent in the clear (no AEAD). The receiver
+/// reads it directly instead of decrypting, so it needs no shared passphrase.
+/// The clear header carries this bit; a plaintext frame's [`checksum16`]
+/// covers the header, and an encrypted frame's AEAD binds it, so the bit
+/// itself is never silently flippable.
+pub const FLAG_PLAINTEXT: u8 = 1 << 4;
 
 /// The 11-byte chunk header. Authenticated (AAD) but sent in the clear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +88,32 @@ impl Header {
     pub fn is_voice(&self) -> bool {
         self.flags & FLAG_VOICE != 0
     }
+
+    /// True if the body is sent in the clear (read directly, not decrypted).
+    pub fn is_plaintext(&self) -> bool {
+        self.flags & FLAG_PLAINTEXT != 0
+    }
+}
+
+/// Keyless 128-bit checksum over `header || body` for plaintext frames: two
+/// FNV-1a-64 lanes (the second index-mixed so the lanes differ and byte
+/// transpositions still change the result). This is corruption/false-accept
+/// rejection only — it provides no confidentiality or authenticity, which
+/// plaintext mode does not want. The COFDM layer already CRCs each burst; this
+/// is a cheap second gate so noise never surfaces as garbage text.
+pub fn checksum16(header: &[u8; HEADER_LEN], body: &[u8]) -> [u8; CHECKSUM_LEN] {
+    const OFFSET1: u64 = 0xcbf2_9ce4_8422_2325;
+    const OFFSET2: u64 = 0x8422_2325_cbf2_9ce4;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let (mut h1, mut h2) = (OFFSET1, OFFSET2);
+    for (i, &b) in header.iter().chain(body.iter()).enumerate() {
+        h1 = (h1 ^ b as u64).wrapping_mul(PRIME);
+        h2 = (h2 ^ (b as u64 ^ i as u64)).wrapping_mul(PRIME);
+    }
+    let mut out = [0u8; CHECKSUM_LEN];
+    out[..8].copy_from_slice(&h1.to_le_bytes());
+    out[8..].copy_from_slice(&h2.to_le_bytes());
+    out
 }
 
 /// Generates a random message id (8 random bytes; ~2^32-message birthday
@@ -85,15 +122,48 @@ pub fn random_message_id() -> u64 {
     rand::random()
 }
 
-/// Seals one frame: packs the header, encrypts the plaintext bound to it,
-/// and returns the wire bytes (exactly plaintext len + FRAME_OVERHEAD).
-fn seal_frame(key: &[u8; 32], header: &Header, plaintext: &[u8]) -> Result<Vec<u8>, AetrError> {
+/// Builds one wire frame from a header and its body, exactly `body.len() +
+/// FRAME_OVERHEAD` bytes. If the header carries [`FLAG_PLAINTEXT`] the body is
+/// framed in the clear (`header || body || checksum16`); otherwise it is
+/// sealed with XChaCha20-Poly1305 bound to the header. An encrypted frame
+/// therefore requires a key; a plaintext frame ignores it.
+fn emit_frame(
+    key: Option<&[u8; 32]>,
+    header: &Header,
+    body: &[u8],
+) -> Result<Vec<u8>, AetrError> {
     let packed = header.pack();
-    let ct = crypto::seal_chunk(key, &packed, header.message_id, header.chunk_index, plaintext)?;
-    let mut frame = Vec::with_capacity(HEADER_LEN + ct.len());
-    frame.extend_from_slice(&packed);
-    frame.extend_from_slice(&ct);
-    Ok(frame)
+    if header.is_plaintext() {
+        let mut frame = Vec::with_capacity(HEADER_LEN + body.len() + CHECKSUM_LEN);
+        frame.extend_from_slice(&packed);
+        frame.extend_from_slice(body);
+        frame.extend_from_slice(&checksum16(&packed, body));
+        Ok(frame)
+    } else {
+        let key = key.ok_or_else(|| {
+            AetrError::Malformed("encrypted frame needs a passphrase-derived key".into())
+        })?;
+        let ct = crypto::seal_chunk(key, &packed, header.message_id, header.chunk_index, body)?;
+        let mut frame = Vec::with_capacity(HEADER_LEN + ct.len());
+        frame.extend_from_slice(&packed);
+        frame.extend_from_slice(&ct);
+        Ok(frame)
+    }
+}
+
+/// Opens a plaintext frame's body: verifies the keyless [`checksum16`] over
+/// the header and returns the body. A checksum mismatch surfaces as
+/// `AuthFailed`, so corrupt or foreign frames drop on the same path as a
+/// wrong-passphrase encrypted frame.
+fn open_plain(header: &[u8; HEADER_LEN], rest: &[u8]) -> Result<Vec<u8>, AetrError> {
+    if rest.len() < CHECKSUM_LEN {
+        return Err(AetrError::Malformed("plaintext frame shorter than checksum".into()));
+    }
+    let (body, mac) = rest.split_at(rest.len() - CHECKSUM_LEN);
+    if checksum16(header, body) != mac {
+        return Err(AetrError::AuthFailed);
+    }
+    Ok(body.to_vec())
 }
 
 /// Sender-side cache kept per transmitted message for the optional ARQ
@@ -103,6 +173,9 @@ pub struct TxCache {
     pub message_id: u64,
     /// Voice messages are repaired by exact retransmission, not parity.
     pub is_voice: bool,
+    /// Whether this message's frames (and its repair round) are encrypted.
+    /// Plaintext messages repair with clear control and repair frames.
+    pub encrypted: bool,
     /// K: number of source chunks.
     pub source_count: usize,
     /// chunk_count as put in every header.
@@ -126,11 +199,17 @@ pub struct TxMessage {
 /// into K equal shards, parity pool encoded at N = 2K with the first
 /// R = ceil(0.25 K) parity shards interleaved into the transmission.
 pub fn build_text_message(
-    key: &[u8; 32],
+    key: Option<&[u8; 32]>,
     mode: ModemMode,
     text: &str,
     message_id: u64,
+    encrypted: bool,
 ) -> Result<TxMessage, AetrError> {
+    if encrypted && key.is_none() {
+        return Err(AetrError::Malformed("encrypted text needs a passphrase".into()));
+    }
+    // Base flags applied to every frame of this message.
+    let base_flags = if encrypted { 0 } else { FLAG_PLAINTEXT };
     let shard_len = mode.chunk_payload_bytes();
     let bytes = text.as_bytes();
     if bytes.len() > u16::MAX as usize {
@@ -152,15 +231,16 @@ pub fn build_text_message(
             message_id,
             chunk_index: 0,
             chunk_count: 1,
-            flags: FLAG_LAST,
+            flags: FLAG_LAST | base_flags,
         };
-        let frame = seal_frame(key, &header, &source[0])?;
+        let frame = emit_frame(key, &header, &source[0])?;
         return Ok(TxMessage {
             message_id,
             frames: vec![frame],
             cache: TxCache {
                 message_id,
                 is_voice: false,
+                encrypted,
                 source_count: 1,
                 chunk_count: 1,
                 shards: source,
@@ -190,12 +270,12 @@ pub fn build_text_message(
             si += 1;
             (idx, shard)
         };
-        let mut flags = if idx as usize >= k { FLAG_REPAIR } else { 0 };
+        let mut flags = base_flags | if idx as usize >= k { FLAG_REPAIR } else { 0 };
         if t == total - 1 {
             flags |= FLAG_LAST;
         }
         let header = Header { message_id, chunk_index: idx, chunk_count, flags };
-        frames.push(seal_frame(key, &header, shard)?);
+        frames.push(emit_frame(key, &header, shard)?);
     }
 
     let mut shards = source;
@@ -206,6 +286,7 @@ pub fn build_text_message(
         cache: TxCache {
             message_id,
             is_voice: false,
+            encrypted,
             source_count: k,
             chunk_count,
             shards,
@@ -239,7 +320,7 @@ pub fn build_voice_message(
             flags |= FLAG_LAST;
         }
         let header = Header { message_id, chunk_index: i as u8, chunk_count, flags };
-        frames.push(seal_frame(key, &header, span)?);
+        frames.push(emit_frame(Some(key), &header, span)?);
     }
     Ok(TxMessage {
         message_id,
@@ -247,6 +328,7 @@ pub fn build_voice_message(
         cache: TxCache {
             message_id,
             is_voice: true,
+            encrypted: true,
             source_count: k,
             chunk_count,
             shards: spans,
@@ -304,18 +386,20 @@ impl RepairRequest {
 /// flags bit 3 set). Broadcast-safe: receivers without the target cached
 /// simply ignore it.
 pub fn build_control_frame(
-    key: &[u8; 32],
+    key: Option<&[u8; 32]>,
     mode: ModemMode,
     request: &RepairRequest,
     message_id: u64,
+    encrypted: bool,
 ) -> Result<Vec<u8>, AetrError> {
+    let base_flags = if encrypted { 0 } else { FLAG_PLAINTEXT };
     let header = Header {
         message_id,
         chunk_index: 0,
         chunk_count: 1,
-        flags: FLAG_CONTROL | FLAG_LAST,
+        flags: FLAG_CONTROL | FLAG_LAST | base_flags,
     };
-    seal_frame(key, &header, &request.to_plaintext(mode.chunk_payload_bytes())?)
+    emit_frame(key, &header, &request.to_plaintext(mode.chunk_payload_bytes())?)
 }
 
 /// Sender side of the ARQ round: given a repair request and the cached
@@ -323,13 +407,15 @@ pub fn build_control_frame(
 /// parity shards from the pool (falling back to exact resends if the pool
 /// runs dry); voice resends the exact missing spans.
 pub fn build_repair_frames(
-    key: &[u8; 32],
+    key: Option<&[u8; 32]>,
     cache: &TxCache,
     request: &RepairRequest,
 ) -> Result<Vec<Vec<u8>>, AetrError> {
     if request.target != cache.message_id {
         return Err(AetrError::Malformed("repair request targets a different message".into()));
     }
+    // Repair frames follow the message's own encryption discipline.
+    let base_flags = if cache.encrypted { 0 } else { FLAG_PLAINTEXT };
     let k = cache.source_count;
     let mut frames = Vec::new();
 
@@ -338,7 +424,7 @@ pub fn build_repair_frames(
         // reproduce the original ciphertext byte for byte.
         for idx in 0..k {
             if !request.contains(idx) {
-                let mut flags = FLAG_VOICE;
+                let mut flags = FLAG_VOICE | base_flags;
                 if idx == k - 1 {
                     flags |= FLAG_LAST;
                 }
@@ -348,7 +434,7 @@ pub fn build_repair_frames(
                     chunk_count: cache.chunk_count,
                     flags,
                 };
-                frames.push(seal_frame(key, &header, &cache.shards[idx])?);
+                frames.push(emit_frame(key, &header, &cache.shards[idx])?);
             }
         }
         return Ok(frames);
@@ -361,9 +447,9 @@ pub fn build_repair_frames(
                 message_id: cache.message_id,
                 chunk_index: 0,
                 chunk_count: 1,
-                flags: FLAG_LAST,
+                flags: FLAG_LAST | base_flags,
             };
-            frames.push(seal_frame(key, &header, &cache.shards[0])?);
+            frames.push(emit_frame(key, &header, &cache.shards[0])?);
         }
         return Ok(frames);
     }
@@ -385,14 +471,14 @@ pub fn build_repair_frames(
         if needed == 0 {
             break;
         }
-        let flags = if idx >= k { FLAG_REPAIR } else { 0 };
+        let flags = base_flags | if idx >= k { FLAG_REPAIR } else { 0 };
         let header = Header {
             message_id: cache.message_id,
             chunk_index: idx as u8,
             chunk_count: cache.chunk_count,
             flags,
         };
-        frames.push(seal_frame(key, &header, &cache.shards[idx])?);
+        frames.push(emit_frame(key, &header, &cache.shards[idx])?);
         needed -= 1;
     }
     Ok(frames)
@@ -407,6 +493,8 @@ pub enum RxEvent {
         message_id: u64,
         /// Decoded UTF-8 text.
         text: String,
+        /// False if it arrived in the clear (sent with [`FLAG_PLAINTEXT`]).
+        encrypted: bool,
     },
     /// Voice clip, possibly with silent gaps where spans were lost.
     Voice {
@@ -434,6 +522,9 @@ pub enum RxEvent {
 /// Reassembly state for one in-flight message.
 struct Partial {
     voice: bool,
+    /// True if the message arrived in the clear (first frame's flag); all
+    /// later frames of the message must agree.
+    plaintext: bool,
     chunk_count: u8,
     shards: BTreeMap<u8, Vec<u8>>,
     first_seen: Instant,
@@ -443,14 +534,16 @@ struct Partial {
 /// state, recovers text via the RS pool, and finalizes voice (with silence
 /// fill) on completion or timeout.
 pub struct Reassembler {
-    key: [u8; 32],
+    /// Session key, or None for a passphrase-less (plaintext-only) session.
+    /// Encrypted frames arriving without a key drop like a wrong passphrase.
+    key: Option<[u8; 32]>,
     partials: HashMap<u64, Partial>,
     delivered: HashSet<u64>,
 }
 
 impl Reassembler {
-    /// Creates a reassembler bound to a session key.
-    pub fn new(key: [u8; 32]) -> Self {
+    /// Creates a reassembler bound to a session key (None ⇒ plaintext only).
+    pub fn new(key: Option<[u8; 32]>) -> Self {
         Reassembler { key, partials: HashMap::new(), delivered: HashSet::new() }
     }
 
@@ -465,13 +558,21 @@ impl Reassembler {
         let header = Header::unpack(frame)?;
         let mut packed = [0u8; HEADER_LEN];
         packed.copy_from_slice(&frame[..HEADER_LEN]);
-        let plaintext = crypto::open_chunk(
-            &self.key,
-            &packed,
-            header.message_id,
-            header.chunk_index,
-            &frame[HEADER_LEN..],
-        )?;
+        // Read the clear header first: a plaintext frame is verified by its
+        // keyless checksum and needs no key; an encrypted frame is opened with
+        // the session key (and drops if we have none, like a wrong passphrase).
+        let plaintext = if header.is_plaintext() {
+            open_plain(&packed, &frame[HEADER_LEN..])?
+        } else {
+            let key = self.key.ok_or(AetrError::AuthFailed)?;
+            crypto::open_chunk(
+                &key,
+                &packed,
+                header.message_id,
+                header.chunk_index,
+                &frame[HEADER_LEN..],
+            )?
+        };
 
         if header.is_control() {
             return Ok(Some(RxEvent::Control { request: RepairRequest::from_plaintext(&plaintext)? }));
@@ -496,13 +597,18 @@ impl Reassembler {
             return Err(AetrError::Malformed("chunk_index out of range".into()));
         }
 
+        let is_plain = header.is_plaintext();
         let partial = self.partials.entry(header.message_id).or_insert_with(|| Partial {
             voice,
+            plaintext: is_plain,
             chunk_count: header.chunk_count,
             shards: BTreeMap::new(),
             first_seen: now,
         });
-        if partial.voice != voice || partial.chunk_count != header.chunk_count {
+        if partial.voice != voice
+            || partial.plaintext != is_plain
+            || partial.chunk_count != header.chunk_count
+        {
             return Err(AetrError::Malformed("conflicting headers within a message".into()));
         }
         partial.shards.entry(header.chunk_index).or_insert(plaintext);
@@ -534,6 +640,7 @@ impl Reassembler {
     /// Decodes a message from its collected shards. Voice tolerates missing
     /// spans (silence fill); text requires K distinct shards.
     fn finalize(message_id: u64, partial: Partial) -> Result<RxEvent, AetrError> {
+        let encrypted = !partial.plaintext;
         if partial.voice {
             let count = partial.chunk_count as usize;
             let mut spans: Vec<Option<Vec<u8>>> = vec![None; count];
@@ -573,7 +680,7 @@ impl Reassembler {
         }
         let text = String::from_utf8(body[2..2 + len].to_vec())
             .map_err(|_| AetrError::Malformed("text is not valid UTF-8".into()))?;
-        Ok(RxEvent::Text { message_id, text })
+        Ok(RxEvent::Text { message_id, text, encrypted })
     }
 
     /// Builds a repair request for an incomplete message, or None if the
@@ -585,6 +692,12 @@ impl Reassembler {
             request.set(idx as usize);
         }
         Some(request)
+    }
+
+    /// Whether an in-flight message arrived encrypted, so its repair round
+    /// (control + repair frames) matches. None if the message is unknown.
+    pub fn target_encrypted(&self, message_id: u64) -> Option<bool> {
+        self.partials.get(&message_id).map(|p| !p.plaintext)
     }
 
     /// Sweeps messages older than `timeout`. Voice finalizes with silence

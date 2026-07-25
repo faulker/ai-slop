@@ -18,7 +18,7 @@ func runSelfTest() -> Bool {
         let sender = try AetrSession(config: config)
         let receiver = try AetrSession(config: config)
 
-        let burst = try sender.encodeText(text: "hello")
+        let burst = try sender.encodeText(text: "hello", encrypted: true)
         guard !burst.isEmpty else {
             print("SELFTEST FAIL: encodeText returned an empty burst")
             return false
@@ -39,7 +39,7 @@ func runSelfTest() -> Bool {
         while Date() < deadline {
             for event in receiver.pollEvents() {
                 switch event {
-                case let .text(_, text):
+                case let .text(_, text, _):
                     if text == "hello" {
                         print("SELFTEST PASS")
                         return true
@@ -128,7 +128,7 @@ func runGoldenDecode(path: String) -> Bool {
         while Date() < deadline {
             for event in receiver.pollEvents() {
                 switch event {
-                case let .text(_, text):
+                case let .text(_, text, _):
                     if text == goldenText {
                         print("GOLDEN PASS")
                         return true

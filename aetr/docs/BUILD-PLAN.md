@@ -70,7 +70,8 @@ aetr/
 
 - Sample rate everywhere at the FFI boundary: 48 kHz mono f32. The shim instantiates aicodix at 48000; voice is decimated to 8 kHz inside `voice.rs` for codec2 and upsampled back on play. Platform layers never resample.
 - Chunk = one modem transmission. Payload modes 85/128/170 bytes; default 170.
-- Header (11 B, AEAD associated data): `message_id(8, random) | chunk_index(1) | chunk_count(1) | flags(1)` with flags bit0 is_repair, bit1 payload_type (0=text, 1=voice), bit2 last_chunk. Ciphertext + 16 B tag follow. Usable payload in 170-mode: 143 B.
+- Header (11 B, AEAD associated data): `message_id(8, random) | chunk_index(1) | chunk_count(1) | flags(1)` with flags bit0 is_repair, bit1 payload_type (0=text, 1=voice), bit2 last_chunk, bit3 control, bit4 plaintext. Ciphertext + 16 B tag follow. Usable payload in 170-mode: 143 B.
+- Plaintext (clear) text mode (added 2026-07-23): with the plaintext flag set, the body is framed in the clear (`header || body || 16 B keyless checksum`) instead of AEAD-sealed, so it keeps the same geometry, FEC, and ARQ but needs no shared key. The receiver reads the clear header, verifies the checksum, and delivers the body without decrypting. Per-message and text-only; voice stays encrypted. An empty passphrase makes a plaintext-only session (no key derived).
 - Nonce = `message_id || chunk_index || zero-pad` to 24 B. Never transmitted.
 - KDF: Argon2id, m=19456 KiB, t=2, p=1 (OWASP baseline, sized for low-end Android), salt = fixed app constant `"aetr-v1"` since a shared passphrase is the only common secret. Documented tradeoff.
 - Text > 143 B: split into K chunks, add R = ceil(0.25 K) RS repair chunks, interleave source/repair in TX order. Single-chunk text: no RS.

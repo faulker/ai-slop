@@ -18,6 +18,10 @@ final class AppState: ObservableObject {
     /// Fill the TX delay with a quiet tone so VOX-keyed radios open the
     /// transmitter during the delay instead of clipping the data.
     @Published var voxPrimer = false
+    /// Send text encrypted (the default). Flip off to transmit in the clear
+    /// on services where encryption isn't allowed; receivers read it without
+    /// the passphrase. Forced off when connected with an empty passphrase.
+    @Published var sendEncrypted = true
     @Published var connected = false
     @Published var connecting = false
     @Published var errorMessage: String?
@@ -77,9 +81,10 @@ final class AppState: ObservableObject {
     /// Creates the session off-main (Argon2id blocks ~100 ms), then starts
     /// audio and the event poll.
     func connect() {
-        guard !passphrase.isEmpty else {
-            errorMessage = "Enter a passphrase first"
-            return
+        // An empty passphrase is allowed: it makes a plaintext-only session,
+        // so force clear sending (encryption needs a key).
+        if passphrase.isEmpty {
+            sendEncrypted = false
         }
         connecting = true
         errorMessage = nil
@@ -189,16 +194,17 @@ final class AppState: ObservableObject {
                         status: .receiving(received: received, total: total)))
             }
 
-        case let .text(messageId, text):
+        case let .text(messageId, text, encrypted):
             if let i = incomingIndex(for: messageId) {
                 messages[i].text = text
                 messages[i].isVoice = false
+                messages[i].encrypted = encrypted
                 messages[i].status = .complete
             } else {
                 messages.append(
                     ChatMessage(
-                        messageId: messageId, outgoing: false, isVoice: false, text: text,
-                        status: .complete))
+                        messageId: messageId, outgoing: false, isVoice: false,
+                        encrypted: encrypted, text: text, status: .complete))
             }
 
         case let .voice(messageId, pcm48k, missingSpans):
@@ -240,10 +246,12 @@ final class AppState: ObservableObject {
         let text = composeText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let session = lock.withLock({ session }) else { return }
         composeText = ""
-        let message = ChatMessage(outgoing: true, isVoice: false, text: text, status: .sending)
+        let encrypted = sendEncrypted
+        let message = ChatMessage(
+            outgoing: true, isVoice: false, encrypted: encrypted, text: text, status: .sending)
         messages.append(message)
         encodeAndTransmit(rowId: message.id) {
-            try session.encodeText(text: text)
+            try session.encodeText(text: text, encrypted: encrypted)
         }
     }
 

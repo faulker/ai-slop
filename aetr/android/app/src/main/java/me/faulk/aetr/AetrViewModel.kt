@@ -30,8 +30,12 @@ import java.util.concurrent.atomic.AtomicLong
 sealed interface LogEntry {
     val uid: Long
 
-    /** A text message we transmitted. */
-    data class SentText(override val uid: Long, val text: String) : LogEntry
+    /** A text message we transmitted. `encrypted` false = sent in the clear. */
+    data class SentText(
+        override val uid: Long,
+        val text: String,
+        val encrypted: Boolean,
+    ) : LogEntry
 
     /** A voice clip we transmitted, kept for local replay. */
     data class SentVoice(
@@ -40,11 +44,12 @@ sealed interface LogEntry {
         val airtimeSecs: Double,
     ) : LogEntry
 
-    /** A fully received text message. */
+    /** A fully received text message. `encrypted` false = arrived in the clear. */
     data class ReceivedText(
         override val uid: Long,
         val messageId: ULong,
         val text: String,
+        val encrypted: Boolean,
     ) : LogEntry
 
     /** A received voice clip, possibly with silence gaps at missing spans. */
@@ -99,6 +104,10 @@ class AetrViewModel(app: Application) : AndroidViewModel(app) {
     var voiceCapText by mutableStateOf("30")
     var txDelayText by mutableStateOf("1000")
     var voxPrimer by mutableStateOf(false)
+
+    /** Send text encrypted (default). Off = transmit in the clear; receivers
+     * read it without the passphrase. Forced off with an empty passphrase. */
+    var sendEncrypted by mutableStateOf(true)
 
     // --- Audio device routing ---
     var inputDevices by mutableStateOf(listOf<AudioDeviceInfo>())
@@ -172,6 +181,9 @@ class AetrViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun connect() {
         if (connected || connecting) return
+        // An empty passphrase makes a plaintext-only session, so force clear
+        // sending (encryption needs a key).
+        if (passphrase.isEmpty()) sendEncrypted = false
         connecting = true
         errorMessage = null
         viewModelScope.launch {
@@ -335,7 +347,7 @@ class AetrViewModel(app: Application) : AndroidViewModel(app) {
                 removeInProgress(event.messageId)
                 log.add(
                     LogEntry.ReceivedText(
-                        nextUid.getAndIncrement(), event.messageId, event.text
+                        nextUid.getAndIncrement(), event.messageId, event.text, event.encrypted
                     )
                 )
             }
@@ -384,10 +396,11 @@ class AetrViewModel(app: Application) : AndroidViewModel(app) {
         val s = session ?: return
         if (text.isEmpty()) return
         draft = ""
+        val encrypted = sendEncrypted
         viewModelScope.launch {
             try {
-                val burst = withContext(Dispatchers.Default) { s.encodeText(text) }
-                log.add(LogEntry.SentText(nextUid.getAndIncrement(), text))
+                val burst = withContext(Dispatchers.Default) { s.encodeText(text, encrypted) }
+                log.add(LogEntry.SentText(nextUid.getAndIncrement(), text, encrypted))
                 transmit(s, burst)
             } catch (e: AetrException) {
                 errorMessage = "Send failed: ${e.message}"

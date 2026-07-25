@@ -253,6 +253,14 @@ struct MessageRow: View {
                         .font(.caption)
                         .foregroundColor(isFailed ? .red : .secondary)
 
+                    // Text messages sent or received in the clear are badged so
+                    // it is obvious they had no encryption.
+                    if !message.isVoice && !message.encrypted {
+                        Label("CLEAR", systemImage: "lock.open")
+                            .font(.caption2.bold())
+                            .foregroundColor(.orange)
+                    }
+
                     if message.canRequestRepair {
                         Button("Request repair") {
                             appState.requestRepair(for: message)
@@ -284,6 +292,19 @@ struct ComposeBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            // Encrypt-on-send toggle. Disabled (forced clear) with no passphrase.
+            Button {
+                appState.sendEncrypted.toggle()
+            } label: {
+                Image(systemName: appState.sendEncrypted ? "lock.fill" : "lock.open")
+                    .foregroundColor(appState.sendEncrypted ? .accentColor : .orange)
+            }
+            .buttonStyle(.borderless)
+            .disabled(!appState.connected || appState.passphrase.isEmpty)
+            .help(appState.sendEncrypted
+                ? "Sending encrypted — click to send in the clear"
+                : "Sending in the clear (unencrypted) — click to encrypt")
+
             TextField("Message", text: $appState.composeText)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { appState.sendText() }

@@ -92,6 +92,9 @@ pub enum RxEvent {
         message_id: u64,
         /// Decoded UTF-8 text.
         text: String,
+        /// False if it arrived in the clear (sent unencrypted); the UI badges
+        /// these so it is obvious the message had no confidentiality.
+        encrypted: bool,
     },
     /// A voice clip, possibly with silent gaps where spans were lost.
     Voice {
@@ -168,13 +171,13 @@ impl Inner {
     fn handle_frame_event(
         &mut self,
         ev: frame::RxEvent,
-        key: &[u8; 32],
+        key: Option<&[u8; 32]>,
         mode: ModemMode,
         timing: TxTiming,
     ) {
         match ev {
-            frame::RxEvent::Text { message_id, text } => {
-                self.events.push(RxEvent::Text { message_id, text })
+            frame::RxEvent::Text { message_id, text, encrypted } => {
+                self.events.push(RxEvent::Text { message_id, text, encrypted })
             }
             frame::RxEvent::Voice { message_id, pcm48k, missing_spans } => {
                 self.events.push(RxEvent::Voice { message_id, pcm48k, missing_spans })
@@ -306,8 +309,9 @@ pub fn estimate_airtime_secs(mode: ModemMode, kind: PayloadKind, len: u64, tx_de
 /// runs the Argon2id KDF (blocking, ~100 ms); everything after is cheap.
 #[derive(uniffi::Object)]
 pub struct AetrSession {
-    /// Derived 32-byte session key.
-    key: [u8; 32],
+    /// Derived 32-byte session key, or None for a passphrase-less session
+    /// that can only send and receive unencrypted (plaintext) messages.
+    key: Option<[u8; 32]>,
     /// Modem payload mode for everything this session sends and estimates.
     mode: ModemMode,
     /// Maximum accepted voice clip length in seconds.
@@ -334,7 +338,13 @@ impl AetrSession {
     /// streaming receiver.
     #[uniffi::constructor]
     pub fn new(config: SessionConfig) -> Result<Arc<Self>, AetrError> {
-        let key = crypto::derive_key(&config.passphrase)?;
+        // An empty passphrase means plaintext-only: no key is derived, so the
+        // (blocking) Argon2id KDF is also skipped.
+        let key = if config.passphrase.is_empty() {
+            None
+        } else {
+            Some(crypto::derive_key(&config.passphrase)?)
+        };
         let rx = OfdmRx::new()?;
         Ok(Arc::new(AetrSession {
             key,
@@ -357,9 +367,17 @@ impl AetrSession {
 
     /// Encodes a text message into one complete 48 kHz PCM transmission
     /// (all bursts, gaps, lead-in/tail) and caches the RS parity pool for a
-    /// later ARQ round.
-    pub fn encode_text(&self, text: String) -> Result<Vec<f32>, AetrError> {
-        let tx = frame::build_text_message(&self.key, self.mode, &text, frame::random_message_id())?;
+    /// later ARQ round. Set `encrypted` false to send in the clear: the
+    /// receiver reads it without the passphrase. A session created with an
+    /// empty passphrase can only send plaintext (`encrypted = true` errors).
+    pub fn encode_text(&self, text: String, encrypted: bool) -> Result<Vec<f32>, AetrError> {
+        let tx = frame::build_text_message(
+            self.key.as_ref(),
+            self.mode,
+            &text,
+            frame::random_message_id(),
+            encrypted,
+        )?;
         let pcm = modulate_frames(self.mode, &tx.frames, self.timing)?;
         self.lock().cache_tx(tx.cache);
         Ok(pcm)
@@ -377,7 +395,11 @@ impl AetrSession {
                 self.voice_cap_secs
             )));
         }
-        let tx = frame::build_voice_message(&self.key, self.mode, &pcm48k, frame::random_message_id())?;
+        let key = self
+            .key
+            .as_ref()
+            .ok_or_else(|| AetrError::Malformed("voice needs a passphrase (no plaintext voice)".into()))?;
+        let tx = frame::build_voice_message(key, self.mode, &pcm48k, frame::random_message_id())?;
         let pcm = modulate_frames(self.mode, &tx.frames, self.timing)?;
         self.lock().cache_tx(tx.cache);
         Ok(pcm)
@@ -401,7 +423,7 @@ impl AetrSession {
         let now = Instant::now();
         for f in frames {
             match inner.reassembler.push_frame(&f, now) {
-                Ok(Some(ev)) => inner.handle_frame_event(ev, &self.key, self.mode, self.timing),
+                Ok(Some(ev)) => inner.handle_frame_event(ev, self.key.as_ref(), self.mode, self.timing),
                 Ok(None) => {}
                 Err(_) => {} // AuthFailed/Malformed: not for us, drop.
             }
@@ -416,7 +438,7 @@ impl AetrSession {
         let mut inner = self.lock();
         let expired = inner.reassembler.take_expired(Instant::now(), RX_TIMEOUT);
         for ev in expired {
-            inner.handle_frame_event(ev, &self.key, self.mode, self.timing);
+            inner.handle_frame_event(ev, self.key.as_ref(), self.mode, self.timing);
         }
         std::mem::take(&mut inner.events)
     }
@@ -450,15 +472,23 @@ impl AetrSession {
     /// Errors if the message is unknown or already complete. The sender's
     /// session answers automatically via `RxEvent::RepairRequested`.
     pub fn request_repair(&self, message_id: u64) -> Result<Vec<f32>, AetrError> {
-        let request = self
-            .lock()
-            .reassembler
-            .build_repair_request(message_id)
-            .ok_or_else(|| {
+        let (request, encrypted) = {
+            let inner = self.lock();
+            let request = inner.reassembler.build_repair_request(message_id).ok_or_else(|| {
                 AetrError::Malformed("message unknown or already complete".into())
             })?;
-        let control =
-            frame::build_control_frame(&self.key, self.mode, &request, frame::random_message_id())?;
+            // The control frame follows the target message's discipline, so a
+            // plaintext message is repaired over a clear channel with no key.
+            let encrypted = inner.reassembler.target_encrypted(message_id).unwrap_or(true);
+            (request, encrypted)
+        };
+        let control = frame::build_control_frame(
+            self.key.as_ref(),
+            self.mode,
+            &request,
+            frame::random_message_id(),
+            encrypted,
+        )?;
         modulate_frames(self.mode, &[control], self.timing)
     }
 
@@ -499,7 +529,7 @@ mod tests {
         let sender = AetrSession::new(config()).expect("sender");
         let receiver = AetrSession::new(config()).expect("receiver");
 
-        let pcm = sender.encode_text("hello over fm".into()).expect("encode");
+        let pcm = sender.encode_text("hello over fm".into(), true).expect("encode");
         assert!(pcm.len() > burst_samples());
         receiver.push_rx(pcm);
         let events = receiver.poll_events();
@@ -542,7 +572,7 @@ mod tests {
 
         // 1400 bytes -> K = 10 source + 3 repair = 13 bursts.
         let text = long_text(1400);
-        let pcm = sender.encode_text(text.clone()).expect("encode");
+        let pcm = sender.encode_text(text.clone(), true).expect("encode");
         let stride = burst_samples() + GAP_SAMPLES;
         assert_eq!(pcm.len(), LEAD_SAMPLES + 13 * stride + TAIL_SAMPLES);
 
@@ -588,9 +618,124 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                RxEvent::Text { message_id, text: t } if *message_id == id && *t == text
+                RxEvent::Text { message_id, text: t, .. } if *message_id == id && *t == text
             )),
             "repair round should complete the text: {events:?}"
+        );
+    }
+
+    #[test]
+    fn session_text_plaintext_roundtrip() {
+        let sender = AetrSession::new(config()).expect("sender");
+        let receiver = AetrSession::new(config()).expect("receiver");
+
+        let pcm = sender.encode_text("in the clear".into(), false).expect("encode");
+        receiver.push_rx(pcm);
+        let events = receiver.poll_events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                RxEvent::Text { text, encrypted, .. } if text == "in the clear" && !*encrypted
+            )),
+            "expected a plaintext text event, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn plaintext_decodes_without_the_passphrase() {
+        // A plaintext message is readable even when the two ends do not share
+        // a passphrase — that is the whole point of the clear mode.
+        let sender = AetrSession::new(config()).expect("sender");
+        let mut other = config();
+        other.passphrase = "a totally different phrase".into();
+        let receiver = AetrSession::new(other).expect("receiver");
+
+        let clear = sender.encode_text("no shared key needed".into(), false).expect("clear");
+        let secret = sender.encode_text("this one is sealed".into(), true).expect("secret");
+        receiver.push_rx(clear);
+        receiver.push_rx(secret);
+        let events = receiver.poll_events();
+        let texts: Vec<&String> = events
+            .iter()
+            .filter_map(|e| match e {
+                RxEvent::Text { text, encrypted: false, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["no shared key needed"], "only the clear message decodes: {events:?}");
+    }
+
+    #[test]
+    fn empty_passphrase_is_plaintext_only() {
+        let mut cfg = config();
+        cfg.passphrase = String::new();
+        let sender = AetrSession::new(cfg.clone()).expect("sender");
+        let receiver = AetrSession::new(cfg).expect("receiver");
+
+        // Encrypting without a passphrase is rejected.
+        assert!(matches!(
+            sender.encode_text("nope".into(), true),
+            Err(AetrError::Malformed(_))
+        ));
+        // Plaintext still round-trips between two keyless sessions.
+        let pcm = sender.encode_text("clear channel".into(), false).expect("encode");
+        receiver.push_rx(pcm);
+        let events = receiver.poll_events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                RxEvent::Text { text, encrypted: false, .. } if text == "clear channel"
+            )),
+            "keyless session should send/receive plaintext: {events:?}"
+        );
+    }
+
+    #[test]
+    fn session_plaintext_arq_repair_flow() {
+        let sender = AetrSession::new(config()).expect("sender");
+        let receiver = AetrSession::new(config()).expect("receiver");
+
+        // 1400 bytes -> K = 10 source + 3 repair = 13 bursts, sent in the clear.
+        let text = long_text(1400);
+        let pcm = sender.encode_text(text.clone(), false).expect("encode");
+        let stride = burst_samples() + GAP_SAMPLES;
+
+        // Drop the first 4 bursts so 9 distinct shards < K = 10.
+        let mut damaged = pcm[..LEAD_SAMPLES].to_vec();
+        damaged.extend_from_slice(&pcm[LEAD_SAMPLES + 4 * stride..]);
+        receiver.push_rx(damaged);
+        let events = receiver.poll_events();
+        let id = events
+            .iter()
+            .find_map(|e| match e {
+                RxEvent::Progress { message_id, received: 9, total: 10, is_voice: false } => {
+                    Some(*message_id)
+                }
+                _ => None,
+            })
+            .expect("progress event at 9/10");
+
+        // The clear repair round completes it, no passphrase involved.
+        let control = receiver.request_repair(id).expect("repair request");
+        sender.push_rx(control);
+        let response = sender
+            .poll_events()
+            .into_iter()
+            .find_map(|e| match e {
+                RxEvent::RepairRequested { message_id, pcm_response } if message_id == id => {
+                    Some(pcm_response)
+                }
+                _ => None,
+            })
+            .expect("repair response");
+        receiver.push_rx(response);
+        let events = receiver.poll_events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                RxEvent::Text { message_id, text: t, encrypted: false } if *message_id == id && *t == text
+            )),
+            "plaintext repair round should complete the text: {events:?}"
         );
     }
 
@@ -638,7 +783,7 @@ mod tests {
         let sender = AetrSession::new(cfg).expect("sender");
         let receiver = AetrSession::new(config()).expect("receiver");
 
-        let pcm = sender.encode_text("keyed up".into()).expect("encode");
+        let pcm = sender.encode_text("keyed up".into(), true).expect("encode");
         assert_eq!(sender.tx_delay_ms(), 1000);
         let delay = 48_000; // 1000 ms at 48 kHz
         assert_eq!(

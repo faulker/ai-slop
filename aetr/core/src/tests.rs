@@ -129,7 +129,7 @@ fn text_roundtrip_single_chunk() {
     let key = test_key();
     let mode = ModemMode::B170;
     let text = "hello over fm";
-    let tx = frame::build_text_message(key, mode, text, 0x1001).expect("build");
+    let tx = frame::build_text_message(Some(key), mode, text, 0x1001, true).expect("build");
     assert_eq!(tx.frames.len(), 1);
     assert_eq!(tx.frames[0].len(), mode.frame_bytes());
 
@@ -138,10 +138,10 @@ fn text_roundtrip_single_chunk() {
     let mut rng = StdRng::seed_from_u64(0xAE7B0003);
     channel::awgn(&mut pcm, 25.0, &mut rng);
 
-    let mut rs = Reassembler::new(*key);
+    let mut rs = Reassembler::new(Some(*key));
     let event = push_frames(&mut rs, &receive_all(&pcm));
     match event {
-        Some(RxEvent::Text { message_id, text: t }) => {
+        Some(RxEvent::Text { message_id, text: t, .. }) => {
             assert_eq!(message_id, 0x1001);
             assert_eq!(t, text);
         }
@@ -161,7 +161,7 @@ fn text_roundtrip_ten_chunks() {
     let mode = ModemMode::B170;
     // 1400 bytes -> (2 + 1400) / 143 -> K = 10 source chunks, R = 3.
     let text = long_text(1400);
-    let tx = frame::build_text_message(key, mode, &text, 0x1002).expect("build");
+    let tx = frame::build_text_message(Some(key), mode, &text, 0x1002, true).expect("build");
     assert_eq!(tx.cache.source_count, 10);
     assert_eq!(tx.frames.len(), 13);
 
@@ -170,7 +170,7 @@ fn text_roundtrip_ten_chunks() {
     let mut rng = StdRng::seed_from_u64(0xAE7B0004);
     channel::awgn(&mut pcm, 25.0, &mut rng);
 
-    let mut rs = Reassembler::new(*key);
+    let mut rs = Reassembler::new(Some(*key));
     let event = push_frames(&mut rs, &receive_all(&pcm));
     match event {
         Some(RxEvent::Text { text: t, .. }) => assert_eq!(t, text),
@@ -183,7 +183,7 @@ fn text_ten_chunks_two_drops_recovered_by_rs() {
     let key = test_key();
     let mode = ModemMode::B170;
     let text = long_text(1400);
-    let tx = frame::build_text_message(key, mode, &text, 0x1003).expect("build");
+    let tx = frame::build_text_message(Some(key), mode, &text, 0x1003, true).expect("build");
     assert_eq!(tx.frames.len(), 13);
 
     let bursts = modulate(mode, &tx.frames);
@@ -192,7 +192,7 @@ fn text_ten_chunks_two_drops_recovered_by_rs() {
     let mut rng = StdRng::seed_from_u64(0xAE7B0005);
     channel::awgn(&mut pcm, 25.0, &mut rng);
 
-    let mut rs = Reassembler::new(*key);
+    let mut rs = Reassembler::new(Some(*key));
     let frames = receive_all(&pcm);
     assert_eq!(frames.len(), 11);
     let event = push_frames(&mut rs, &frames);
@@ -207,13 +207,13 @@ fn arq_round_recovers_four_drops() {
     let key = test_key();
     let mode = ModemMode::B170;
     let text = long_text(1400);
-    let tx = frame::build_text_message(key, mode, &text, 0x1004).expect("build");
+    let tx = frame::build_text_message(Some(key), mode, &text, 0x1004, true).expect("build");
     let k = tx.cache.source_count;
     assert_eq!(k, 10);
 
     // Drop 4 source chunks — beyond R = 3, so the upfront burst can't finish.
     let dropped: [u8; 4] = [0, 2, 4, 6];
-    let mut rs = Reassembler::new(*key);
+    let mut rs = Reassembler::new(Some(*key));
     let now = Instant::now();
     let mut completed = None;
     for f in &tx.frames {
@@ -230,11 +230,11 @@ fn arq_round_recovers_four_drops() {
 
     // Receiver builds the control frame from its own state...
     let request = rs.build_repair_request(0x1004).expect("repair request");
-    let control = frame::build_control_frame(key, mode, &request, 0x2004).expect("control");
+    let control = frame::build_control_frame(Some(key), mode, &request, 0x2004, true).expect("control");
     assert_eq!(control.len(), mode.frame_bytes());
 
     // ...the sender decodes it (it's a normal encrypted frame)...
-    let mut sender_rs = Reassembler::new(*key);
+    let mut sender_rs = Reassembler::new(Some(*key));
     let parsed = match sender_rs.push_frame(&control, now).expect("control push") {
         Some(RxEvent::Control { request }) => request,
         other => panic!("expected control event, got {other:?}"),
@@ -243,7 +243,7 @@ fn arq_round_recovers_four_drops() {
 
     // ...and answers with cached parity from the pool (never-transmitted
     // shards, indices >= K + R).
-    let repairs = frame::build_repair_frames(key, &tx.cache, &parsed).expect("repairs");
+    let repairs = frame::build_repair_frames(Some(key), &tx.cache, &parsed).expect("repairs");
     assert_eq!(repairs.len(), 1, "receiver holds 9 shards, needs exactly 1");
     let rh = Header::unpack(&repairs[0]).expect("repair header");
     assert!(rh.chunk_index as usize >= k + fec::repair_count(k), "fresh pool parity expected");
@@ -276,7 +276,7 @@ fn voice_roundtrip_over_modem() {
     let mut rng = StdRng::seed_from_u64(0xAE7B0006);
     channel::awgn(&mut pcm, 25.0, &mut rng);
 
-    let mut rs = Reassembler::new(*key);
+    let mut rs = Reassembler::new(Some(*key));
     let event = push_frames(&mut rs, &receive_all(&pcm));
     match event {
         Some(RxEvent::Voice { message_id, pcm48k, missing_spans }) => {
@@ -298,7 +298,7 @@ fn voice_dropped_chunk_leaves_silence_gap_at_offset() {
     let tx = frame::build_voice_message(key, mode, &clip, 0x3002).expect("build");
     assert_eq!(tx.frames.len(), 3);
 
-    let mut rs = Reassembler::new(*key);
+    let mut rs = Reassembler::new(Some(*key));
     let t0 = Instant::now();
     for (i, f) in tx.frames.iter().enumerate() {
         if i == 1 {
@@ -336,9 +336,9 @@ fn wrong_passphrase_fails_every_chunk() {
     let key = test_key();
     let wrong = crypto::derive_key("wrong horse wrong staple").expect("kdf");
     let mode = ModemMode::B170;
-    let tx = frame::build_text_message(key, mode, &long_text(500), 0x4001).expect("build");
+    let tx = frame::build_text_message(Some(key), mode, &long_text(500), 0x4001, true).expect("build");
 
-    let mut rs = Reassembler::new(wrong);
+    let mut rs = Reassembler::new(Some(wrong));
     let now = Instant::now();
     for f in &tx.frames {
         match rs.push_frame(f, now) {
@@ -354,12 +354,51 @@ fn wrong_passphrase_fails_every_chunk() {
 fn reassembler_rejects_tampered_frame() {
     let key = test_key();
     let mode = ModemMode::B170;
-    let tx = frame::build_text_message(key, mode, "tamper me", 0x4002).expect("build");
+    let tx = frame::build_text_message(Some(key), mode, "tamper me", 0x4002, true).expect("build");
     let mut bad = tx.frames[0].clone();
     let last = bad.len() - 1;
     bad[last] ^= 0x01;
-    let mut rs = Reassembler::new(*key);
+    let mut rs = Reassembler::new(Some(*key));
     assert_eq!(rs.push_frame(&bad, Instant::now()), Err(crate::AetrError::AuthFailed));
+}
+
+#[test]
+fn plaintext_frame_decodes_without_a_key() {
+    // A keyless (None) reassembler reads a clear frame, and a corrupted
+    // trailer is rejected exactly like a bad AEAD tag.
+    let mode = ModemMode::B170;
+    let tx = frame::build_text_message(None, mode, "hello in the clear", 0x5001, false)
+        .expect("build plaintext");
+    assert_eq!(tx.frames.len(), 1);
+    assert!(!tx.cache.encrypted);
+    let header = Header::unpack(&tx.frames[0]).expect("header");
+    assert!(header.is_plaintext());
+
+    let mut rs = Reassembler::new(None);
+    match rs.push_frame(&tx.frames[0], Instant::now()).expect("push") {
+        Some(RxEvent::Text { text, encrypted, .. }) => {
+            assert_eq!(text, "hello in the clear");
+            assert!(!encrypted);
+        }
+        other => panic!("expected clear text event, got {other:?}"),
+    }
+
+    // Flip a checksum byte: the frame drops on the AuthFailed path.
+    let mut bad = tx.frames[0].clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 0x01;
+    let mut rs = Reassembler::new(None);
+    assert_eq!(rs.push_frame(&bad, Instant::now()), Err(crate::AetrError::AuthFailed));
+}
+
+#[test]
+fn encrypted_frame_drops_on_a_keyless_reassembler() {
+    // Without a key an encrypted frame can't be opened and simply drops.
+    let key = test_key();
+    let mode = ModemMode::B170;
+    let tx = frame::build_text_message(Some(key), mode, "sealed", 0x5002, true).expect("build");
+    let mut rs = Reassembler::new(None);
+    assert_eq!(rs.push_frame(&tx.frames[0], Instant::now()), Err(crate::AetrError::AuthFailed));
 }
 
 #[test]
@@ -489,17 +528,17 @@ fn golden_roundtrip(name: &str, frames: &[Vec<u8>]) -> RxEvent {
         stored, samples,
         "{name} drifted from the current encoder; delete testdata/{name} to regenerate"
     );
-    let mut rs = Reassembler::new(*test_key());
+    let mut rs = Reassembler::new(Some(*test_key()));
     push_frames(&mut rs, &receive_all(&i16_to_f32(&stored))).expect("golden wav must decode")
 }
 
 #[test]
 fn golden_text_wav_cross_platform() {
-    let tx = frame::build_text_message(test_key(), ModemMode::B170, GOLDEN_TEXT, GOLDEN_TEXT_ID)
+    let tx = frame::build_text_message(Some(test_key()), ModemMode::B170, GOLDEN_TEXT, GOLDEN_TEXT_ID, true)
         .expect("build");
     assert_eq!(tx.frames.len(), 1, "golden text must stay single-chunk");
     match golden_roundtrip("golden_text.wav", &tx.frames) {
-        RxEvent::Text { message_id, text } => {
+        RxEvent::Text { message_id, text, .. } => {
             assert_eq!(message_id, GOLDEN_TEXT_ID);
             assert_eq!(text, GOLDEN_TEXT);
         }

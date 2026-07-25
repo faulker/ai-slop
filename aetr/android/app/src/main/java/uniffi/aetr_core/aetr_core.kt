@@ -828,7 +828,7 @@ fun uniffi_aetr_core_fn_free_aetrsession(`ptr`: Pointer,uniffi_out_err: UniffiRu
 ): Unit
 fun uniffi_aetr_core_fn_constructor_aetrsession_new(`config`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_aetr_core_fn_method_aetrsession_encode_text(`ptr`: Pointer,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_aetr_core_fn_method_aetrsession_encode_text(`ptr`: Pointer,`text`: RustBuffer.ByValue,`encrypted`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_aetr_core_fn_method_aetrsession_encode_voice(`ptr`: Pointer,`pcm48k`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -977,7 +977,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_aetr_core_checksum_func_estimate_airtime_secs() != 21146.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_aetr_core_checksum_method_aetrsession_encode_text() != 29.toShort()) {
+    if (lib.uniffi_aetr_core_checksum_method_aetrsession_encode_text() != 16372.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_aetr_core_checksum_method_aetrsession_encode_voice() != 43857.toShort()) {
@@ -1430,9 +1430,11 @@ public interface AetrSessionInterface {
     /**
      * Encodes a text message into one complete 48 kHz PCM transmission
      * (all bursts, gaps, lead-in/tail) and caches the RS parity pool for a
-     * later ARQ round.
+     * later ARQ round. Set `encrypted` false to send in the clear: the
+     * receiver reads it without the passphrase. A session created with an
+     * empty passphrase can only send plaintext (`encrypted = true` errors).
      */
-    fun `encodeText`(`text`: kotlin.String): List<kotlin.Float>
+    fun `encodeText`(`text`: kotlin.String, `encrypted`: kotlin.Boolean): List<kotlin.Float>
     
     /**
      * Encodes a 48 kHz mono voice clip into one complete PCM transmission.
@@ -1592,14 +1594,16 @@ open class AetrSession: Disposable, AutoCloseable, AetrSessionInterface
     /**
      * Encodes a text message into one complete 48 kHz PCM transmission
      * (all bursts, gaps, lead-in/tail) and caches the RS parity pool for a
-     * later ARQ round.
+     * later ARQ round. Set `encrypted` false to send in the clear: the
+     * receiver reads it without the passphrase. A session created with an
+     * empty passphrase can only send plaintext (`encrypted = true` errors).
      */
-    @Throws(AetrException::class)override fun `encodeText`(`text`: kotlin.String): List<kotlin.Float> {
+    @Throws(AetrException::class)override fun `encodeText`(`text`: kotlin.String, `encrypted`: kotlin.Boolean): List<kotlin.Float> {
             return FfiConverterSequenceFloat.lift(
     callWithPointer {
     uniffiRustCallWithError(AetrException) { _status ->
     UniffiLib.INSTANCE.uniffi_aetr_core_fn_method_aetrsession_encode_text(
-        it, FfiConverterString.lower(`text`),_status)
+        it, FfiConverterString.lower(`text`),FfiConverterBoolean.lower(`encrypted`),_status)
 }
     }
     )
@@ -2052,7 +2056,12 @@ sealed class RxEvent {
         /**
          * Decoded UTF-8 text.
          */
-        val `text`: kotlin.String) : RxEvent() {
+        val `text`: kotlin.String, 
+        /**
+         * False if it arrived in the clear (sent unencrypted); the UI badges
+         * these so it is obvious the message had no confidentiality.
+         */
+        val `encrypted`: kotlin.Boolean) : RxEvent() {
         companion object
     }
     
@@ -2144,6 +2153,7 @@ public object FfiConverterTypeRxEvent : FfiConverterRustBuffer<RxEvent>{
             1 -> RxEvent.Text(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
                 )
             2 -> RxEvent.Voice(
                 FfiConverterULong.read(buf),
@@ -2175,6 +2185,7 @@ public object FfiConverterTypeRxEvent : FfiConverterRustBuffer<RxEvent>{
                 4UL
                 + FfiConverterULong.allocationSize(value.`messageId`)
                 + FfiConverterString.allocationSize(value.`text`)
+                + FfiConverterBoolean.allocationSize(value.`encrypted`)
             )
         }
         is RxEvent.Voice -> {
@@ -2220,6 +2231,7 @@ public object FfiConverterTypeRxEvent : FfiConverterRustBuffer<RxEvent>{
                 buf.putInt(1)
                 FfiConverterULong.write(value.`messageId`, buf)
                 FfiConverterString.write(value.`text`, buf)
+                FfiConverterBoolean.write(value.`encrypted`, buf)
                 Unit
             }
             is RxEvent.Voice -> {
