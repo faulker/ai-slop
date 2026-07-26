@@ -1,8 +1,8 @@
 [package]
 name = "claude-usage"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Fetch Claude Code usage data via OAuth"
+description = "Read Claude usage from Claude Desktop's local history file, or the OAuth API"
 
 [dependencies]
 security-framework = "3"
