@@ -2,25 +2,41 @@
 
 Manual validation procedure for aetr on real hardware. Do this in two stages: acoustic (speaker to mic, no radios) first, then real analog FM radios. Every automated test already passes before you start (`cargo test -p aetr-core --release`, macOS `--selftest`, Android JVM tests), so any failure here is an analog-path problem, not a protocol bug.
 
+## Read the stage counters, not just the badge
+
+Before chasing anything below, look at the decode-stage line under the RX badge (`sync · pre✗ · pay✗ · ok · dB`). It localizes a failure in one glance and saves most of the guesswork in this document:
+
+- [ ] Nothing at all: no burst is reaching the modem. Routing or level. Check the In RMS against the ~−57 dBFS sync floor before touching anything else.
+- [ ] `pre✗` climbing: sync fires, preamble fails. Signal-to-noise, or energy outside 700–2294 Hz.
+- [ ] `pay✗` climbing: the burst arrives and is corrupted in flight. Suspect a gain moving on the symbol timescale (an AGC in a voice audio path) or dropped audio buffers.
+- [ ] `ok` climbing with rejected frames: passphrase or mode mismatch, not an audio problem.
+
+For anything unclear, use **Capture RX** on the Mac and run `Aetr --analyze-wav <file> --passphrase … --mode …` on the result. Turn on Android's TX WAV capture at the same time and you have both ends of the same burst to compare.
+
 ## Setup common to both stages
 
 - [ ] Two devices running aetr (any mix of macOS and Android).
 - [ ] Same passphrase entered on both, character for character.
-- [ ] Same modem mode selected on both (start with B170). Mode mismatch means silent decode failure, no error.
+- [ ] Same modem mode selected on both (start with **B85** for Android↔Android or any Bluetooth path; step up to B170 only after B85 is solid). Mode mismatch means sync without a message.
 - [ ] Volume/mic permissions granted; correct input and output devices selected in the app.
 - [ ] Quiet room for the acoustic stage.
+- [ ] On each device: digital loopback sends a short text to itself (proves session/UI before the analog path).
+- [ ] After rebuilding both apps: confirm loopback still lands a chat row (not just Tx/Rx badges). Post-TX half-duplex must flush modem sync only; a full RX reset after send would wipe chat events.
 
 ## Stage 1: acoustic (speaker to mic)
 
 Purpose: prove the analog audio path (DAC, speaker, air, mic, ADC) before adding radios.
 
 - [ ] Place the devices ~30 cm apart, sender speaker facing receiver mic.
-- [ ] Set sender volume to ~60%.
-- [ ] Send a short text ("hello ota"). Receiver shows Syncing during the burst, then the text.
+- [ ] Set sender volume to ~50–60% (phone speakers clip easily at 100%).
+- [ ] **Android↔Android first at B85:** send a short clear text ("hello ota"). Receiver shows Syncing during the burst, then the text. If Syncing appears but no text, note the "frame(s) rejected" counter under the RX badge.
+- [ ] Repeat with the lock toggle (encrypted on and off); both must produce a chat row when the audio path is good.
+- [ ] Repeat Android↔Android at B170 once B85 works.
+- [ ] Mac↔Android short clear and encrypted text (either direction) at B85.
 - [ ] Send a multi-chunk text (> 143 bytes). Watch the Progress count climb; message completes.
 - [ ] Send a short voice clip (2-3 s). Received clip plays back intelligibly (codec2 at 1200 bps is robotic but understandable).
 - [ ] Repeat the short text at low volume (~20%) and high volume (~100%). Note the levels where decode starts failing; clipping at full volume is the usual culprit.
-- [ ] Wrong-passphrase check: change the passphrase on one side, send a text, confirm nothing appears (frames are silently dropped) and no crash.
+- [ ] Wrong-passphrase check: change the passphrase on one side, send a text, confirm nothing appears, rejected-frame count climbs, and no crash.
 
 ## Stage 2: real radios
 
@@ -29,14 +45,26 @@ Two analog FM radios (FRS/GMRS/ham as licensed). Device A audio out into radio A
 ### Levels
 
 - [ ] Start with sender device volume ~50% into the radio mic. Too hot overdeviates FM and clips; too low loses sync in noise.
-- [ ] Send the short text at several TX volume levels; record the working range.
+- [ ] Send the short text at several TX volume levels; record the working range. On Android use the **TX level** slider and watch the far end's stage counters respond.
 - [ ] On the receiving radio, set speaker volume to a moderate, consistent level into the device mic. Record what works.
+- [ ] Note the receiving end's In RMS at each setting. The floor is around −57 dBFS; the ceiling is much more forgiving than it looks, since the modem tolerates hard clipping 20 dB into its own peak (`survives_severe_hard_clipping` in `core/src/tests.rs`). If a level fails, suspect too quiet before too hot.
 
 ### PTT: manual vs VOX, and TX delay
 
 - [ ] Manual PTT: key up, then hit send; the configurable TX delay (default 1000 ms) plus 0.1 s lead-in covers the keying. Unkey after the audio clearly ends (there is 0.5 s of tail).
 - [ ] VOX, if the radio supports it: enable the "VOX primer tone" toggle so the TX delay carries a quiet tone that trips VOX before the preamble. If the first burst of a multi-burst message consistently fails but later ones decode, VOX attack time is eating the preamble; raise the TX delay, increase VOX sensitivity, or use manual PTT.
+- [ ] VOX-only / no second PTT: leave **Auto ARQ** on (default). After a stalled receive, the app should auto-request repair; the sender should auto-answer ~1.2 s later without tapping Send repair. Confirm VOX primer is on so those bursts key the radio.
 - [ ] Tune the TX delay: drop it toward 0 until the first burst starts failing, then add ~500 ms margin. Record the working value for your radio.
+
+### APRS / USB-C / TRRS audio cable (Android)
+
+- [ ] Select the cable or USB sound card in **both** Input and Output pickers (not the built-in mic/speaker).
+- [ ] On connect, status mentions TX pinned / PCM16 stereo for cable/USB.
+- [ ] Media volume at ~70% (APRS mic levels are often quiet on phone headphone outs).
+- [ ] Disable Gemini/Google Assistant for headset controls if it still opens on PTT/TX (cable mic-button line).
+- [ ] Android TX → Mac RX short clear text at B85 succeeds (this is the regression the cable path fixes).
+- [ ] Android ↔ Android through two cable-connected radios at B85 succeeds.
+- [ ] If VOX: enable VOX primer (Android cable path turns it on automatically); leave Auto ARQ on; raise TX delay until the first burst is reliable.
 
 ### Bluetooth-connected radio (if your radio does TX/RX audio over Bluetooth)
 
@@ -63,8 +91,8 @@ Two analog FM radios (FRS/GMRS/ham as licensed). Device A audio out into radio A
 
 - [ ] Send a long text (> 1 kB, so 10+ chunks). Briefly interrupt reception mid-message (unplug the receive audio cable or block the mic for one burst).
 - [ ] Receiver shows an incomplete Progress count and stays in Receiving.
-- [ ] Trigger the repair request on the receiver; confirm the sender receives it and offers/transmits the repair burst.
-- [ ] Key the repair transmission; the message completes on the receiver.
+- [ ] With Auto ARQ on + VOX primer: wait ~3 s after progress stalls; receiver auto-sends a repair request and sender auto-answers; message completes without a second manual PTT.
+- [ ] With Auto ARQ off: trigger Request repair manually; confirm the sender offers Send repair; key/transmit it; message completes.
 - [ ] Confirm a repair request for an already-complete message is rejected client-side.
 
 ### Voice degradation

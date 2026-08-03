@@ -736,6 +736,20 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -753,17 +767,31 @@ internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_aetr_core_checksum_func_estimate_airtime_secs(
 ): Short
+fun uniffi_aetr_core_checksum_func_read_wav_48k(
+): Short
+fun uniffi_aetr_core_checksum_func_write_wav_48k(
+): Short
 fun uniffi_aetr_core_checksum_method_aetrsession_encode_text(
 ): Short
 fun uniffi_aetr_core_checksum_method_aetrsession_encode_voice(
+): Short
+fun uniffi_aetr_core_checksum_method_aetrsession_flush_rx_modem(
+): Short
+fun uniffi_aetr_core_checksum_method_aetrsession_last_cfo_hz(
+): Short
+fun uniffi_aetr_core_checksum_method_aetrsession_last_snr_db(
 ): Short
 fun uniffi_aetr_core_checksum_method_aetrsession_poll_events(
 ): Short
 fun uniffi_aetr_core_checksum_method_aetrsession_push_rx(
 ): Short
+fun uniffi_aetr_core_checksum_method_aetrsession_rejected_frames(
+): Short
 fun uniffi_aetr_core_checksum_method_aetrsession_request_repair(
 ): Short
 fun uniffi_aetr_core_checksum_method_aetrsession_reset_rx(
+): Short
+fun uniffi_aetr_core_checksum_method_aetrsession_rx_counters(
 ): Short
 fun uniffi_aetr_core_checksum_method_aetrsession_rx_state(
 ): Short
@@ -832,14 +860,24 @@ fun uniffi_aetr_core_fn_method_aetrsession_encode_text(`ptr`: Pointer,`text`: Ru
 ): RustBuffer.ByValue
 fun uniffi_aetr_core_fn_method_aetrsession_encode_voice(`ptr`: Pointer,`pcm48k`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_aetr_core_fn_method_aetrsession_flush_rx_modem(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_aetr_core_fn_method_aetrsession_last_cfo_hz(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Float
+fun uniffi_aetr_core_fn_method_aetrsession_last_snr_db(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Float
 fun uniffi_aetr_core_fn_method_aetrsession_poll_events(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_aetr_core_fn_method_aetrsession_push_rx(`ptr`: Pointer,`pcm48k`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_aetr_core_fn_method_aetrsession_rejected_frames(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Long
 fun uniffi_aetr_core_fn_method_aetrsession_request_repair(`ptr`: Pointer,`messageId`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_aetr_core_fn_method_aetrsession_reset_rx(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_aetr_core_fn_method_aetrsession_rx_counters(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_aetr_core_fn_method_aetrsession_rx_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_aetr_core_fn_method_aetrsession_tx_delay_ms(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -848,6 +886,10 @@ fun uniffi_aetr_core_fn_method_aetrsession_voice_cap_secs(`ptr`: Pointer,uniffi_
 ): Int
 fun uniffi_aetr_core_fn_func_estimate_airtime_secs(`mode`: RustBuffer.ByValue,`kind`: RustBuffer.ByValue,`len`: Long,`txDelayMs`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): Double
+fun uniffi_aetr_core_fn_func_read_wav_48k(`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_aetr_core_fn_func_write_wav_48k(`path`: RustBuffer.ByValue,`pcm`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun ffi_aetr_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_aetr_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -977,22 +1019,43 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_aetr_core_checksum_func_estimate_airtime_secs() != 21146.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_aetr_core_checksum_func_read_wav_48k() != 2946.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_aetr_core_checksum_func_write_wav_48k() != 65140.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_aetr_core_checksum_method_aetrsession_encode_text() != 16372.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_aetr_core_checksum_method_aetrsession_encode_voice() != 43857.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_aetr_core_checksum_method_aetrsession_flush_rx_modem() != 39329.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_aetr_core_checksum_method_aetrsession_last_cfo_hz() != 6769.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_aetr_core_checksum_method_aetrsession_last_snr_db() != 35441.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_aetr_core_checksum_method_aetrsession_poll_events() != 32554.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_aetr_core_checksum_method_aetrsession_push_rx() != 10023.toShort()) {
+    if (lib.uniffi_aetr_core_checksum_method_aetrsession_push_rx() != 34185.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_aetr_core_checksum_method_aetrsession_rejected_frames() != 6074.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_aetr_core_checksum_method_aetrsession_request_repair() != 23051.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_aetr_core_checksum_method_aetrsession_reset_rx() != 22385.toShort()) {
+    if (lib.uniffi_aetr_core_checksum_method_aetrsession_reset_rx() != 2273.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_aetr_core_checksum_method_aetrsession_rx_counters() != 25941.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_aetr_core_checksum_method_aetrsession_rx_state() != 35385.toShort()) {
@@ -1444,6 +1507,29 @@ public interface AetrSessionInterface {
     fun `encodeVoice`(`pcm48k`: List<kotlin.Float>): List<kotlin.Float>
     
     /**
+     * Clears modem sync only (TX→RX crosstalk / stuck preamble). Keeps the
+     * reassembler, queued events, progress tracking, reject counter, and the
+     * per-stage decode tallies, so a post-TX flush cannot wipe an in-flight
+     * peer message, an undrained Text, or a field diagnostic.
+     */
+    fun `flushRxModem`()
+    
+    /**
+     * Carrier frequency offset estimated for the last burst that passed
+     * preamble decoding, in Hz. Diagnostic only: an audio path scales
+     * frequency rather than shifting it, so anything large means the two
+     * ends disagree about the sample rate.
+     */
+    fun `lastCfoHz`(): kotlin.Float
+    
+    /**
+     * The decoder's own view of link quality: signal-to-error ratio of the
+     * last demodulated constellation, in dB. Reads -99 before any payload
+     * symbol has been demapped.
+     */
+    fun `lastSnrDb`(): kotlin.Float
+    
+    /**
      * Drains queued events. Also sweeps the reassembly timeout: stale
      * voice finalizes with silence gaps, stale text becomes `Failed`.
      * Poll at ~10 Hz from the UI.
@@ -1456,9 +1542,18 @@ public interface AetrSessionInterface {
      * queues events — including automatic `RepairRequested` responses when
      * a peer's control frame targets one of our cached messages. Frames
      * that fail authentication (wrong passphrase on the channel) or are
-     * malformed are silently dropped, as on any shared radio channel.
+     * malformed are dropped (not delivered as messages) and counted via
+     * `rejected_frames()`, as on any shared radio channel.
      */
     fun `pushRx`(`pcm48k`: List<kotlin.Float>)
+    
+    /**
+     * Cumulative count of modem-decoded frames that failed authentication
+     * or were malformed. Useful when the RX badge shows Syncing but no
+     * message appears (wrong passphrase, corruption, or mode mismatch
+     * that still produces a sync).
+     */
+    fun `rejectedFrames`(): kotlin.ULong
     
     /**
      * Builds the receiver side of the ARQ round: a single control-frame
@@ -1470,9 +1565,20 @@ public interface AetrSessionInterface {
     
     /**
      * Discards all receive state (in-flight messages, queued events,
-     * modem sync). Keeps the key, mode, and sender-side ARQ caches.
+     * modem sync, reject counter). Keeps the key, mode, and sender-side
+     * ARQ caches. Use for the manual UI Reset control.
      */
     fun `resetRx`()
+    
+    /**
+     * Where the receiver is losing bursts, counted per decode stage. Read
+     * alongside `rejected_frames`, which counts the stage after these: a
+     * frame the modem recovered cleanly that then failed authentication.
+     *
+     * All zero means no burst energy is reaching the modem at all, which is
+     * a routing or level problem rather than a decode one.
+     */
+    fun `rxCounters`(): RxCounters
     
     /**
      * Current receiver state for a UI badge.
@@ -1630,6 +1736,58 @@ open class AetrSession: Disposable, AutoCloseable, AetrSessionInterface
 
     
     /**
+     * Clears modem sync only (TX→RX crosstalk / stuck preamble). Keeps the
+     * reassembler, queued events, progress tracking, reject counter, and the
+     * per-stage decode tallies, so a post-TX flush cannot wipe an in-flight
+     * peer message, an undrained Text, or a field diagnostic.
+     */override fun `flushRxModem`()
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_aetr_core_fn_method_aetrsession_flush_rx_modem(
+        it, _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Carrier frequency offset estimated for the last burst that passed
+     * preamble decoding, in Hz. Diagnostic only: an audio path scales
+     * frequency rather than shifting it, so anything large means the two
+     * ends disagree about the sample rate.
+     */override fun `lastCfoHz`(): kotlin.Float {
+            return FfiConverterFloat.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_aetr_core_fn_method_aetrsession_last_cfo_hz(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The decoder's own view of link quality: signal-to-error ratio of the
+     * last demodulated constellation, in dB. Reads -99 before any payload
+     * symbol has been demapped.
+     */override fun `lastSnrDb`(): kotlin.Float {
+            return FfiConverterFloat.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_aetr_core_fn_method_aetrsession_last_snr_db(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Drains queued events. Also sweeps the reassembly timeout: stale
      * voice finalizes with silence gaps, stale text becomes `Failed`.
      * Poll at ~10 Hz from the UI.
@@ -1652,7 +1810,8 @@ open class AetrSession: Disposable, AutoCloseable, AetrSessionInterface
      * queues events — including automatic `RepairRequested` responses when
      * a peer's control frame targets one of our cached messages. Frames
      * that fail authentication (wrong passphrase on the channel) or are
-     * malformed are silently dropped, as on any shared radio channel.
+     * malformed are dropped (not delivered as messages) and counted via
+     * `rejected_frames()`, as on any shared radio channel.
      */override fun `pushRx`(`pcm48k`: List<kotlin.Float>)
         = 
     callWithPointer {
@@ -1662,6 +1821,24 @@ open class AetrSession: Disposable, AutoCloseable, AetrSessionInterface
 }
     }
     
+    
+
+    
+    /**
+     * Cumulative count of modem-decoded frames that failed authentication
+     * or were malformed. Useful when the RX badge shows Syncing but no
+     * message appears (wrong passphrase, corruption, or mode mismatch
+     * that still produces a sync).
+     */override fun `rejectedFrames`(): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_aetr_core_fn_method_aetrsession_rejected_frames(
+        it, _status)
+}
+    }
+    )
+    }
     
 
     
@@ -1686,7 +1863,8 @@ open class AetrSession: Disposable, AutoCloseable, AetrSessionInterface
     
     /**
      * Discards all receive state (in-flight messages, queued events,
-     * modem sync). Keeps the key, mode, and sender-side ARQ caches.
+     * modem sync, reject counter). Keeps the key, mode, and sender-side
+     * ARQ caches. Use for the manual UI Reset control.
      */override fun `resetRx`()
         = 
     callWithPointer {
@@ -1696,6 +1874,26 @@ open class AetrSession: Disposable, AutoCloseable, AetrSessionInterface
 }
     }
     
+    
+
+    
+    /**
+     * Where the receiver is losing bursts, counted per decode stage. Read
+     * alongside `rejected_frames`, which counts the stage after these: a
+     * frame the modem recovered cleanly that then failed authentication.
+     *
+     * All zero means no burst energy is reaching the modem at all, which is
+     * a routing or level problem rather than a decode one.
+     */override fun `rxCounters`(): RxCounters {
+            return FfiConverterTypeRxCounters.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_aetr_core_fn_method_aetrsession_rx_counters(
+        it, _status)
+}
+    }
+    )
+    }
     
 
     
@@ -1776,6 +1974,69 @@ public object FfiConverterTypeAetrSession: FfiConverter<AetrSession, Pointer> {
         // The Rust code always expects pointers written as 8 bytes,
         // and will fail to compile if they don't fit.
         buf.putLong(Pointer.nativeValue(lower(value)))
+    }
+}
+
+
+
+/**
+ * Where the receiver is losing bursts, counted per decode stage.
+ *
+ * The stages run in order, so the first non-zero counter with a zero
+ * successor is the point of failure. All zero means no audio energy is
+ * reaching the modem at all (a routing or level problem, not a decode one).
+ */
+data class RxCounters (
+    /**
+     * Blocks where the correlator flagged a sync candidate, whether or not
+     * it went on to decode. Non-zero means the burst is arriving.
+     */
+    var `syncCandidates`: kotlin.ULong, 
+    /**
+     * Sync fired but the BCH/OSD preamble decode rejected it: low SNR, a
+     * mangled band, or energy outside the modem's 700-2300 Hz window.
+     */
+    var `preambleFailed`: kotlin.ULong, 
+    /**
+     * Preamble decoded but the polar decoder could not recover the payload.
+     * The burst arrived and was corrupted in flight (clipping, dropped
+     * samples, or a time-varying gain such as an AGC).
+     */
+    var `payloadFailed`: kotlin.ULong, 
+    /**
+     * Bursts the modem decoded cleanly and handed to the framing layer.
+     */
+    var `framesDecoded`: kotlin.ULong
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRxCounters: FfiConverterRustBuffer<RxCounters> {
+    override fun read(buf: ByteBuffer): RxCounters {
+        return RxCounters(
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RxCounters) = (
+            FfiConverterULong.allocationSize(value.`syncCandidates`) +
+            FfiConverterULong.allocationSize(value.`preambleFailed`) +
+            FfiConverterULong.allocationSize(value.`payloadFailed`) +
+            FfiConverterULong.allocationSize(value.`framesDecoded`)
+    )
+
+    override fun write(value: RxCounters, buf: ByteBuffer) {
+            FfiConverterULong.write(value.`syncCandidates`, buf)
+            FfiConverterULong.write(value.`preambleFailed`, buf)
+            FfiConverterULong.write(value.`payloadFailed`, buf)
+            FfiConverterULong.write(value.`framesDecoded`, buf)
     }
 }
 
@@ -1892,6 +2153,11 @@ sealed class AetrException(message: String): kotlin.Exception(message) {
      */
         class TooLarge(message: String) : AetrException(message)
         
+    /**
+     * Reading or writing a diagnostic capture file failed.
+     */
+        class Io(message: String) : AetrException(message)
+        
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<AetrException> {
         override fun lift(error_buf: RustBuffer.ByValue): AetrException = FfiConverterTypeAetrError.lift(error_buf)
@@ -1912,6 +2178,7 @@ public object FfiConverterTypeAetrError : FfiConverterRustBuffer<AetrException> 
             5 -> AetrException.Voice(FfiConverterString.read(buf))
             6 -> AetrException.Modem(FfiConverterString.read(buf))
             7 -> AetrException.TooLarge(FfiConverterString.read(buf))
+            8 -> AetrException.Io(FfiConverterString.read(buf))
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
         
@@ -1949,6 +2216,10 @@ public object FfiConverterTypeAetrError : FfiConverterRustBuffer<AetrException> 
             }
             is AetrException.TooLarge -> {
                 buf.putInt(7)
+                Unit
+            }
+            is AetrException.Io -> {
+                buf.putInt(8)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -2407,6 +2678,31 @@ public object FfiConverterSequenceTypeRxEvent: FfiConverterRustBuffer<List<RxEve
 }
     )
     }
+    
+
+        /**
+         * Reads a 48 kHz mono 16-bit WAV file.
+         */
+    @Throws(AetrException::class) fun `readWav48k`(`path`: kotlin.String): List<kotlin.Float> {
+            return FfiConverterSequenceFloat.lift(
+    uniffiRustCallWithError(AetrException) { _status ->
+    UniffiLib.INSTANCE.uniffi_aetr_core_fn_func_read_wav_48k(
+        FfiConverterString.lower(`path`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Writes samples to a 48 kHz mono 16-bit WAV file.
+         */
+    @Throws(AetrException::class) fun `writeWav48k`(`path`: kotlin.String, `pcm`: List<kotlin.Float>)
+        = 
+    uniffiRustCallWithError(AetrException) { _status ->
+    UniffiLib.INSTANCE.uniffi_aetr_core_fn_func_write_wav_48k(
+        FfiConverterString.lower(`path`),FfiConverterSequenceFloat.lower(`pcm`),_status)
+}
+    
     
 
 

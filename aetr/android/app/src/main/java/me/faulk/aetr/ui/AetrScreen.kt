@@ -13,19 +13,27 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -43,6 +51,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -67,9 +76,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import me.faulk.aetr.AetrViewModel
 import me.faulk.aetr.AudioEngine
+import me.faulk.aetr.AudioLevels
 import me.faulk.aetr.AudioRouter
 import me.faulk.aetr.LogEntry
 import uniffi.aetr_core.ModemMode
+import uniffi.aetr_core.RxCounters
 import uniffi.aetr_core.RxState
 
 /**
@@ -91,6 +102,7 @@ fun AetrScreen(vm: AetrViewModel) {
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = { HeaderBar(vm) },
     ) { padding ->
         Column(
@@ -100,31 +112,76 @@ fun AetrScreen(vm: AetrViewModel) {
                 .imePadding()
         ) {
             if (!vm.connected) {
-                SettingsCard(vm)
+                // Settings scroll; Connect stays pinned so it cannot collapse
+                // into a line under a tall form + empty message log.
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    SettingsForm(vm)
+                }
+                ConnectBar(vm)
             } else {
                 ConnectedControls(vm)
-            }
-            MessageLog(vm, Modifier.weight(1f))
-            if (vm.connected) {
+                MessageLog(vm, Modifier.weight(1f))
                 ComposeBar(vm)
             }
         }
     }
 }
 
-/** Top bar: app name plus the live RX state badge. */
+/** Top bar: app name, RX badge, and a full-size Disconnect when connected. */
 @Composable
 private fun HeaderBar(vm: AetrViewModel) {
-    Surface(tonalElevation = 3.dp) {
+    // Custom topBar does not get status-bar insets from Scaffold automatically;
+    // without this, "Aetr" sits under the system status / menu bar.
+    Surface(
+        tonalElevation = 3.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding(),
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text("Aetr", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.weight(1f))
-            RxBadge(vm.rxState, vm.connected)
+            Column(horizontalAlignment = Alignment.End) {
+                if (vm.transmitting) {
+                    Text(
+                        "TX",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color(0xFFF44336),
+                    )
+                } else {
+                    RxBadge(vm.rxState, vm.connected)
+                }
+                if (vm.connected && vm.rejectedFrames > 0uL) {
+                    Text(
+                        "${vm.rejectedFrames} frame(s) rejected",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFFF9800),
+                    )
+                }
+                if (vm.connected) {
+                    RxStageSummary(vm.rxCounters, vm.lastSnrDb)
+                }
+            }
+            if (vm.connected) {
+                Button(
+                    onClick = { vm.disconnect() },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text("Configure")
+                }
+            }
         }
     }
 }
@@ -150,14 +207,118 @@ private fun RxBadge(state: RxState, connected: Boolean) {
 }
 
 /**
- * Disconnected state: passphrase, modem mode picker, audio device pickers,
- * voice cap and TX key-up delay with a live airtime estimate, and the
- * Connect button (which first ensures the RECORD_AUDIO runtime permission,
- * plus BLUETOOTH_CONNECT on API 31+ when a Bluetooth device is selected).
+ * Disconnected settings form (scrollable parent owns Connect). Passphrase,
+ * mode, Input/Output device pickers, VOX/ARQ toggles, and cable TX channel.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsCard(vm: AetrViewModel) {
+private fun SettingsForm(vm: AetrViewModel) {
+    // Devices can appear/disappear while this form is showing (BT pairing).
+    LaunchedEffect(Unit) { vm.refreshDevices() }
+
+    OutlinedTextField(
+        value = vm.passphrase,
+        onValueChange = { vm.passphrase = it },
+        label = { Text("Shared passphrase") },
+        visualTransformation = PasswordVisualTransformation(),
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    Text("Modem mode", style = MaterialTheme.typography.labelLarge)
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        val modes = listOf(
+            ModemMode.B85 to "85 B (robust)",
+            ModemMode.B128 to "128 B",
+            ModemMode.B170 to "170 B (fast)",
+        )
+        modes.forEachIndexed { i, (m, label) ->
+            SegmentedButton(
+                selected = vm.mode == m,
+                onClick = { vm.mode = m },
+                shape = SegmentedButtonDefaults.itemShape(i, modes.size),
+            ) { Text(label, maxLines = 1) }
+        }
+    }
+
+    Text("Audio devices", style = MaterialTheme.typography.labelLarge)
+    DevicePicker(
+        label = "Input (radio mic / APRS cable)",
+        devices = vm.inputDevices,
+        selected = vm.selectedInput,
+        onSelect = { vm.selectInput(it) },
+    )
+    DevicePicker(
+        label = "Output (radio TX / APRS cable)",
+        devices = vm.outputDevices,
+        selected = vm.selectedOutput,
+        onSelect = { vm.selectOutput(it) },
+    )
+    Text(
+        "Pick the same cable for Input and Output. Try Left/Right TX channel if " +
+            "Android→Mac stays silent.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            value = vm.voiceCapText,
+            onValueChange = { vm.voiceCapText = it.filter(Char::isDigit).take(3) },
+            label = { Text("Voice clip cap (s)") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedTextField(
+            value = vm.txDelayText,
+            onValueChange = { vm.txDelayText = it.filter(Char::isDigit).take(4) },
+            label = { Text("TX delay (ms)") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = vm.voxPrimer, onCheckedChange = { vm.voxPrimer = it })
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "VOX primer (auto on for cable). Needed so key-up delay opens TX.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = vm.autoArq, onCheckedChange = { vm.autoArq = it })
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "Auto ARQ: request/send repairs without a second PTT. Keep VOX primer on.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    Text("Cable TX channel", style = MaterialTheme.typography.labelLarge)
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        val channels = listOf(
+            AudioEngine.CableTxChannel.BOTH to "L+R",
+            AudioEngine.CableTxChannel.LEFT to "Left",
+            AudioEngine.CableTxChannel.RIGHT to "Right",
+        )
+        channels.forEachIndexed { i, (ch, label) ->
+            SegmentedButton(
+                selected = vm.cableTxChannel == ch,
+                onClick = { vm.selectCableTxChannel(ch) },
+                shape = SegmentedButtonDefaults.itemShape(i, channels.size),
+            ) { Text(label) }
+        }
+    }
+    VoiceCapEstimate(vm)
+}
+
+/**
+ * Sticky Connect control under the scrollable settings. Always at least 52 dp
+ * tall so it cannot compress into a hairline on short screens.
+ */
+@Composable
+private fun ConnectBar(vm: AetrViewModel) {
     val context = LocalContext.current
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -172,112 +333,37 @@ private fun SettingsCard(vm: AetrViewModel) {
         }
     }
 
-    // Devices can appear/disappear while this card is showing (BT pairing).
-    LaunchedEffect(Unit) { vm.refreshDevices() }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        colors = CardDefaults.cardColors(),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(
-                value = vm.passphrase,
-                onValueChange = { vm.passphrase = it },
-                label = { Text("Shared passphrase") },
-                visualTransformation = PasswordVisualTransformation(),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            Text("Modem mode", style = MaterialTheme.typography.labelLarge)
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                val modes = listOf(
-                    ModemMode.B85 to "85 B (robust)",
-                    ModemMode.B128 to "128 B",
-                    ModemMode.B170 to "170 B (fast)",
-                )
-                modes.forEachIndexed { i, (m, label) ->
-                    SegmentedButton(
-                        selected = vm.mode == m,
-                        onClick = { vm.mode = m },
-                        shape = SegmentedButtonDefaults.itemShape(i, modes.size),
-                    ) { Text(label, maxLines = 1) }
+    Surface(tonalElevation = 4.dp, shadowElevation = 4.dp) {
+        Button(
+            onClick = {
+                // BLUETOOTH_CONNECT is only a runtime permission on 31+,
+                // and only needed when a Bluetooth device is selected.
+                val needed = buildList {
+                    add(Manifest.permission.RECORD_AUDIO)
+                    if (Build.VERSION.SDK_INT >= 31 && vm.bluetoothSelected()) {
+                        add(Manifest.permission.BLUETOOTH_CONNECT)
+                    }
                 }
-            }
-
-            Text("Audio devices", style = MaterialTheme.typography.labelLarge)
-            DevicePicker(
-                label = "Input (radio mic)",
-                devices = vm.inputDevices,
-                selected = vm.selectedInput,
-                onSelect = { vm.selectedInput = it },
-            )
-            DevicePicker(
-                label = "Output (radio TX)",
-                devices = vm.outputDevices,
-                selected = vm.selectedOutput,
-                onSelect = { vm.selectedOutput = it },
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = vm.voiceCapText,
-                    onValueChange = { vm.voiceCapText = it.filter(Char::isDigit).take(3) },
-                    label = { Text("Voice clip cap (seconds)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    value = vm.txDelayText,
-                    onValueChange = { vm.txDelayText = it.filter(Char::isDigit).take(4) },
-                    label = { Text("TX delay (ms)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = vm.voxPrimer, onCheckedChange = { vm.voxPrimer = it })
+                val allGranted = needed.all {
+                    ContextCompat.checkSelfPermission(context, it) ==
+                        PackageManager.PERMISSION_GRANTED
+                }
+                if (allGranted) vm.connect()
+                else permissionLauncher.launch(needed.toTypedArray())
+            },
+            // Empty passphrase is allowed: it makes a plaintext-only session.
+            enabled = !vm.connecting,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+                .heightIn(min = 52.dp),
+        ) {
+            if (vm.connecting) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
-                Text(
-                    "VOX primer tone (fills the key-up delay with a quiet tone " +
-                        "so VOX-keyed radios open before the data starts)",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            VoiceCapEstimate(vm)
-
-            Button(
-                onClick = {
-                    // BLUETOOTH_CONNECT is only a runtime permission on 31+,
-                    // and only needed when a Bluetooth device is selected.
-                    val needed = buildList {
-                        add(Manifest.permission.RECORD_AUDIO)
-                        if (Build.VERSION.SDK_INT >= 31 && vm.bluetoothSelected()) {
-                            add(Manifest.permission.BLUETOOTH_CONNECT)
-                        }
-                    }
-                    val allGranted = needed.all {
-                        ContextCompat.checkSelfPermission(context, it) ==
-                            PackageManager.PERMISSION_GRANTED
-                    }
-                    if (allGranted) vm.connect()
-                    else permissionLauncher.launch(needed.toTypedArray())
-                },
-                // Empty passphrase is allowed: it makes a plaintext-only session.
-                enabled = !vm.connecting,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                if (vm.connecting) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Deriving key…")
-                } else {
-                    Text("Connect")
-                }
+                Text("Deriving key…", style = MaterialTheme.typography.titleMedium)
+            } else {
+                Text("Connect", style = MaterialTheme.typography.titleMedium)
             }
         }
     }
@@ -354,49 +440,206 @@ private fun VoiceCapEstimate(vm: AetrViewModel) {
 }
 
 /**
- * Connected state strip: session summary (mode, caps, TX delay), the audio
- * route status line when Bluetooth is involved, loopback toggle, RX reset,
- * and disconnect. Settings themselves stay locked while connected because
- * the SettingsCard is replaced by this strip.
+ * Compact connected strip: session summary, route status, input meter, TX
+ * test / cable channel, loopback. Disconnect lives in the top bar as Configure.
  */
 @Composable
 private fun ConnectedControls(vm: AetrViewModel) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Text(
-                "Mode ${vm.mode.name.removePrefix("B")} B · voice cap ${vm.voiceCapSecs()} s" +
-                    " · TX delay ${vm.txDelayMs()} ms" +
-                    if (vm.voxPrimer) " · VOX primer" else "",
+                "Mode ${vm.mode.name.removePrefix("B")} B · ${vm.txDelayMs()} ms" +
+                    if (vm.voxPrimer) " · VOX" else "",
                 style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { vm.resetRx() }) { Text("Reset RX") }
-            OutlinedButton(onClick = { vm.disconnect() }) { Text("Disconnect") }
+            OutlinedButton(
+                onClick = { vm.resetRx() },
+                modifier = Modifier.heightIn(min = 40.dp),
+            ) {
+                Text("Reset RX")
+            }
         }
         vm.routeStatus?.let { status ->
+            val warn = status.startsWith("Bluetooth routing failed") ||
+                status.contains("never decode denser") ||
+                status.contains("Gemini/Assistant")
             Text(
                 status,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (status.startsWith("Bluetooth routing failed")) {
+                maxLines = 3,
+                color = if (warn) {
                     MaterialTheme.colorScheme.error
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
             )
         }
+        InputLevelMeter(level = vm.inputLevel, transmitting = vm.transmitting)
+        // RMS as well as peak: the receiver's sync floor is an RMS threshold
+        // near -57 dBFS, and below it a quiet signal is indistinguishable
+        // from no signal.
+        Text(
+            buildString {
+                append("In RMS ")
+                append(
+                    if (vm.inputRmsDbfs.isFinite()) "%.0f dBFS".format(vm.inputRmsDbfs)
+                    else "−∞ dBFS"
+                )
+                append("  (sync floor ≈ −57)")
+                if (vm.txPeak > 0f) append("   ·   last TX peak %.2f".format(vm.txPeak))
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (vm.inputRmsDbfs.isFinite() && vm.inputRmsDbfs < -57f) {
+                Color(0xFFFF9800)
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("TX level", style = MaterialTheme.typography.labelMedium)
+            Slider(
+                value = vm.txLevel,
+                onValueChange = { vm.selectTxLevel(it) },
+                valueRange = 0.1f..1.0f,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "%.2f".format(vm.txLevel),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.width(40.dp),
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            OutlinedButton(
+                onClick = { vm.playTestTone() },
+                enabled = !vm.transmitting,
+                modifier = Modifier.heightIn(min = 40.dp),
+            ) {
+                Text("TX test")
+            }
+            SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
+                listOf(
+                    AudioEngine.CableTxChannel.BOTH to "L+R",
+                    AudioEngine.CableTxChannel.LEFT to "L",
+                    AudioEngine.CableTxChannel.RIGHT to "R",
+                ).forEachIndexed { i, (ch, label) ->
+                    SegmentedButton(
+                        selected = vm.cableTxChannel == ch,
+                        onClick = { vm.selectCableTxChannel(ch) },
+                        shape = SegmentedButtonDefaults.itemShape(i, 3),
+                    ) { Text(label) }
+                }
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = vm.loopback, onCheckedChange = { vm.loopback = it })
             Spacer(Modifier.width(8.dp))
             Text(
-                "Digital loopback (debug: feed TX straight into RX)",
+                if (vm.loopback) {
+                    "Loopback ON (local only, not the radio)"
+                } else {
+                    "Digital loopback (debug)"
+                },
                 style = MaterialTheme.typography.bodySmall,
+                color = if (vm.loopback) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = vm.captureTx, onCheckedChange = { vm.enableTxCapture(it) })
+            Spacer(Modifier.width(8.dp))
+            Text(
+                // Pair this with the receiving end's capture: same burst, two
+                // recordings, and the difference is what the analog path did.
+                vm.lastTxCapturePath?.takeIf { vm.captureTx }
+                    ?: "Save each TX burst as a WAV (debug)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * One-line summary of where the receiver is losing bursts.
+ *
+ * The stages run in order, so read it left to right and stop at the first
+ * count that does not carry through. Nothing shown at all means no burst has
+ * reached the modem yet, which points at routing or level rather than decode.
+ */
+@Composable
+private fun RxStageSummary(counters: RxCounters, snrDb: Float) {
+    if (counters.syncCandidates == 0uL && counters.framesDecoded == 0uL) return
+    val parts = mutableListOf("sync ${counters.syncCandidates}")
+    if (counters.preambleFailed > 0uL) parts += "pre✗ ${counters.preambleFailed}"
+    if (counters.payloadFailed > 0uL) parts += "pay✗ ${counters.payloadFailed}"
+    parts += "ok ${counters.framesDecoded}"
+    if (snrDb > -99f) parts += "%.0f dB".format(snrDb)
+    Text(
+        parts.joinToString(" · "),
+        style = MaterialTheme.typography.labelSmall,
+        color = if (counters.framesDecoded > 0uL) Color(0xFF4CAF50) else Color(0xFFFF9800),
+    )
+}
+
+/**
+ * Live RX input peak meter. Flatline while connected means the selected
+ * input device is silent (wrong device, muted radio, or cable not routed).
+ */
+@Composable
+private fun InputLevelMeter(level: Float, transmitting: Boolean = false) {
+    val color = when {
+        transmitting -> Color(0xFFF44336)
+        level < 0.02f -> Color(0xFF9E9E9E)
+        level < 0.7f -> Color(0xFF4CAF50)
+        level < 0.9f -> Color(0xFFFF9800)
+        else -> Color(0xFFF44336)
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            if (transmitting) "TX" else "In",
+            style = MaterialTheme.typography.labelMedium,
+        )
+        Spacer(Modifier.width(8.dp))
+        Box(
+            Modifier
+                .weight(1f)
+                .height(14.dp)
+                .background(Color(0x22000000), CircleShape)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(level.coerceIn(0f, 1f))
+                    .background(color, CircleShape)
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            AudioLevels.dbFsLabel(level),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.width(72.dp),
+        )
     }
 }
 
@@ -567,7 +810,11 @@ private fun ComposeBar(vm: AetrViewModel) {
                     maxLines = 3,
                 )
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { vm.sendText() }, enabled = vm.draft.isNotBlank()) {
+                Button(
+                    onClick = { vm.sendText() },
+                    enabled = vm.draft.isNotBlank(),
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
                     Text("Send")
                 }
                 Spacer(Modifier.width(8.dp))

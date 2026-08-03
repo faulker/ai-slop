@@ -7,8 +7,8 @@ Encrypted text and voice over the audio of analog FM radios. Type a message or r
 Two apps, one core:
 
 - **core/** (Rust): everything that matters. Argon2id key derivation, XChaCha20-Poly1305 per-chunk AEAD, framing/chunking, Reed-Solomon FEC, codec2 voice coding, and the COFDM modem (vendored [aicodix](https://github.com/aicodix/modem) C++ headers behind a small `extern "C"` shim). Exposed to both apps via UniFFI.
-- **macos/** (Swift/SwiftUI): chat-style window, device pickers, hold-to-record voice, AVAudioEngine at 48 kHz.
-- **android/** (Kotlin/Compose, `me.faulk.aetr`): same UI mirrored, AudioRecord/AudioTrack at 48 kHz, minSdk 29.
+- **macos/** (Swift/SwiftUI): chat-style window, device pickers, hold-to-record voice, AVAudioEngine at 48 kHz, live input level meter while connected.
+- **android/** (Kotlin/Compose, `me.faulk.aetr`): same UI mirrored, AudioRecord/AudioTrack at 48 kHz, minSdk 29, live input level meter while connected.
 
 The platform apps only move PCM and pixels. All crypto and DSP is Rust/C++ inside the core, so both platforms are bit-identical by construction (and verified by golden vectors, below).
 
@@ -42,6 +42,8 @@ Voice clips are capped at 30 s by default (configurable per session). Airtime is
 
 Radios take a moment to start transmitting after audio appears (Bluetooth radios often need around a second). Every transmission therefore starts with a configurable wait, "TX delay" in both UIs (default 1000 ms, 0-5000), before the first data burst, on top of the fixed 0.1 s lead-in. If your radio keys on audio energy (VOX) rather than on stream activity, enable the "VOX primer tone" toggle: the delay is then filled with a quiet 700 Hz tone so the radio opens the transmitter during the delay instead of clipping the start of the data. The airtime estimates include the delay. Both settings live in `SessionConfig` (`tx_delay_ms`, `vox_primer`) and apply to messages, repair requests, and repair responses alike.
 
+**VOX-only / no PTT:** ARQ repairs are extra Tx/Rx bursts after the message. Without a second manual key-up they never leave the radio. Both UIs default to **Auto ARQ**: after receive progress stalls (~3 s idle) the receiver auto-sends a repair request, and when a peer asks for repair the sender auto-answers (~1.2 s later). Turn on VOX primer (Android enables it automatically for cable/USB) so those bursts actually key the radio. Manual "Request repair" / "Send repair" buttons still work if you turn Auto ARQ off.
+
 ## Bluetooth-connected radios
 
 Radios that carry TX/RX audio over Bluetooth work as audio devices:
@@ -49,11 +51,54 @@ Radios that carry TX/RX audio over Bluetooth work as audio devices:
 - **macOS**: pair the radio, then pick it in the app's input/output device pickers. The engine converts between the device rate and the core's 48 kHz automatically.
 - **Android**: pick the radio in the in-app device pickers. The app routes audio to Bluetooth SCO (`setCommunicationDevice` on Android 12+, `startBluetoothSco` on 10/11) and needs the `BLUETOOTH_CONNECT` runtime permission on Android 12+.
 
-Two caveats: Bluetooth hands-free links are narrowband and use lossy speech codecs (CVSD/mSBC), which can degrade the denser modem modes — prefer the robust 85-byte mode over Bluetooth and step up only if it holds. And set the TX delay to cover your radio's Bluetooth key-up latency (start at 1000 ms).
+Two caveats: Bluetooth hands-free links are narrowband and use lossy speech codecs (CVSD/mSBC), which can degrade the denser modem modes — prefer the robust 85-byte mode over Bluetooth and step up only if it holds. And set the TX delay to cover your radio's Bluetooth key-up latency (start at 1000 ms). Phone↔phone over Bluetooth SCO is especially fragile: both hops through a speech codec often produce Syncing with no decoded message; use B85 on both ends and watch the "frame(s) rejected" counter.
+
+### Diagnosing a one-way link
+
+When one direction works and the other never does, the RX badge alone cannot tell you why: "no audio arriving" and "audio arriving and being destroyed" both look like silence. Both UIs show the decode stages under the badge, in the order they run:
+
+`sync N · pre✗ N · pay✗ N · ok N · NN dB`
+
+Read left to right and stop at the first count that does not carry through.
+
+| What you see | What it means |
+| --- | --- |
+| Nothing at all | No burst is reaching the modem. Routing or level, not decode. Check the In RMS: below about −57 dBFS nothing can sync. |
+| `pre✗` climbing | Sync fires but the preamble fails: poor signal-to-noise, or energy outside the 700–2294 Hz modem band. |
+| `pay✗` climbing | The burst arrives intact enough to sync, then the payload will not decode. A gain moving on the symbol timescale (an AGC or compressor) or dropped audio buffers. |
+| `ok` climbing but "frame(s) rejected" too | The modem is fine; the passphrase or mode does not match. |
+
+For anything ambiguous, capture and analyse it offline. Turn on **Capture RX** on the Mac, send from the other end, turn it off (which writes the file to `~/Documents`), then:
+
+```
+macos/build/Debug/Aetr.app/Contents/MacOS/Aetr --analyze-wav ~/Documents/aetr-rx-….wav \
+    --passphrase "your phrase" --mode b85
+```
+
+That reports level, DC, clipping, how much energy is inside the modem band, the stage counters, and a plain-language verdict. Android has a matching **Save each TX burst as a WAV** toggle, so you can compare what was sent against what was heard.
+
+### What actually breaks a link (measured)
+
+`cargo test -p aetr-core --release` includes margin tests that push a real burst through simulated impairments, so this is measured rather than assumed:
+
+- **Hard clipping is a non-issue.** A burst still decodes clipped 20 dB into its own peak. The obvious suspect for an 8.3 dB peak-to-average signal turns out not to matter, because differential QPSK depends on phase and clipping mostly preserves it. When in doubt about TX level, err loud.
+- **Band-limiting is a non-issue.** A 300–3000 Hz radio filter costs nothing, and even a 1100–3000 Hz one that removes many lower carriers still decodes. FM de-emphasis tilt is likewise survivable.
+- **A syllabic AGC is fatal.** A gain that moves on the symbol timescale (roughly 7–21 ms attack, 70–210 ms release, i.e. ordinary speech-compressor tuning) destroys the payload and can defeat acquisition outright. The payload is demodulated differentially against the previous symbol 180 ms earlier, so only a *constant* gain cancels. Very fast and very slow AGCs both pass; it is specifically the speech-shaped one that kills.
+- **Below about −57 dBFS RMS nothing syncs**, with no diagnostic: the receiver has no AGC and the sync metric clamps its power term. This is why the meters show RMS and not just peak.
+
+The practical consequence is to keep the burst off any voice-communication audio path. On Android the cable TX track stays on `USAGE_MEDIA` and only falls back to `setCommunicationDevice` when the sink verifiably came up on a built-in speaker, because that route hands the burst to the platform's downlink voice processing (speech EQ, noise suppression, AGC) and puts it on the in-call volume stream rather than media.
+
+### Two Android devices (phone/tablet)
+
+If **Mac → Android works** (e.g. at B128) but **Android → Mac** never does: read the stage counters first, per the table above. aetr pins cable TX with `AudioTrack.setPreferredDevice` and verifies the real sink with `getRoutedDevice`, reporting it in the status line (“Last TX: …”). Judge success only by Mac receiving. Try **Left** / **Right** cable TX channel on Android and the **RX ch** selector on the Mac, since APRS and TRRS cables often wire audio on one leg only. Keep Mac digital loopback OFF.
+
+USB-C / TRRS APRS cables often float the headset-button line. Android treats that as a media/assist key and launches **Gemini / Google Assistant** mid burst; macOS may flash the **volume HUD** from the same noise. aetr swallows those headset volume/media keys while connected (on Mac, grant Input Monitoring if prompted so the filter works when Aetr is in the background). Also disable Gemini/Assistant for wired headsets in Android settings if it still pops up. Keep media volume up (not ringer volume). Enable VOX primer + enough TX delay if the radio keys on VOX. Leave **Auto ARQ** on so repair rounds key without a second PTT.
+
+Start at **B85** (the UI default), same passphrase/mode both ends, digital loopback on each phone first. B85 needs more airtime and more ARQ on a dirty cable path than denser modes, but it is what usually completes both directions. If the RX badge Syncs with no chat row, watch the rejected-frame count under the badge.
 
 ## Threat model, briefly
 
-A single static passphrase is the only secret. That means: a fixed KDF salt (no per-message salt is possible), no forward secrecy, and anyone who ever learns the phrase can decrypt everything ever sent with it, past and future. Traffic is authenticated (tampered or wrong-passphrase frames drop silently) but transmissions are trivially observable and jammable; this is confidentiality on an open channel, not stealth. Also check your local regulations: encrypted content is not legal on all radio services.
+A single static passphrase is the only secret. That means: a fixed KDF salt (no per-message salt is possible), no forward secrecy, and anyone who ever learns the phrase can decrypt everything ever sent with it, past and future. Traffic is authenticated (tampered or wrong-passphrase frames are not delivered; the session counts them as rejected frames for the UI) but transmissions are trivially observable and jammable; this is confidentiality on an open channel, not stealth. Also check your local regulations: encrypted content is not legal on all radio services.
 
 Licensing note: the `codec2` crate is LGPL-2.1 and is statically linked. Fine for personal use; if you ever distribute binaries, the LGPL relink obligation applies. The vendored aicodix modem headers are 0BSD.
 

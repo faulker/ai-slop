@@ -58,6 +58,38 @@ class AudioRouter(context: Context) {
                 ?: "Unknown device"
             return "$name · ${typeLabel(device.type)}"
         }
+
+        /** Built-in speaker/earpiece — wrong TX sink when an APRS cable is the mic. */
+        fun isBuiltinSink(device: AudioDeviceInfo?): Boolean =
+            device != null && isBuiltinSinkType(device.type)
+
+        fun isBuiltinSinkType(type: Int): Boolean =
+            type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
+                type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+
+        /** Built-in mic — wrong RX source when an APRS cable should feed the modem. */
+        fun isBuiltinMic(device: AudioDeviceInfo?): Boolean =
+            device?.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
+
+        /**
+         * Finds the playback half of a cable/USB interface chosen as capture.
+         * Android enumerates USB input and output as separate device ids; leaving
+         * output on the speaker is the usual reason Mac→Android works but
+         * Android→Mac does not.
+         */
+        fun matchOutputForInput(
+            input: AudioDeviceInfo,
+            outputs: List<AudioDeviceInfo>,
+        ): AudioDeviceInfo? {
+            val cableOuts = outputs.filter { AudioEngine.isCableInterface(it) }
+            if (cableOuts.isEmpty()) return null
+            val inName = input.productName?.toString()
+            val inAddr = input.address
+            return cableOuts.firstOrNull { it.id == input.id }
+                ?: cableOuts.firstOrNull { inAddr.isNotEmpty() && it.address == inAddr }
+                ?: cableOuts.firstOrNull { inName != null && it.productName?.toString() == inName }
+                ?: cableOuts.singleOrNull()
+        }
     }
 
     private val appContext = context.applicationContext
@@ -67,6 +99,9 @@ class AudioRouter(context: Context) {
     private var scoReceiver: BroadcastReceiver? = null
     private var deviceCallback: AudioDeviceCallback? = null
     private var routed = false
+    /** True while a temporary cable/USB TX communication route is held. */
+    private var cableTxRouted = false
+    private var modeBeforeCableTx = AudioManager.MODE_NORMAL
 
     /** Capture-capable devices worth offering in the input picker. */
     fun inputDevices(): List<AudioDeviceInfo> =
@@ -183,11 +218,73 @@ class AudioRouter(context: Context) {
     }
 
     /**
+     * Forces cable/USB playback onto the platform communication route for one
+     * TX. [AudioTrack.setPreferredDevice] alone is widely ignored for USB-C
+     * / TRRS interfaces, so TX stays on the speaker while RX (setPreferredDevice
+     * on AudioRecord) still works — exactly Mac→Android OK / Android→Mac dead.
+     *
+     * Call only around a TX burst; [releaseCableTx] must run afterward so
+     * MODE_IN_COMMUNICATION does not keep AEC on for RX.
+     * Returns null on success, or a short warning (TX may still be attempted).
+     */
+    fun activateCableTx(output: AudioDeviceInfo): String? {
+        if (!AudioEngine.isCableInterface(output)) return null
+        if (Build.VERSION.SDK_INT >= 31) {
+            val candidates = audioManager.availableCommunicationDevices
+            val target = candidates.firstOrNull { it.id == output.id }
+                ?: candidates.firstOrNull {
+                    output.address.isNotEmpty() && it.address == output.address &&
+                        AudioEngine.isCableInterface(it)
+                }
+                ?: candidates.firstOrNull { AudioEngine.isCableInterface(it) }
+                ?: return "cable/USB not in communication devices — TX may stay on speaker"
+            modeBeforeCableTx = audioManager.mode
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = false
+            if (!audioManager.setCommunicationDevice(target)) {
+                audioManager.mode = modeBeforeCableTx
+                return "platform rejected cable TX route ${label(target)}"
+            }
+            cableTxRouted = true
+            // Brief settle; callers reopen AudioTrack after this returns.
+            return null
+        }
+        // API 29-30: no setCommunicationDevice; at least kill speakerphone.
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = false
+        return "pre-Android 12: forced speakerphone off; verify TX is not on the earpiece"
+    }
+
+    /**
+     * Clears a temporary [activateCableTx] route. No-op when Bluetooth SCO
+     * owns the communication device ([routed]).
+     */
+    @Suppress("DEPRECATION")
+    fun releaseCableTx() {
+        if (!cableTxRouted) {
+            audioManager.isSpeakerphoneOn = false
+            return
+        }
+        cableTxRouted = false
+        if (routed) {
+            // BT session still owns the communication route.
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            runCatching { audioManager.clearCommunicationDevice() }
+        }
+        audioManager.mode = modeBeforeCableTx
+        audioManager.isSpeakerphoneOn = false
+    }
+
+    /**
      * Undoes any Bluetooth routing and receiver registration. Safe to call
      * when no route is active or repeatedly.
      */
     @Suppress("DEPRECATION")
     fun release() {
+        releaseCableTx()
         scoReceiver?.let { runCatching { appContext.unregisterReceiver(it) } }
         scoReceiver = null
         if (!routed) return

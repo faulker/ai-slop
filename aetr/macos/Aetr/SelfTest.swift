@@ -11,6 +11,16 @@ private let goldenText =
 /// the PCM burst into the other's receiver in audio-callback-sized blocks,
 /// and expects a matching Text event. Prints SELFTEST PASS/FAIL to stdout.
 func runSelfTest() -> Bool {
+    #if DEBUG
+    if !MediaKeyFilterTests.run() {
+        print("SELFTEST FAIL: MediaKeyFilter volume/media key classification")
+        return false
+    }
+    if !AudioLevelsTests.run() {
+        print("SELFTEST FAIL: input level helpers / stereo channel picker")
+        return false
+    }
+    #endif
     do {
         let config = SessionConfig(
             passphrase: "selftest-passphrase", mode: .b170, voiceCapSecs: 30, txDelayMs: 0,

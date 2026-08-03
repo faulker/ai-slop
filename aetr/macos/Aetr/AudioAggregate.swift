@@ -33,8 +33,16 @@ enum AudioAggregate {
         guard let inputUID = uid(input), let outputUID = uid(output) else { return nil }
 
         let aggregateUID = "me.faulk.aetr.aggregate.\(UUID().uuidString)"
+        // Drift compensation on the input sub-device is what actually makes
+        // the HAL rate-convert it to the master's clock. Without the key the
+        // sub-device free-runs and the HAL periodically drops or repeats a run
+        // of samples. A burst is 1.26 s of differentially-encoded symbols, so
+        // one such glitch mid-burst syncs fine and then fails to decode.
         let subDevices: [[String: Any]] = [
-            [kAudioSubDeviceUIDKey as String: inputUID],
+            [
+                kAudioSubDeviceUIDKey as String: inputUID,
+                kAudioSubDeviceDriftCompensationKey as String: 1,
+            ],
             [kAudioSubDeviceUIDKey as String: outputUID],
         ]
         let description: [String: Any] = [
@@ -43,7 +51,8 @@ enum AudioAggregate {
             kAudioAggregateDeviceIsPrivateKey as String: 1,
             kAudioAggregateDeviceIsStackedKey as String: 0,
             // The output device drives the clock so playback stays glitch-free;
-            // the input sub-device is rate-converted to it by the HAL.
+            // the input sub-device is rate-converted to it by the HAL, which
+            // needs the drift-compensation key set on it above.
             kAudioAggregateDeviceMasterSubDeviceKey as String: outputUID,
             kAudioAggregateDeviceSubDeviceListKey as String: subDevices,
         ]

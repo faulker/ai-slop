@@ -124,6 +124,208 @@ fn modem_loopback_skew_scale_dc() {
     assert_eq!(frames[0], payload);
 }
 
+// Analog-path margin. These exist to answer "which impairment actually
+// breaks a link", so a field capture's measurements can be turned into a
+// verdict instead of a guess. Each one records a measured result, not an
+// assumption; the surprises are documented where they occur.
+
+/// One B85 burst spliced with the usual lead-in, gaps, and tail.
+fn margin_burst() -> (Vec<u8>, Vec<f32>) {
+    let payload: Vec<u8> = (0..85u32).map(|i| (i * 7 + 1) as u8).collect();
+    let burst = OfdmModem.encode_frame(ModemMode::B85, &payload).expect("encode");
+    let pcm = splice_bursts(&[burst], &[]);
+    (payload, pcm)
+}
+
+#[test]
+fn survives_severe_hard_clipping() {
+    // Measured: the burst still decodes clipped 20 dB into its own peak,
+    // i.e. driven hard into a limiter. Clipping looks like the obvious
+    // suspect for an 8.3 dB PAPR signal, and it is not one. Differential
+    // QPSK cares about phase, which hard clipping largely preserves.
+    let (payload, clean) = margin_burst();
+    let peak = clean.iter().fold(0f32, |m, s| m.max(s.abs()));
+    for ceiling in [peak * 0.5, peak * 0.2, peak * 0.1] {
+        let mut pcm = clean.clone();
+        channel::clip(&mut pcm, ceiling);
+        let frames = receive_all(&pcm);
+        assert_eq!(
+            frames.first(),
+            Some(&payload),
+            "clipping at {ceiling:.3} ({:.0} dB below peak) should still decode",
+            20.0 * (ceiling / peak).log10()
+        );
+    }
+}
+
+#[test]
+fn survives_radio_bandlimiting_and_deemphasis() {
+    // Measured: a 300-3000 Hz radio filter is a non-event, and so is a much
+    // tighter 1100-3000 Hz one that removes a large share of the lower
+    // carriers. The polar code plus per-carrier erasure absorbs the loss.
+    // FM de-emphasis tilt across the band is likewise survivable.
+    let (payload, clean) = margin_burst();
+    for (lo, hi) in [(300.0, 3000.0), (300.0, 2400.0), (1100.0, 3000.0)] {
+        let pcm = channel::bandlimit(&clean, lo, hi);
+        assert_eq!(
+            receive_all(&pcm).first(),
+            Some(&payload),
+            "a {lo}-{hi} Hz channel should still decode"
+        );
+    }
+    assert_eq!(
+        receive_all(&channel::deemphasis(&clean)).first(),
+        Some(&payload),
+        "FM de-emphasis tilt should still decode"
+    );
+}
+
+#[test]
+fn syllabic_agc_destroys_the_payload() {
+    // Measured, and the one impairment here that is actually fatal.
+    //
+    // The payload is differentially encoded across symbols: each carrier is
+    // divided by its own value in the previous symbol, 180 ms earlier. That
+    // cancels any gain which is constant over a symbol pair, so a very fast
+    // AGC (effectively a limiter) and a very slow one both pass. A gain that
+    // moves *on the symbol timescale* does not cancel, and the constellation
+    // comes apart.
+    //
+    // The failing window below (attack ~7-21 ms, release ~70-210 ms) is
+    // ordinary speech-compressor tuning, which is what a phone's
+    // voice-communication audio path applies. That makes routing a burst
+    // through MODE_IN_COMMUNICATION an actively destructive thing to do.
+    let (_, clean) = margin_burst();
+    for (attack, release) in [(0.003, 0.0003), (0.001, 0.0001)] {
+        let pcm = channel::agc(&clean, 0.15, attack, release);
+        assert!(
+            receive_all(&pcm).is_empty(),
+            "AGC at attack={attack} release={release} is expected to break decode; \
+             if this now passes, the demodulator got more tolerant and the \
+             voice-path routing guidance should be revisited"
+        );
+    }
+}
+
+#[test]
+fn agc_outside_the_symbol_timescale_is_harmless() {
+    // The other half of the same finding: gain movement far faster or far
+    // slower than one symbol cancels out. Without this, the test above could
+    // pass for the wrong reason (any AGC breaking anything).
+    let (payload, clean) = margin_burst();
+    for (attack, release) in [(0.01, 0.001), (0.0001, 0.00001)] {
+        let pcm = channel::agc(&clean, 0.15, attack, release);
+        assert_eq!(
+            receive_all(&pcm).first(),
+            Some(&payload),
+            "AGC at attack={attack} release={release} should be survivable"
+        );
+    }
+}
+
+#[test]
+fn quiet_input_has_a_hard_floor() {
+    // The receiver has no AGC of its own and the sync metric clamps its power
+    // term (min_R in schmidl_cox.hh), so below roughly -57 dBFS RMS nothing
+    // syncs at all and every counter reads zero. That is the same signature
+    // as a dead audio route, which is exactly why the input meter needs an
+    // RMS readout and not just a peak one.
+    let (payload, clean) = margin_burst();
+
+    let mut loud = clean.clone();
+    channel::scale(&mut loud, 0.01);
+    assert_eq!(receive_all(&loud).first(), Some(&payload), "-57 dBFS RMS should decode");
+
+    let mut faint = clean.clone();
+    channel::scale(&mut faint, 0.002);
+    let mut rx = OfdmRx::new().expect("rx alloc");
+    assert!(rx.feed(&faint).expect("feed").is_empty(), "-71 dBFS RMS is below the floor");
+    assert_eq!(
+        rx.counters(),
+        Default::default(),
+        "below the floor the receiver cannot tell quiet audio from no audio"
+    );
+}
+
+#[test]
+fn rx_counters_track_a_clean_burst() {
+    let mode = ModemMode::B170;
+    let payload: Vec<u8> = (0..170u32).map(|i| (i * 17 + 9) as u8).collect();
+    let burst = OfdmModem.encode_frame(mode, &payload).expect("encode");
+    let pcm = splice_bursts(&[burst], &[]);
+
+    let mut rx = OfdmRx::new().expect("rx alloc");
+    assert_eq!(rx.counters(), Default::default(), "a fresh receiver starts at zero");
+
+    let frames = rx.feed(&pcm).expect("rx feed");
+    assert_eq!(frames.len(), 1);
+
+    let c = rx.counters();
+    assert_eq!(c.frames_decoded, 1, "one burst in, one frame out");
+    assert_eq!(c.sync_candidates, 1, "the burst should sync exactly once");
+    assert_eq!(c.preamble_failed, 0);
+    assert_eq!(c.payload_failed, 0);
+}
+
+#[test]
+fn rx_counters_stay_zero_on_silence() {
+    // The failure signature the counters exist to distinguish: nothing is
+    // reaching the modem at all, versus reaching it and decoding badly.
+    let mut rx = OfdmRx::new().expect("rx alloc");
+    rx.feed(&vec![0f32; 48_000 * 3]).expect("rx feed");
+    assert_eq!(rx.counters(), Default::default(), "silence must not sync");
+    assert_eq!(rx.last_snr_db(), -99.0, "no constellation has been demapped");
+}
+
+#[test]
+fn rx_counters_survive_a_flush() {
+    // flush_rx_modem rebuilds the decoder after every transmission. Field
+    // diagnostics have to outlive that, or they only ever read back zero.
+    let mode = ModemMode::B85;
+    let payload: Vec<u8> = (0..85u32).map(|i| (i * 3 + 2) as u8).collect();
+    let burst = OfdmModem.encode_frame(mode, &payload).expect("encode");
+
+    let mut rx = OfdmRx::new().expect("rx alloc");
+    rx.feed(&splice_bursts(&[burst], &[])).expect("rx feed");
+    let before = rx.counters();
+    assert_eq!(before.frames_decoded, 1);
+
+    let mut fresh = OfdmRx::new().expect("rx alloc");
+    fresh.adopt_counters(before);
+    assert_eq!(fresh.counters(), before);
+}
+
+#[test]
+fn rx_counters_report_payload_damage_not_silence() {
+    // A burst whose payload symbols are corrupted but whose sync symbol is
+    // intact: the modem should notice it arrived, then fail to decode it.
+    // That pairing (sync_candidates > 0, frames_decoded == 0) is what an
+    // impaired analog path looks like, as opposed to a dead audio route.
+    let mode = ModemMode::B170;
+    let payload: Vec<u8> = (0..170u32).map(|i| (i * 11 + 4) as u8).collect();
+    let burst = OfdmModem.encode_frame(mode, &payload).expect("encode");
+    let mut pcm = splice_bursts(&[burst], &[]);
+
+    // Leave the sync and preamble symbols (2 * 8640) intact and blank a run
+    // inside the payload symbols, the shape a dropped audio buffer takes.
+    let damage_from = 24_000 + 2 * 8640 + 1_000;
+    for s in &mut pcm[damage_from..damage_from + 6_000] {
+        *s = 0.0;
+    }
+
+    let mut rx = OfdmRx::new().expect("rx alloc");
+    let frames = rx.feed(&pcm).expect("rx feed");
+    assert!(frames.is_empty(), "the payload was destroyed; nothing should decode");
+
+    let c = rx.counters();
+    assert!(c.sync_candidates > 0, "the burst still arrived: {c:?}");
+    assert_eq!(c.frames_decoded, 0);
+    assert!(
+        c.payload_failed > 0 || c.preamble_failed > 0,
+        "a damaged burst must be attributed to a stage, got {c:?}"
+    );
+}
+
 #[test]
 fn text_roundtrip_single_chunk() {
     let key = test_key();
@@ -454,82 +656,26 @@ fn testdata_path(name: &str) -> String {
     format!("{}/../testdata/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Converts f32 PCM to 16-bit with clamping (the golden wav sample format).
-fn f32_to_i16(pcm: &[f32]) -> Vec<i16> {
-    pcm.iter().map(|s| (s.clamp(-1.0, 1.0) * 32767.0).round() as i16).collect()
-}
-
-/// Converts 16-bit wav samples back to f32 for the receiver.
-fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
-    samples.iter().map(|&s| s as f32 / 32768.0).collect()
-}
-
-/// Writes a canonical 48 kHz mono 16-bit PCM WAV file.
-fn write_wav_i16(path: &str, samples: &[i16]) {
-    let data_len = samples.len() * 2;
-    let mut out = Vec::with_capacity(44 + data_len);
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_len as u32).to_le_bytes());
-    out.extend_from_slice(b"WAVEfmt ");
-    out.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
-    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    out.extend_from_slice(&1u16.to_le_bytes()); // mono
-    out.extend_from_slice(&48_000u32.to_le_bytes());
-    out.extend_from_slice(&96_000u32.to_le_bytes()); // byte rate
-    out.extend_from_slice(&2u16.to_le_bytes()); // block align
-    out.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&(data_len as u32).to_le_bytes());
-    for s in samples {
-        out.extend_from_slice(&s.to_le_bytes());
-    }
-    std::fs::write(path, out).expect("write golden wav");
-}
-
-/// Reads a canonical 48 kHz mono 16-bit PCM WAV (walking RIFF chunks).
-fn read_wav_i16(path: &str) -> Vec<i16> {
-    let bytes = std::fs::read(path).expect("read golden wav");
-    assert!(bytes.len() > 44 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE");
-    let mut pos = 12;
-    let mut data: Option<&[u8]> = None;
-    while pos + 8 <= bytes.len() {
-        let id = &bytes[pos..pos + 4];
-        let len = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
-        let body = &bytes[pos + 8..pos + 8 + len];
-        match id {
-            b"fmt " => {
-                assert_eq!(u16::from_le_bytes(body[0..2].try_into().unwrap()), 1, "PCM");
-                assert_eq!(u16::from_le_bytes(body[2..4].try_into().unwrap()), 1, "mono");
-                assert_eq!(u32::from_le_bytes(body[4..8].try_into().unwrap()), 48_000);
-                assert_eq!(u16::from_le_bytes(body[14..16].try_into().unwrap()), 16, "16-bit");
-            }
-            b"data" => data = Some(body),
-            _ => {}
-        }
-        pos += 8 + len + (len & 1); // chunks are word-aligned
-    }
-    data.expect("data chunk")
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect()
-}
 
 /// Generates (first run) or verifies (later runs) a golden wav, then
 /// decodes the stored file and returns the resulting event.
 fn golden_roundtrip(name: &str, frames: &[Vec<u8>]) -> RxEvent {
     let bursts = modulate(ModemMode::B170, frames);
-    let samples = f32_to_i16(&splice_bursts(&bursts, &[]));
+    let expected = crate::wav::encode(&splice_bursts(&bursts, &[]));
     let path = testdata_path(name);
     if !std::path::Path::new(&path).exists() {
-        write_wav_i16(&path, &samples);
+        std::fs::write(&path, &expected).expect("write golden wav");
     }
-    let stored = read_wav_i16(&path);
-    assert_eq!(
-        stored, samples,
+    // Compare whole file images, not just samples: that also pins the header
+    // the platform apps and the analyzer parse.
+    let stored = std::fs::read(&path).expect("read golden wav");
+    assert!(
+        stored == expected,
         "{name} drifted from the current encoder; delete testdata/{name} to regenerate"
     );
     let mut rs = Reassembler::new(Some(*test_key()));
-    push_frames(&mut rs, &receive_all(&i16_to_f32(&stored))).expect("golden wav must decode")
+    let pcm = crate::wav::decode(&stored).expect("golden wav must parse");
+    push_frames(&mut rs, &receive_all(&pcm)).expect("golden wav must decode")
 }
 
 #[test]
@@ -628,4 +774,31 @@ fn known_answer_vectors() {
                 .expect("write vectors.json");
         }
     }
+}
+
+
+#[test]
+#[ignore]
+fn zzz_write_impaired_captures() {
+    // Helper (run with --ignored) that writes damaged copies of the golden
+    // vector so the macOS --analyze-wav report can be checked against known
+    // faults instead of only against a clean file.
+    let dir = std::env::var("AETR_OUT").unwrap_or_else(|_| "/tmp".into());
+    let clean = crate::wav::read_wav_48k(testdata_path("golden_text.wav")).expect("read");
+
+    let agc = channel::agc(&clean, 0.15, 0.001, 0.0001);
+    crate::wav::write_wav_48k(format!("{dir}/impaired-agc.wav"), agc).expect("write");
+
+    let mut quiet = clean.clone();
+    channel::scale(&mut quiet, 0.002);
+    crate::wav::write_wav_48k(format!("{dir}/impaired-quiet.wav"), quiet).expect("write");
+
+    let mut gap = clean.clone();
+    let from = 24_000 + 2 * 8640 + 1_000;
+    for s in &mut gap[from..from + 6_000] {
+        *s = 0.0;
+    }
+    crate::wav::write_wav_48k(format!("{dir}/impaired-gap.wav"), gap).expect("write");
+
+    println!("wrote impaired captures to {dir}");
 }

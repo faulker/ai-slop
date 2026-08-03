@@ -49,6 +49,18 @@ int32_t aetr_modem_rx_feed(void *handle, const float *pcm, int32_t len);
  * negative value if no payload is pending or decoding failed. */
 int32_t aetr_modem_rx_fetch(void *handle, uint8_t *out_payload);
 
+/* Carrier frequency offset in Hz estimated for the most recent burst that
+ * passed preamble decoding. Diagnostic only: an audio path produces frequency
+ * scaling rather than a shift, so a large value means the two ends disagree
+ * about the sample rate. Returns 0 for a NULL handle or before any sync. */
+float aetr_modem_rx_last_cfo_hz(void *handle);
+
+/* Signal-to-error power ratio of the most recently demodulated payload
+ * constellation, in dB. This is the decoder's own view of link quality, taken
+ * after differential demodulation and phase compensation. Returns -99 for a
+ * NULL handle or before any payload symbol has been demapped. */
+float aetr_modem_rx_last_snr_db(void *handle);
+
 /* Destroys a decoder created by aetr_modem_rx_new. NULL is a no-op. */
 void aetr_modem_rx_free(void *handle);
 

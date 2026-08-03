@@ -68,6 +68,8 @@ extern "C" {
     fn aetr_modem_rx_new() -> *mut c_void;
     fn aetr_modem_rx_feed(handle: *mut c_void, pcm: *const f32, len: i32) -> i32;
     fn aetr_modem_rx_fetch(handle: *mut c_void, out_payload: *mut u8) -> i32;
+    fn aetr_modem_rx_last_cfo_hz(handle: *mut c_void) -> f32;
+    fn aetr_modem_rx_last_snr_db(handle: *mut c_void) -> f32;
     fn aetr_modem_rx_free(handle: *mut c_void);
 }
 
@@ -80,6 +82,28 @@ pub enum RxStatus {
     Synced,
     /// A sync candidate appeared but preamble decoding failed.
     Failed,
+}
+
+/// Where the receiver is losing bursts, counted per decode stage.
+///
+/// The stages run in order, so the first non-zero counter with a zero
+/// successor is the point of failure. All zero means no audio energy is
+/// reaching the modem at all (a routing or level problem, not a decode one).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct RxCounters {
+    /// Blocks where the correlator flagged a sync candidate, whether or not
+    /// it went on to decode. Non-zero means the burst is arriving.
+    pub sync_candidates: u64,
+    /// Sync fired but the BCH/OSD preamble decode rejected it: low SNR, a
+    /// mangled band, or energy outside the modem's 700-2300 Hz window.
+    pub preamble_failed: u64,
+    /// Preamble decoded but the polar decoder could not recover the payload.
+    /// The burst arrived and was corrupted in flight (clipping, dropped
+    /// samples, or a time-varying gain such as an AGC).
+    pub payload_failed: u64,
+    /// Bursts the modem decoded cleanly and handed to the framing layer.
+    pub frames_decoded: u64,
 }
 
 /// Number of 48 kHz samples in one full burst (constant across modes).
@@ -135,6 +159,7 @@ impl Modem for OfdmModem {
 pub struct OfdmRx {
     handle: *mut c_void,
     last_status: RxStatus,
+    counters: RxCounters,
 }
 
 // Safety: the shim handle is a plain heap object touched only through the
@@ -149,7 +174,7 @@ impl OfdmRx {
         if handle.is_null() {
             return Err(AetrError::Modem("receiver allocation failed".into()));
         }
-        Ok(OfdmRx { handle, last_status: RxStatus::Idle })
+        Ok(OfdmRx { handle, last_status: RxStatus::Idle, counters: RxCounters::default() })
     }
 
     /// Feeds PCM and returns any frames completed inside this buffer. The
@@ -169,17 +194,31 @@ impl OfdmRx {
                 s if s < 0 => {
                     return Err(AetrError::Modem(format!("rx feed failed with status {s}")))
                 }
-                1 => self.last_status = RxStatus::Synced,
+                1 => {
+                    self.counters.sync_candidates += 1;
+                    self.last_status = RxStatus::Synced;
+                }
                 2 => {
                     let mut payload = [0u8; 170];
                     // Safety: fetch writes at most 170 bytes.
                     let n = unsafe { aetr_modem_rx_fetch(self.handle, payload.as_mut_ptr()) };
                     if n > 0 {
+                        self.counters.frames_decoded += 1;
                         frames.push(payload[..n as usize].to_vec());
+                    } else {
+                        // Preamble decoded but the polar decoder gave up. The
+                        // burst reached us corrupted; count it rather than
+                        // dropping it, since it is the signature of an
+                        // impaired analog path.
+                        self.counters.payload_failed += 1;
                     }
                     self.last_status = RxStatus::Idle;
                 }
-                3 => self.last_status = RxStatus::Failed,
+                3 => {
+                    self.counters.sync_candidates += 1;
+                    self.counters.preamble_failed += 1;
+                    self.last_status = RxStatus::Failed;
+                }
                 _ => {}
             }
         }
@@ -189,6 +228,30 @@ impl OfdmRx {
     /// Most recent notable receiver status (for UI badges).
     pub fn status(&self) -> RxStatus {
         self.last_status
+    }
+
+    /// Per-stage decode tallies since this receiver was created.
+    pub fn counters(&self) -> RxCounters {
+        self.counters
+    }
+
+    /// Seeds the tallies from a previous receiver. The post-TX flush rebuilds
+    /// the decoder to clear stuck sync, which would otherwise zero a field
+    /// diagnostic on every transmission.
+    pub fn adopt_counters(&mut self, prior: RxCounters) {
+        self.counters = prior;
+    }
+
+    /// CFO estimated for the last burst that passed preamble decoding, in Hz.
+    pub fn last_cfo_hz(&self) -> f32 {
+        // Safety: pure getter over the live shim handle.
+        unsafe { aetr_modem_rx_last_cfo_hz(self.handle) }
+    }
+
+    /// Signal-to-error ratio of the last demapped constellation, in dB.
+    pub fn last_snr_db(&self) -> f32 {
+        // Safety: pure getter over the live shim handle.
+        unsafe { aetr_modem_rx_last_snr_db(self.handle) }
     }
 }
 

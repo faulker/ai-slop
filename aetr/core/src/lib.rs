@@ -18,6 +18,7 @@ pub mod fec;
 pub mod frame;
 pub mod modem;
 pub mod voice;
+pub mod wav;
 
 #[cfg(test)]
 mod channel;
@@ -46,6 +47,8 @@ pub enum AetrError {
     Modem(String),
     /// Message too large for the protocol limits (chunk_index is one byte).
     TooLarge(String),
+    /// Reading or writing a diagnostic capture file failed.
+    Io(String),
 }
 
 impl fmt::Display for AetrError {
@@ -59,6 +62,7 @@ impl fmt::Display for AetrError {
             AetrError::Voice(m) => write!(f, "voice codec failed: {m}"),
             AetrError::Modem(m) => write!(f, "modem failed: {m}"),
             AetrError::TooLarge(m) => write!(f, "message too large: {m}"),
+            AetrError::Io(m) => write!(f, "capture file failed: {m}"),
         }
     }
 }

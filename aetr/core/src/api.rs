@@ -9,7 +9,7 @@
 //! All state sits behind a Mutex; nothing here panics across the FFI.
 
 use crate::frame::{self, Reassembler, TxCache};
-use crate::modem::{burst_samples, Modem, ModemMode, OfdmModem, OfdmRx, RxStatus};
+use crate::modem::{burst_samples, Modem, ModemMode, OfdmModem, OfdmRx, RxCounters, RxStatus};
 use crate::{crypto, fec, voice, AetrError};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -148,6 +148,10 @@ struct Inner {
     tx_order: VecDeque<u64>,
     /// Last emitted progress (shards held) per in-flight message.
     progress_seen: HashMap<u64, usize>,
+    /// Frames that synced on the modem but failed auth or were malformed.
+    /// Cumulative for the session so the UI can show "N frames rejected"
+    /// when the badge Syncs without a message appearing.
+    rejected_frames: u64,
 }
 
 impl Inner {
@@ -361,6 +365,7 @@ impl AetrSession {
                 tx_caches: HashMap::new(),
                 tx_order: VecDeque::new(),
                 progress_seen: HashMap::new(),
+                rejected_frames: 0,
             }),
         }))
     }
@@ -410,7 +415,8 @@ impl AetrSession {
     /// queues events — including automatic `RepairRequested` responses when
     /// a peer's control frame targets one of our cached messages. Frames
     /// that fail authentication (wrong passphrase on the channel) or are
-    /// malformed are silently dropped, as on any shared radio channel.
+    /// malformed are dropped (not delivered as messages) and counted via
+    /// `rejected_frames()`, as on any shared radio channel.
     pub fn push_rx(&self, pcm48k: Vec<f32>) {
         let mut inner = self.lock();
         let frames = match inner.rx.feed(&pcm48k) {
@@ -425,10 +431,22 @@ impl AetrSession {
             match inner.reassembler.push_frame(&f, now) {
                 Ok(Some(ev)) => inner.handle_frame_event(ev, self.key.as_ref(), self.mode, self.timing),
                 Ok(None) => {}
-                Err(_) => {} // AuthFailed/Malformed: not for us, drop.
+                // AuthFailed/Malformed: not for us. Count so the UI can tell
+                // Syncing-without-a-message apart from pure idle noise.
+                Err(_) => {
+                    inner.rejected_frames = inner.rejected_frames.saturating_add(1);
+                }
             }
         }
         inner.emit_progress();
+    }
+
+    /// Cumulative count of modem-decoded frames that failed authentication
+    /// or were malformed. Useful when the RX badge shows Syncing but no
+    /// message appears (wrong passphrase, corruption, or mode mismatch
+    /// that still produces a sync).
+    pub fn rejected_frames(&self) -> u64 {
+        self.lock().rejected_frames
     }
 
     /// Drains queued events. Also sweeps the reassembly timeout: stale
@@ -456,7 +474,8 @@ impl AetrSession {
     }
 
     /// Discards all receive state (in-flight messages, queued events,
-    /// modem sync). Keeps the key, mode, and sender-side ARQ caches.
+    /// modem sync, reject counter). Keeps the key, mode, and sender-side
+    /// ARQ caches. Use for the manual UI Reset control.
     pub fn reset_rx(&self) {
         let mut inner = self.lock();
         if let Ok(rx) = OfdmRx::new() {
@@ -465,6 +484,44 @@ impl AetrSession {
         inner.reassembler = Reassembler::new(self.key);
         inner.events.clear();
         inner.progress_seen.clear();
+        inner.rejected_frames = 0;
+    }
+
+    /// Clears modem sync only (TX→RX crosstalk / stuck preamble). Keeps the
+    /// reassembler, queued events, progress tracking, reject counter, and the
+    /// per-stage decode tallies, so a post-TX flush cannot wipe an in-flight
+    /// peer message, an undrained Text, or a field diagnostic.
+    pub fn flush_rx_modem(&self) {
+        let mut inner = self.lock();
+        if let Ok(mut rx) = OfdmRx::new() {
+            rx.adopt_counters(inner.rx.counters());
+            inner.rx = rx;
+        }
+    }
+
+    /// Where the receiver is losing bursts, counted per decode stage. Read
+    /// alongside `rejected_frames`, which counts the stage after these: a
+    /// frame the modem recovered cleanly that then failed authentication.
+    ///
+    /// All zero means no burst energy is reaching the modem at all, which is
+    /// a routing or level problem rather than a decode one.
+    pub fn rx_counters(&self) -> RxCounters {
+        self.lock().rx.counters()
+    }
+
+    /// Carrier frequency offset estimated for the last burst that passed
+    /// preamble decoding, in Hz. Diagnostic only: an audio path scales
+    /// frequency rather than shifting it, so anything large means the two
+    /// ends disagree about the sample rate.
+    pub fn last_cfo_hz(&self) -> f32 {
+        self.lock().rx.last_cfo_hz()
+    }
+
+    /// The decoder's own view of link quality: signal-to-error ratio of the
+    /// last demodulated constellation, in dB. Reads -99 before any payload
+    /// symbol has been demapped.
+    pub fn last_snr_db(&self) -> f32 {
+        self.lock().rx.last_snr_db()
     }
 
     /// Builds the receiver side of the ARQ round: a single control-frame
@@ -541,6 +598,30 @@ mod tests {
             "expected the text event, got {events:?}"
         );
         assert_eq!(receiver.rx_state(), RxState::Idle);
+        assert_eq!(receiver.rejected_frames(), 0);
+    }
+
+    #[test]
+    fn wrong_passphrase_increments_rejected_frames() {
+        let sender = AetrSession::new(config()).expect("sender");
+        let mut wrong = config();
+        wrong.passphrase = "wrong horse battery staple".into();
+        let receiver = AetrSession::new(wrong).expect("receiver");
+
+        let pcm = sender.encode_text("secret".into(), true).expect("encode");
+        receiver.push_rx(pcm);
+        let events = receiver.poll_events();
+        assert!(
+            !events.iter().any(|e| matches!(e, RxEvent::Text { .. })),
+            "wrong key must not deliver text: {events:?}"
+        );
+        assert!(
+            receiver.rejected_frames() >= 1,
+            "expected at least one rejected frame, got {}",
+            receiver.rejected_frames()
+        );
+        receiver.reset_rx();
+        assert_eq!(receiver.rejected_frames(), 0);
     }
 
     #[test]
@@ -638,6 +719,80 @@ mod tests {
                 RxEvent::Text { text, encrypted, .. } if text == "in the clear" && !*encrypted
             )),
             "expected a plaintext text event, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn flush_rx_modem_preserves_partials_and_events() {
+        // Post-TX modem flush must not erase in-flight shards or queued events
+        // the way a full reset_rx would (that looked like Tx/Rx with empty chat).
+        let sender = AetrSession::new(config()).expect("sender");
+        let receiver = AetrSession::new(config()).expect("receiver");
+
+        let text = long_text(1400);
+        let pcm = sender.encode_text(text.clone(), false).expect("encode");
+        let stride = burst_samples() + GAP_SAMPLES;
+
+        let mut damaged = pcm[..LEAD_SAMPLES].to_vec();
+        damaged.extend_from_slice(&pcm[LEAD_SAMPLES + 4 * stride..]);
+        receiver.push_rx(damaged);
+
+        let events = receiver.poll_events();
+        let id = events
+            .iter()
+            .find_map(|e| match e {
+                RxEvent::Progress { message_id, received: 9, total: 10, .. } => Some(*message_id),
+                _ => None,
+            })
+            .expect("progress at 9/10 before flush");
+        assert_eq!(receiver.rx_state(), RxState::Receiving);
+
+        // Simulate post-TX crosstalk cleanup: flush modem only.
+        receiver.flush_rx_modem();
+        assert_eq!(receiver.rx_state(), RxState::Receiving, "partials must survive flush");
+        assert_eq!(receiver.rejected_frames(), 0);
+
+        // A full plaintext message pushed after flush still completes via ARQ path:
+        // request repair against preserved shards.
+        let control = receiver.request_repair(id).expect("repair after flush");
+        sender.push_rx(control);
+        let response = sender
+            .poll_events()
+            .into_iter()
+            .find_map(|e| match e {
+                RxEvent::RepairRequested { message_id, pcm_response } if message_id == id => {
+                    Some(pcm_response)
+                }
+                _ => None,
+            })
+            .expect("repair response");
+        receiver.push_rx(response);
+        let events = receiver.poll_events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                RxEvent::Text { message_id, text: t, encrypted: false }
+                    if *message_id == id && *t == text
+            )),
+            "flush must not prevent repair completion: {events:?}"
+        );
+    }
+
+    #[test]
+    fn flush_rx_modem_keeps_undrained_text_event() {
+        let sender = AetrSession::new(config()).expect("sender");
+        let receiver = AetrSession::new(config()).expect("receiver");
+        let pcm = sender.encode_text("queued".into(), false).expect("encode");
+        receiver.push_rx(pcm);
+        // Flush before the UI polls — events must remain.
+        receiver.flush_rx_modem();
+        let events = receiver.poll_events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                RxEvent::Text { text, encrypted: false, .. } if text == "queued"
+            )),
+            "undrained Text must survive modem flush: {events:?}"
         );
     }
 

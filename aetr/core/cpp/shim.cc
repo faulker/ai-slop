@@ -396,6 +396,11 @@ class Decoder {
 	int accumulated = 0;
 	value stored_cfo_rad = 0;
 	value staged_cfo_rad = 0;
+	// Diagnostics: CFO of the last burst that passed preamble decoding, and
+	// the last demapped symbol's signal-to-error ratio. Kept so the platform
+	// UIs can show why a link is failing instead of just "no message".
+	value last_cfo_rad = 0;
+	value last_precision = 0;
 	bool stored_check = false;
 	bool staged_check = false;
 	const cmplx *buf;
@@ -491,6 +496,7 @@ class Decoder {
 	void demap()
 	{
 		value pre = precision();
+		last_precision = pre;
 		for (int i = 0; i < pay_car_cnt; ++i)
 			mod_soft(code + mod_bits * (symbol_number * pay_car_cnt + i), cons[i], pre);
 	}
@@ -572,6 +578,7 @@ public:
 			staged_check = false;
 			if (preamble()) {
 				operation_mode = staged_mode;
+				last_cfo_rad = staged_cfo_rad;
 				osc.omega(-staged_cfo_rad);
 				symbol_position = staged_position;
 				symbol_number = -1;
@@ -614,6 +621,26 @@ public:
 		for (int i = data_bits / 8; i < 170; ++i)
 			payload[i] = 0;
 		return data_bits / 8;
+	}
+
+	/// How far the last decoded preamble sat from the nominal carrier, in Hz.
+	///
+	/// The correlator's cfo_rad is the total downconversion the NCO applies,
+	/// which includes moving the 1500 Hz carrier itself to baseband. Only the
+	/// deviation from that is diagnostically interesting, so subtract it: a
+	/// clean path reads near zero, and a large value means the two ends
+	/// disagree about the sample rate.
+	float cfo_hz() const
+	{
+		return float(last_cfo_rad) * float(RATE) / (2 * Const::Pi()) - carrier_frequency;
+	}
+
+	/// Last demapped constellation's signal-to-error ratio, in dB.
+	float snr_db() const
+	{
+		if (!(last_precision > 0))
+			return -99;
+		return 10 * std::log10(float(last_precision));
 	}
 };
 
@@ -737,6 +764,20 @@ int32_t aetr_modem_rx_fetch(void *handle, uint8_t *out_payload)
 	} catch (...) {
 		return -2;
 	}
+}
+
+float aetr_modem_rx_last_cfo_hz(void *handle)
+{
+	if (handle == nullptr)
+		return 0;
+	return static_cast<RxHandle *>(handle)->decoder->cfo_hz();
+}
+
+float aetr_modem_rx_last_snr_db(void *handle)
+{
+	if (handle == nullptr)
+		return -99;
+	return static_cast<RxHandle *>(handle)->decoder->snr_db();
 }
 
 void aetr_modem_rx_free(void *handle)

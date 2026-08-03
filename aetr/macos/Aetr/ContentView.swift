@@ -87,7 +87,9 @@ struct SetupBar: View {
                 Toggle("VOX primer tone", isOn: $appState.voxPrimer)
                     .disabled(appState.connected)
                     .help("Fills the delay with a quiet tone so VOX-keyed radios open TX during the delay")
-                Text("Wait before data starts so the radio is fully keyed up.")
+                Toggle("Auto ARQ (VOX)", isOn: $appState.autoArq)
+                    .help("Automatically request and send repairs so VOX-only radios do not need a second manual PTT")
+                Text("Wait before data starts so the radio is fully keyed up. Keep VOX primer on with Auto ARQ.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
@@ -131,16 +133,169 @@ struct DeviceBar: View {
             }
             .help("Refresh audio devices")
 
+            Picker("RX ch", selection: $appState.rxChannel) {
+                ForEach(AudioEngine.RxChannel.allCases) { channel in
+                    Text(channel.rawValue).tag(channel)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 130)
+            .help(
+                "Which stereo leg of the input carries receive audio. APRS and TRRS "
+                    + "cables often wire only one side; Auto keeps whichever is louder.")
+
+            Picker("TX ch", selection: $appState.txChannel) {
+                ForEach(AudioEngine.TxChannel.allCases) { channel in
+                    Text(channel.rawValue).tag(channel)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 130)
+            .help(
+                "Which channel(s) carry TX audio out to the radio's mic input. If the "
+                    + "radio keys up but only static goes out, try L or R before "
+                    + "re-wiring the cable.")
+
+            HStack(spacing: 4) {
+                Text("TX level").font(.caption)
+                Slider(value: $appState.txGain, in: 0.1...1.0)
+                    .frame(width: 100)
+                Text(String(format: "%.2f", appState.txGain))
+                    .font(.caption.monospacedDigit())
+                    .frame(width: 32, alignment: .trailing)
+            }
+            .help(
+                "Scales TX peak amplitude. Worth lowering if the radio's mic input is "
+                    + "overloading before whatever processing it applies to the signal.")
+
+            Toggle("Capture RX", isOn: $appState.captureRx)
+                .toggleStyle(.checkbox)
+                .help(
+                    "Record everything the input hears to a WAV in Documents. Turn it "
+                        + "off to write the file, then run: Aetr --analyze-wav <file>")
+
             Toggle("Digital loopback", isOn: $appState.digitalLoopback)
                 .toggleStyle(.checkbox)
-                .help("Debug: pipe encoded bursts straight into the receiver, bypassing audio hardware")
+                .foregroundColor(appState.digitalLoopback ? .red : .primary)
+                .help("Debug: pipe encoded bursts straight into the receiver, bypassing audio hardware. When ON, Mac reads its own sends and the radio/Android hear nothing.")
+            if appState.digitalLoopback {
+                Text("LOOPBACK ON — Mac will 'receive' its own sends; radio/Android hear nothing")
+                    .font(.caption2.bold())
+                    .foregroundColor(.red)
+            }
+
+            if appState.connected {
+                VStack(alignment: .leading, spacing: 1) {
+                    InputLevelMeter(level: appState.inputLevel)
+                    // RMS as well as peak: the sync floor is an RMS threshold,
+                    // and below it a quiet burst is indistinguishable from
+                    // silence as far as the decoder is concerned.
+                    HStack(spacing: 6) {
+                        Text(
+                            appState.inputRmsDbfs.isFinite
+                                ? String(format: "RMS %.0f dBFS", appState.inputRmsDbfs)
+                                : "RMS −∞ dBFS"
+                        )
+                        .foregroundColor(
+                            appState.inputRmsDbfs.isFinite && appState.inputRmsDbfs < -57
+                                ? .orange : .secondary)
+                        if appState.droppedBuffers > 0 {
+                            Text("· \(appState.droppedBuffers) buffer(s) dropped")
+                                .foregroundColor(.red)
+                        }
+                    }
+                    .font(.caption2.monospacedDigit())
+                }
+                .frame(maxWidth: 200)
+            }
 
             Spacer()
 
-            StateBadge()
+            VStack(alignment: .trailing, spacing: 2) {
+                StateBadge()
+                if appState.connected && appState.rejectedFrames > 0 {
+                    Text("\(appState.rejectedFrames) frame(s) rejected")
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                }
+                if appState.connected {
+                    RxStageSummary()
+                }
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+}
+
+/// One-line summary of where the receiver is losing bursts.
+///
+/// The stages run in order, so read it left to right and stop at the first
+/// count that does not carry through. Nothing shown at all means no burst has
+/// reached the modem, which points at routing or level rather than decode.
+struct RxStageSummary: View {
+    @EnvironmentObject private var appState: AppState
+
+    /// Nil until something has actually reached the modem.
+    private var summary: String? {
+        let c = appState.rxCounters
+        guard c.syncCandidates > 0 || c.framesDecoded > 0 else { return nil }
+        var parts = ["sync \(c.syncCandidates)"]
+        if c.preambleFailed > 0 { parts.append("pre✗ \(c.preambleFailed)") }
+        if c.payloadFailed > 0 { parts.append("pay✗ \(c.payloadFailed)") }
+        parts.append("ok \(c.framesDecoded)")
+        if appState.lastSnrDb > -99 {
+            parts.append(String(format: "%.0f dB", appState.lastSnrDb))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        if let summary {
+            Text(summary)
+                .font(.caption2.monospacedDigit())
+                .foregroundColor(appState.rxCounters.framesDecoded > 0 ? .green : .orange)
+                .help(
+                    "Decode stages in order. Bursts that sync but fail the payload "
+                        + "are arriving corrupted; nothing at all means no audio is "
+                        + "reaching the modem.")
+        }
+    }
+}
+
+/// Live RX input peak meter. Flatline means the selected input is silent.
+struct InputLevelMeter: View {
+    let level: Float
+
+    private var color: Color {
+        switch level {
+        case ..<0.02: return .gray
+        case ..<0.7: return .green
+        case ..<0.9: return .orange
+        default: return .red
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("In")
+                .font(.caption2.bold())
+                .foregroundColor(.secondary)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.2))
+                    Capsule()
+                        .fill(color)
+                        .frame(width: max(2, geo.size.width * CGFloat(min(1, max(0, level)))))
+                }
+            }
+            .frame(height: 8)
+            Text(AudioLevels.dbFsLabel(level))
+                .font(.caption2.monospacedDigit())
+                .foregroundColor(.secondary)
+                .frame(width: 64, alignment: .trailing)
+        }
+        .help("Incoming audio level from the selected input device")
     }
 }
 
