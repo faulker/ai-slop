@@ -9,7 +9,7 @@
 
 use serde::Serialize;
 
-use super::{get_bcd8_be, read_ascii, set_bcd8_be, write_ascii};
+use crate::bytes::{get_bcd8_be, read_ascii, set_bcd8_be, write_ascii};
 use crate::error::{Error, Result};
 
 /// Size of a channel record in bytes (qdmr `ChannelElement::size()` = 0x40).
@@ -459,7 +459,11 @@ impl Channel {
 
     /// Set the channel name, rewriting only the 16-byte name field in `raw`.
     pub fn set_name(&mut self, name: &str) {
-        write_ascii(&mut self.raw[NAME_OFFSET..NAME_OFFSET + NAME_LEN], name, 0x00);
+        write_ascii(
+            &mut self.raw[NAME_OFFSET..NAME_OFFSET + NAME_LEN],
+            name,
+            0x00,
+        );
         *self = Self::from_raw(self.index, self.raw);
     }
 

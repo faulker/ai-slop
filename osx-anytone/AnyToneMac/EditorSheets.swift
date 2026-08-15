@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Shared chrome for every record editor: a title, the fields, and Cancel/Done.
@@ -40,6 +41,26 @@ struct EditorSheet<Content: View>: View {
             .padding(.vertical, Spacing.stack)
         }
         .frame(width: width)
+        // A sheet takes its content's ideal height, and a long form's ideal
+        // height can exceed the display. When that happened the Cancel/Done row
+        // sat below the bottom of the screen with no way to reach it, and AppKit
+        // shoved the parent window down to make room — which is what made the
+        // main window jump when the sheet closed. Capping the height here keeps
+        // the buttons on screen; the grouped `Form` inside scrolls to make up
+        // the difference.
+        .frame(maxHeight: EditorSheet.maxSheetHeight)
+    }
+
+    /// The tallest a sheet may be: the usable height of the screen it will open
+    /// on, less the parent window's title bar and a margin so the sheet does not
+    /// sit flush against the menu bar and the Dock.
+    ///
+    /// Read at layout time rather than cached, since the window can be moved to
+    /// a different display between edits. Falls back to a laptop-sized screen
+    /// when AppKit reports none.
+    static var maxSheetHeight: CGFloat {
+        let usable = NSScreen.main?.visibleFrame.height ?? 800
+        return max(360, usable - 120)
     }
 }
 
@@ -103,75 +124,82 @@ struct ChannelEditorSheet: View {
                 TextField("Name", text: $draft.name)
             }
             Form {
-                TextField("Receive (MHz)", value: mhzBinding($draft.rxFrequencyHz), format: mhzFormat)
-                TextField("Transmit (MHz)", value: mhzBinding($draft.txFrequencyHz), format: mhzFormat)
-
-                Picker("Mode", selection: $draft.mode) {
-                    ForEach(channelModeOptions, id: \.tag) { Text($0.label).tag($0.tag) }
-                }
-                Picker("Power", selection: $draft.power) {
-                    ForEach(channelPowerOptions, id: \.tag) { Text($0.label).tag($0.tag) }
-                }
-                Picker("Bandwidth", selection: $draft.bandwidth) {
-                    ForEach(channelBandwidthOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                Section("Frequency") {
+                    TextField("Receive (MHz)", value: mhzBinding($draft.rxFrequencyHz), format: mhzFormat)
+                    TextField("Transmit (MHz)", value: mhzBinding($draft.txFrequencyHz), format: mhzFormat)
                 }
 
-                Stepper("Color code: \(String(draft.colorCode))",
-                        value: $draft.colorCode, in: 0...15)
-                    .disabled(!isDigital)
-                Picker("Time slot", selection: $draft.timeSlot) {
-                    Text("1").tag(1)
-                    Text("2").tag(2)
+                Section("Channel") {
+                    Picker("Mode", selection: $draft.mode) {
+                        ForEach(channelModeOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
+                    Picker("Power", selection: $draft.power) {
+                        ForEach(channelPowerOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
+                    Picker("Bandwidth", selection: $draft.bandwidth) {
+                        ForEach(channelBandwidthOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
+
+                    Picker("Scan list", selection: $draft.scanListIndex) {
+                        Text("None").tag(Self.scanListNone)
+                        if draft.scanListIndex != Self.scanListNone
+                            && !scanLists.contains(where: { $0.index == draft.scanListIndex }) {
+                            Text("#\(formatSlot(draft.scanListIndex)) (missing)").tag(draft.scanListIndex)
+                        }
+                        ForEach(scanLists) { s in Text(s.name).tag(s.index) }
+                    }
+
+                    Picker("TX permit", selection: $draft.admit) {
+                        ForEach(admitOptions, id: \.tag) { Text($0.label).tag($0.tag) }
+                    }
                 }
-                .pickerStyle(.segmented)
+
+                // One block, disabled as a unit, rather than five rows each
+                // carrying their own `!isDigital`: this is the part of the sheet
+                // a radio without DMR simply doesn't have.
+                Section("Digital (DMR)") {
+                    Stepper("Color code: \(String(draft.colorCode))",
+                            value: $draft.colorCode, in: 0...15)
+                    Picker("Time slot", selection: $draft.timeSlot) {
+                        Text("1").tag(1)
+                        Text("2").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Picker("Contact", selection: $draft.contactIndex) {
+                        // A channel can reference a contact that was removed; without
+                        // a matching tag the picker renders blank and can write back a
+                        // wrong value on interaction.
+                        if !contacts.contains(where: { UInt32($0.index) == draft.contactIndex }) {
+                            Text("#\(formatSlot(Int(draft.contactIndex))) (missing)")
+                                .tag(draft.contactIndex)
+                        }
+                        ForEach(contacts) { c in
+                            Text(verbatim: "\(c.name) (\(formatDMRID(c.number)))").tag(UInt32(c.index))
+                        }
+                    }
+                    .disabled(contacts.isEmpty)
+
+                    Picker("RX group list", selection: $draft.groupListIndex) {
+                        Text("None").tag(Self.groupListNone)
+                        if draft.groupListIndex != Self.groupListNone
+                            && !groupLists.contains(where: { $0.index == draft.groupListIndex }) {
+                            Text("#\(formatSlot(draft.groupListIndex)) (missing)").tag(draft.groupListIndex)
+                        }
+                        ForEach(groupLists) { g in Text(g.name).tag(g.index) }
+                    }
+
+                    Picker("Radio ID", selection: $draft.radioIdIndex) {
+                        if !radioIds.contains(where: { $0.index == draft.radioIdIndex }) {
+                            Text("#\(formatSlot(draft.radioIdIndex)) (missing)").tag(draft.radioIdIndex)
+                        }
+                        ForEach(radioIds) { r in
+                            Text(verbatim: "\(r.name) (\(formatDMRID(r.number)))").tag(r.index)
+                        }
+                    }
+                    .disabled(radioIds.isEmpty)
+                }
                 .disabled(!isDigital)
-
-                Picker("Contact", selection: $draft.contactIndex) {
-                    // A channel can reference a contact that was removed; without
-                    // a matching tag the picker renders blank and can write back a
-                    // wrong value on interaction.
-                    if !contacts.contains(where: { UInt32($0.index) == draft.contactIndex }) {
-                        Text("#\(formatSlot(Int(draft.contactIndex))) (missing)")
-                            .tag(draft.contactIndex)
-                    }
-                    ForEach(contacts) { c in
-                        Text(verbatim: "\(c.name) (\(formatDMRID(c.number)))").tag(UInt32(c.index))
-                    }
-                }
-                .disabled(contacts.isEmpty || !isDigital)
-
-                Picker("RX group list", selection: $draft.groupListIndex) {
-                    Text("None").tag(Self.groupListNone)
-                    if draft.groupListIndex != Self.groupListNone
-                        && !groupLists.contains(where: { $0.index == draft.groupListIndex }) {
-                        Text("#\(formatSlot(draft.groupListIndex)) (missing)").tag(draft.groupListIndex)
-                    }
-                    ForEach(groupLists) { g in Text(g.name).tag(g.index) }
-                }
-                .disabled(!isDigital)
-
-                Picker("Radio ID", selection: $draft.radioIdIndex) {
-                    if !radioIds.contains(where: { $0.index == draft.radioIdIndex }) {
-                        Text("#\(formatSlot(draft.radioIdIndex)) (missing)").tag(draft.radioIdIndex)
-                    }
-                    ForEach(radioIds) { r in
-                        Text(verbatim: "\(r.name) (\(formatDMRID(r.number)))").tag(r.index)
-                    }
-                }
-                .disabled(radioIds.isEmpty || !isDigital)
-
-                Picker("Scan list", selection: $draft.scanListIndex) {
-                    Text("None").tag(Self.scanListNone)
-                    if draft.scanListIndex != Self.scanListNone
-                        && !scanLists.contains(where: { $0.index == draft.scanListIndex }) {
-                        Text("#\(formatSlot(draft.scanListIndex)) (missing)").tag(draft.scanListIndex)
-                    }
-                    ForEach(scanLists) { s in Text(s.name).tag(s.index) }
-                }
-
-                Picker("TX permit", selection: $draft.admit) {
-                    ForEach(admitOptions, id: \.tag) { Text($0.label).tag($0.tag) }
-                }
 
                 Section("Analog") {
                     Picker("RX signaling", selection: $draft.rxSignalingMode) {

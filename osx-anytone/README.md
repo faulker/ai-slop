@@ -18,6 +18,16 @@
 >
 > **`backup`, `dump`, `dump-range` and `edit` are read-only and safe.**
 >
+> **QYT KT-5000: the write path IS hardware-verified.** On 2026-08-06 a full
+> read, a one-channel edit, a full write, and a post-reboot read-back were run
+> against a real KT-5000. The read-back differed from the pre-write backup by
+> exactly the 6 bytes of the intended edit, matched the transmitted image byte
+> for byte across the whole writable range, left `0x3100`-`0x31FF` untouched, and
+> preserved `0x2000`-`0x23EF` exactly.
+>
+> Back up first anyway, and note the radio reboots after every transfer, so you
+> must reconnect before reading back to verify.
+>
 > # ⚠️ USE AT YOUR OWN RISK ⚠️
 >
 > ## THIS SOFTWARE WRITES DIRECTLY TO YOUR RADIO. IT CAN CORRUPT ITS MEMORY AND LEAVE IT UNUSABLE.
@@ -43,15 +53,63 @@
 > If any of that is unacceptable to you, **stop here and use the official Windows
 > CPS instead.**
 
-A macOS tool to back up and restore codeplugs for the **AnyTone AT-D878UVII Plus**
-ham radio over the USB programming cable, without the Windows-only vendor CPS.
+**Codeplug** is a macOS tool to back up and restore codeplugs for ham radios
+over the USB programming cable, without the manufacturer's Windows-only vendor
+CPS.
+
+## Supported radios
+
+| Radio | Image size | Auto-detects | Notes |
+|---|---|---|---|
+| AnyTone AT-D878UVII Plus | 1,789,328 B | yes | DMR + analog. Channels, zones, scan lists, contacts, RX group lists, radio IDs, APRS. |
+| QYT KT-5000 | 12,800 B | **no, see below** | Analog only. 200 channels, plus a settings pane for the confirmed header (squelch, beep, scan resume, and a few more). Channel editing covers name, RX/TX, both tones, and scan skip. |
+
+The app picks the model for a `.bin` automatically: primarily by file size, which
+differs between the two by orders of magnitude, corroborated for the QYT by the ASCII
+`Model:` tag the radio stores at `0x0FE0`. Opening a codeplug switches the sidebar to
+that radio's sections, so a QYT document shows channels, settings, and VFO channels, while an
+AnyTone document shows the full DMR set.
+
+Writing is guarded in both directions: the model is detected from the **file**, and the
+core refuses to write unless the connected radio's identity matches, before any block
+is transmitted.
+
+### The QYT KT-5000 does not auto-detect yet
+
+Its USB VID/PID does not appear anywhere in the captures this support was built from,
+so an unrecognized adapter is not assumed to be a KT-5000. **Select the model
+explicitly in the Device pane** for any port whose USB identity is unknown, then read
+or write as normal. Everything works; only auto-detection is missing.
+
+If you want to fix that, run `system_profiler SPUSBDataType` with the radio plugged in
+and add the VID/PID to `KNOWN_USB_IDS` in `core/src/ports.rs`, where a TODO marks the
+spot. A guessed ID is worse than none, since it would silently match unrelated
+USB-serial adapters.
+
+Protocol and memory layout for the KT-5000 are documented in
+[`docs/qyt-kt5000-memory-map.md`](docs/qyt-kt5000-memory-map.md). Two behaviours worth
+knowing before you connect it: **the radio reboots after every read or write**, so
+verification is always a separate session, and its settings block is only partly
+modelled on purpose (the reference driver everyone else uses has a known-wrong map for
+this model, so unlabelled bytes are preserved rather than guessed). Beep and scan
+resume are in the pane because a CPS one-field-diff pass confirmed them; scan resume
+even sits one byte earlier than that reference map claimed.
+
+The same caution applies to a channel's packed flag bytes. **Scan skip is editable** —
+its bit was confirmed against a real radio, and the channel editor's Scan section writes
+it — while power, bandwidth, BCL, PTT-ID and the rest are shown under a collapsed
+**Radio flags (read-only)** row and round-trip untouched until their bit assignments are
+confirmed the same way. The channel table's **Scan** column marks the skipped channels
+so they can be spotted without opening each one. Multi-select (⌘-click / shift-click)
+also opens **Bulk Edit**, which can set scan skip across the selection in one step.
 
 See `PLAN.md` for the full design and phased roadmap. This repo implements
 **Phase 0 (scaffolding + port discovery)**, **Phase 1 (protocol + full codeplug
 backup/restore)**, a **Phase 2 codeplug model** covering channels, zones, scan
 lists, DMR contacts / talk groups, RX group lists, and radio IDs (full add /
-remove / update), and the **Phase 3 SwiftUI GUI** (`AnyToneMac`). The firmware
-`UPDATE` path is deliberately excluded because it can brick the radio.
+remove / update), and the **Phase 3 SwiftUI GUI** (`AnyToneMac/`, app name
+Codeplug). The firmware `UPDATE` path is deliberately excluded because it can
+brick the radio.
 
 ### CPS-parity settings (added for closer feature parity with the vendor CPS)
 
@@ -210,7 +268,7 @@ adds a talk group and a digital channel wired to it:
 }
 ```
 
-## GUI (AnyToneMac)
+## GUI (Codeplug)
 
 A sidebar selects between the radio and the open codeplug's entity families.
 Both are thin shells over the Rust core.

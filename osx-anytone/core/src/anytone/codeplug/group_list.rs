@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 
-use super::{read_ascii, write_ascii};
+use crate::bytes::{read_ascii, write_ascii};
 use crate::error::{Error, Result};
 
 /// Byte stride of a group-list slot (qdmr `Offset::betweenGroupLists()` = 0x200).
@@ -69,7 +69,11 @@ impl GroupList {
 
     /// Set the group-list name, rewriting only the 16-byte name field.
     pub fn set_name(&mut self, name: &str) {
-        write_ascii(&mut self.raw[NAME_OFFSET..NAME_OFFSET + NAME_LEN], name, 0x00);
+        write_ascii(
+            &mut self.raw[NAME_OFFSET..NAME_OFFSET + NAME_LEN],
+            name,
+            0x00,
+        );
         *self = Self::from_raw(self.index, self.raw);
     }
 

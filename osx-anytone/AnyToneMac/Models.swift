@@ -7,13 +7,44 @@ struct PortEntry: Codable, Identifiable, Hashable {
     let vid: UInt16?
     let pid: UInt16?
     let product: String?
+    /// The radio this port's USB VID/PID names, or nil when the core doesn't
+    /// recognize the adapter. Not every supported radio's bridge is known, so
+    /// nil means "ask the user", never "not a radio".
+    let model: RadioModel?
+    /// Always exactly `model != nil`; the core guarantees it.
     let likelyRadio: Bool
 
     var id: String { name }
 
     enum CodingKeys: String, CodingKey {
-        case name, vid, pid, product
+        case name, vid, pid, product, model
         case likelyRadio = "likely_radio"
+    }
+
+    /// Decode `model` leniently: a core that grows a radio this build has no
+    /// `RadioModel` case for should leave that port unattributed rather than
+    /// make the whole port list fail to decode and hide every radio.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        vid = try c.decodeIfPresent(UInt16.self, forKey: .vid)
+        pid = try c.decodeIfPresent(UInt16.self, forKey: .pid)
+        product = try c.decodeIfPresent(String.self, forKey: .product)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+            .flatMap(RadioModel.init(rawValue:))
+        likelyRadio = try c.decode(Bool.self, forKey: .likelyRadio)
+    }
+
+    /// Memberwise init, for tests. `likelyRadio` is derived so a fixture can't
+    /// express a state the core never produces.
+    init(name: String, vid: UInt16? = nil, pid: UInt16? = nil,
+         product: String? = nil, model: RadioModel? = nil) {
+        self.name = name
+        self.vid = vid
+        self.pid = pid
+        self.product = product
+        self.model = model
+        self.likelyRadio = model != nil
     }
 }
 
@@ -162,8 +193,14 @@ struct DumpRadioID: Codable, Identifiable, Hashable {
     var id: Int { index }
 }
 
-/// Top-level payload of `anytone_dump_json`.
-struct CodeplugDump: Codable {
+/// The AnyTone payload of `anytone_dump_json`, carried under the envelope's
+/// `"anytone"` key.
+///
+/// Every entity family is a non-optional `let` on purpose. A core bug that
+/// dropped a whole family would then fail the decode loudly instead of quietly
+/// rendering an empty pane, and nesting the payload is what lets this stay
+/// strict as more models are added.
+struct AnyToneDump: Codable {
     let channels: [DumpChannel]
     let zones: [DumpZone]
     var scanLists: [DumpScanList] = []
@@ -177,6 +214,56 @@ struct CodeplugDump: Codable {
         case scanLists = "scan_lists"
         case groupLists = "group_lists"
         case radioIds = "radio_ids"
+    }
+}
+
+/// Top-level payload of `anytone_dump_json`: the model tag, its capabilities,
+/// and exactly one per-model document payload.
+struct CodeplugDump: Codable {
+    let model: RadioModel
+    let displayName: String
+    let capabilities: Capabilities
+    let anytone: AnyToneDump?
+    let qyt: QytDump?
+
+    enum CodingKeys: String, CodingKey {
+        case model, capabilities, anytone, qyt
+        case displayName = "display_name"
+    }
+
+    /// Decode the envelope and require the payload its `model` names to be
+    /// present. A dump that says "anytone" but carries no `anytone` object is a
+    /// core bug, and failing here surfaces it instead of opening a blank editor.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        model = try c.decode(RadioModel.self, forKey: .model)
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? model.displayName
+        capabilities = try c.decode(Capabilities.self, forKey: .capabilities)
+        anytone = try c.decodeIfPresent(AnyToneDump.self, forKey: .anytone)
+        qyt = try c.decodeIfPresent(QytDump.self, forKey: .qyt)
+        let payloadKey: CodingKeys
+        let hasPayload: Bool
+        switch model {
+        case .anyToneD878UV2:
+            (payloadKey, hasPayload) = (.anytone, anytone != nil)
+        case .qytKt5000:
+            (payloadKey, hasPayload) = (.qyt, qyt != nil)
+        }
+        guard hasPayload else {
+            throw DecodingError.keyNotFound(payloadKey, DecodingError.Context(
+                codingPath: c.codingPath,
+                debugDescription: "dump names model \(model.rawValue) but carries no payload"))
+        }
+    }
+
+    /// Memberwise init, so tests can build a synthetic envelope.
+    init(model: RadioModel, displayName: String? = nil,
+         capabilities: Capabilities, anytone: AnyToneDump?, qyt: QytDump? = nil) {
+        self.model = model
+        self.displayName = displayName ?? model.displayName
+        self.capabilities = capabilities
+        self.anytone = anytone
+        self.qyt = qyt
     }
 }
 

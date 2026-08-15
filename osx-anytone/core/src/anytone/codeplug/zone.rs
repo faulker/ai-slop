@@ -9,7 +9,8 @@
 
 use serde::Serialize;
 
-use super::{read_ascii, write_ascii, CHANNELS_PER_ZONE};
+use super::CHANNELS_PER_ZONE;
+use crate::bytes::{read_ascii, write_ascii};
 use crate::error::{Error, Result};
 
 /// Byte size of a zone name slot (qdmr `Size::zoneName()` = 0x20).

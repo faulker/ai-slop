@@ -176,3 +176,64 @@ struct BulkChannelEditorSheet: View {
         dismiss()
     }
 }
+
+/// Field changes to apply across multiple QYT channels. `nil` means leave
+/// unchanged. Only writable shared settings belong here; name, frequencies and
+/// tones stay single-channel edits, and the unconfirmed flag bits stay out.
+struct BulkQytChannelUpdate {
+    var indices: [Int]
+    /// Core sense: `true` includes the channel in scan, `false` skips it.
+    var scanAdd: Bool? = nil
+}
+
+/// Bulk editor for QYT KT-5000 channels. Same opt-in checkbox pattern as the
+/// AnyTone sheet, scoped to scan skip (the one confirmed writable shared flag).
+struct BulkQytChannelEditorSheet: View {
+    let channels: [DumpQytChannel]
+    let onCommit: (BulkQytChannelUpdate) -> Void
+
+    @State private var changeScanSkip = false
+    /// UI sense: on means skip when scanning. Mapped to `scanAdd = !draftSkip`
+    /// on commit so the store/core keep their stored bit polarity.
+    @State private var draftSkip = true
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        EditorSheet(title: "Bulk Edit \(channels.count) Channels",
+                    onCancel: { dismiss() },
+                    onDone: { commit() }) {
+            Form {
+                HStack(spacing: Spacing.inline) {
+                    Toggle(isOn: $changeScanSkip) {
+                        Text("Skip when scanning")
+                            .frame(width: 140, alignment: .leading)
+                    }
+                    .toggleStyle(.checkbox)
+                    Toggle("", isOn: $draftSkip)
+                        .labelsHidden()
+                        .disabled(!changeScanSkip)
+                }
+            }
+            .formStyle(.grouped)
+
+            Text("Only checked fields will be updated. Unchecked fields keep "
+                + "their current per-channel values.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, Spacing.tight)
+        }
+    }
+
+    /// Build the update from the toggled-on fields and hand it to the caller.
+    private func commit() {
+        guard changeScanSkip else { dismiss(); return }
+
+        var update = BulkQytChannelUpdate(indices: channels.map(\.index))
+        // Invert: the toggle is "skip", the core stores "add to scan".
+        update.scanAdd = !draftSkip
+
+        onCommit(update)
+        dismiss()
+    }
+}

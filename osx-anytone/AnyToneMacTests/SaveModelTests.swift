@@ -199,6 +199,25 @@ final class SaveModelTests: XCTestCase {
         XCTAssertNil(Recovery.pending())
     }
 
+    // MARK: - Rename stability
+
+    /// The app's user-facing name changed to Codeplug, but the on-disk recovery
+    /// location must not move: an unsaved session from before the rename has to
+    /// still be found after upgrading. This asserts the directory itself, not
+    /// just its presence, so a future rename of the path would fail this test.
+    ///
+    /// `ANYTONE_RECOVERY_DIR` is unset here to reach the real (unoverridden)
+    /// path-building code, then restored to `setUpWithError`'s temp override
+    /// before returning — `tearDownWithError` calls `Recovery.clear()` and must
+    /// not run it against the real directory.
+    func testRecoveryDirectoryIsUnchangedByTheRename() {
+        let override = ProcessInfo.processInfo.environment["ANYTONE_RECOVERY_DIR"]
+        unsetenv("ANYTONE_RECOVERY_DIR")
+        defer { if let override { setenv("ANYTONE_RECOVERY_DIR", override, 1) } }
+
+        XCTAssertTrue(Recovery.directory.path.hasSuffix("Application Support/AnyToneMac/Recovery"))
+    }
+
     // MARK: - Version compatibility
 
     /// The FFI-reported expected size is the single source of truth the open

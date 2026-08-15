@@ -1,4 +1,8 @@
-//! C ABI for the AnyToneMac SwiftUI app (Phase 3).
+//! C ABI for the macOS SwiftUI app.
+//!
+//! The `anytone_` symbol prefix is retained for ABI stability and no longer
+//! implies the AnyTone radio: these entry points are model-agnostic and take or
+//! report a [`Model`] id where the model matters.
 //!
 //! Conventions (mirrored by `core/include/anytone_core.h`):
 //! - Strings cross the boundary as UTF-8 C strings. Every `char *` returned by
@@ -12,8 +16,9 @@
 //!   `catch_unwind` and converts a panic into an error status.
 //!
 //! The device functions keep the same safety gates as the CLI: `restore`
-//! requires an explicit `force` flag, checks the identify model string, and the
-//! core verifies every written block by reading it back.
+//! requires an explicit `force` flag, refuses to write unless the connected
+//! radio identifies as the model the FILE is for, and the core verifies every
+//! written block by reading it back.
 
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -23,10 +28,12 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::codeplug::Codeplug;
-use crate::device::{codeplug_size, is_supported_model, Radio};
+use crate::anytone::device::codeplug_size;
+use crate::document::Document;
+use crate::driver::{driver_for, write_verified_image};
+use crate::model::{Capabilities, Model};
 use crate::ports::list_ports;
-use crate::transport::SerialTransport;
+use crate::transport::{SerialTransport, Transport};
 
 /// Serial baud rate; largely ignored by the CDC-ACM driver but set anyway.
 const BAUD: u32 = 115_200;
@@ -46,6 +53,24 @@ struct PortJson {
     pid: Option<u16>,
     product: Option<String>,
     likely_radio: bool,
+    /// The model this port's USB identity names, or null when unrecognized.
+    model: Option<&'static str>,
+}
+
+/// One supported radio, serialized to JSON for [`anytone_models_json`].
+#[derive(Serialize)]
+struct ModelJson {
+    id: &'static str,
+    display_name: &'static str,
+    image_size: usize,
+    capabilities: Capabilities,
+}
+
+/// The identity of a connected radio, serialized for [`anytone_identify_json`].
+#[derive(Serialize)]
+struct IdentityJson {
+    model: &'static str,
+    identity: String,
 }
 
 /// Convert a Rust string into a heap-allocated C string the caller frees with
@@ -119,11 +144,43 @@ unsafe fn ffi_status(err_out: *mut *mut c_char, body: impl FnOnce() -> Result<()
     }
 }
 
-/// Open the serial port and wrap it in a [`Radio`].
-fn open_radio(port: &str) -> Result<Radio<SerialTransport>, String> {
-    SerialTransport::open(port, BAUD, TIMEOUT)
-        .map(Radio::new)
-        .map_err(|e| format!("failed to open {port}: {e}"))
+/// Open the serial port as a bare transport for a [`RadioDriver`] to drive.
+fn open_transport(port: &str) -> Result<SerialTransport, String> {
+    SerialTransport::open(port, BAUD, TIMEOUT).map_err(|e| format!("failed to open {port}: {e}"))
+}
+
+/// Resolve a model id argument that may be null.
+///
+/// A null `model` means "infer from the port's USB identity". Inference can
+/// fail: not every supported radio's USB bridge is in
+/// [`crate::ports::KNOWN_USB_IDS`], and a generic USB-serial adapter names no
+/// model at all. With more than one supported model there is no safe default to
+/// fall back to, so that case is an error naming the models the caller may pass
+/// instead. Speaking the wrong protocol at a radio is exactly what this refuses
+/// to do by accident.
+///
+/// Safety: `model` must be null or a valid NUL-terminated C string.
+unsafe fn resolve_model(model: *const c_char, port: &str) -> Result<Model, String> {
+    if !model.is_null() {
+        let id = arg_str(model, "model")?;
+        return Model::from_id(id).ok_or_else(|| format!("unknown radio model {id:?}"));
+    }
+    model_for_port(port).ok_or_else(|| {
+        let ids: Vec<&str> = Model::ALL.iter().map(|m| m.id()).collect();
+        format!(
+            "cannot tell which radio is on {port}: its USB identity matches no \
+             known radio. Choose the model explicitly (one of: {}).",
+            ids.join(", ")
+        )
+    })
+}
+
+/// The model named by `port`'s USB identity, if the OS reports the port at all
+/// and its VID/PID is one we know.
+fn model_for_port(port: &str) -> Option<Model> {
+    let ports = list_ports().ok()?;
+    let info = ports.into_iter().find(|p| p.name == port)?;
+    info.model
 }
 
 /// Build an `FnMut(done, total)` progress closure that forwards to the
@@ -162,8 +219,86 @@ pub extern "C" fn anytone_codeplug_size() -> usize {
     codeplug_size()
 }
 
+/// Every radio this build supports, as a JSON array:
+/// `[{"id","display_name","image_size","capabilities":{...}}, ...]`.
+/// Returns null and sets `err_out` on failure.
+///
+/// # Safety
+/// `err_out` must be null or a valid pointer to a `char *` slot.
+#[no_mangle]
+pub unsafe extern "C" fn anytone_models_json(err_out: *mut *mut c_char) -> *mut c_char {
+    ffi_string(err_out, || {
+        let json: Vec<ModelJson> = Model::ALL
+            .iter()
+            .map(|m| ModelJson {
+                id: m.id(),
+                display_name: m.display_name(),
+                image_size: m.image_size(),
+                capabilities: m.capabilities(),
+            })
+            .collect();
+        serde_json::to_string(&json).map_err(|e| format!("failed to encode models JSON: {e}"))
+    })
+}
+
+/// Identify which radio the image file `bin_path` belongs to, returning its
+/// model id. Returns null and sets `err_out` when the file cannot be read or
+/// matches no supported radio.
+///
+/// # Safety
+/// `bin_path` must be a valid C string; `err_out` null or a valid `char *`
+/// slot.
+#[no_mangle]
+pub unsafe extern "C" fn anytone_detect_model(
+    bin_path: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_string(err_out, || {
+        let bin_path = arg_str(bin_path, "bin_path")?;
+        let data = fs::read(bin_path).map_err(|e| format!("failed to read {bin_path}: {e}"))?;
+        Model::detect(&data)
+            .map(|m| m.id().to_string())
+            .ok_or_else(|| {
+                format!(
+                    "{bin_path} is {} bytes, which matches no supported radio image",
+                    data.len()
+                )
+            })
+    })
+}
+
+/// The exact byte length of a full codeplug image for `model`. Returns 0 and
+/// sets `err_out` when the model id is unknown.
+///
+/// # Safety
+/// `model` must be a valid C string; `err_out` null or a valid `char *` slot.
+#[no_mangle]
+pub unsafe extern "C" fn anytone_codeplug_size_for(
+    model: *const c_char,
+    err_out: *mut *mut c_char,
+) -> usize {
+    let body = || -> Result<usize, String> {
+        let id = arg_str(model, "model")?;
+        Model::from_id(id)
+            .map(Model::image_size)
+            .ok_or_else(|| format!("unknown radio model {id:?}"))
+    };
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => {
+            set_err(err_out, &e);
+            0
+        }
+        Err(_) => {
+            set_err(err_out, "internal error: panic in anytone-core");
+            0
+        }
+    }
+}
+
 /// Enumerate serial ports as a JSON array:
-/// `[{"name","vid","pid","product","likely_radio"}, ...]`.
+/// `[{"name","vid","pid","product","likely_radio","model"}, ...]`, where
+/// `model` is a model id or null and `likely_radio` is simply `model != null`.
 /// Returns null and sets `err_out` on failure.
 ///
 /// # Safety
@@ -180,14 +315,42 @@ pub unsafe extern "C" fn anytone_ports_json(err_out: *mut *mut c_char) -> *mut c
                 pid: p.pid,
                 product: p.product,
                 likely_radio: p.likely_radio,
+                model: p.model.map(Model::id),
             })
             .collect();
         serde_json::to_string(&json).map_err(|e| format!("failed to encode ports JSON: {e}"))
     })
 }
 
-/// Enter program mode on `port`, identify the radio, exit, and return the
-/// model/version string. Returns null and sets `err_out` on failure.
+/// Handshake with the radio on `port` and return `{"model","identity"}`.
+/// `model` names which protocol to speak and may be null to infer it from the
+/// port's USB identity. Returns null and sets `err_out` on failure.
+///
+/// # Safety
+/// `port` must be a valid C string; `model` null or a valid C string;
+/// `err_out` null or a valid `char *` slot.
+#[no_mangle]
+pub unsafe extern "C" fn anytone_identify_json(
+    port: *const c_char,
+    model: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_string(err_out, || {
+        let port = arg_str(port, "port")?;
+        let model = resolve_model(model, port)?;
+        let identity = identify_with(port, model)?;
+        serde_json::to_string(&IdentityJson {
+            model: model.id(),
+            identity,
+        })
+        .map_err(|e| format!("failed to encode identity JSON: {e}"))
+    })
+}
+
+/// Handshake with the radio on `port` and return only its identity string.
+///
+/// Retained unchanged so existing C consumers keep working;
+/// [`anytone_identify_json`] is the one that also reports the model.
 ///
 /// # Safety
 /// `port` must be a valid C string; `err_out` null or a valid `char *` slot.
@@ -198,26 +361,33 @@ pub unsafe extern "C" fn anytone_identify(
 ) -> *mut c_char {
     ffi_string(err_out, || {
         let port = arg_str(port, "port")?;
-        let mut radio = open_radio(port)?;
-        radio.enter().map_err(|e| e.to_string())?;
-        let model = radio.identify();
-        // Always attempt a clean exit from program mode, even on failure.
-        let exit = radio.exit();
-        let model = model.map_err(|e| e.to_string())?;
-        exit.map_err(|e| e.to_string())?;
-        Ok(model)
+        let model = resolve_model(std::ptr::null(), port)?;
+        identify_with(port, model)
     })
 }
 
+/// Open `port`, run `model`'s identify handshake, and return the identity
+/// string the radio reported.
+fn identify_with(port: &str, model: Model) -> Result<String, String> {
+    let driver = driver_for(model);
+    let mut transport = open_transport(port)?;
+    let mut t: &mut dyn Transport = &mut transport;
+    driver.identify(&mut t).map_err(|e| e.to_string())
+}
+
 /// Read the full codeplug from the radio on `port` into the file `out_path`.
-/// `progress` (nullable) is called after each block with `(done, total)`.
+/// `model` names which protocol to speak and may be null to infer it from the
+/// port's USB identity. `progress` (nullable) is called after each block with
+/// `(done, total)`.
 ///
 /// # Safety
-/// `port`/`out_path` must be valid C strings; `err_out` null or a valid
-/// `char *` slot; `user` is passed through to `progress` unchanged.
+/// `port`/`out_path` must be valid C strings; `model` null or a valid C string;
+/// `err_out` null or a valid `char *` slot; `user` is passed through to
+/// `progress` unchanged.
 #[no_mangle]
 pub unsafe extern "C" fn anytone_backup(
     port: *const c_char,
+    model: *const c_char,
     out_path: *const c_char,
     progress: Option<AnytoneProgress>,
     user: *mut c_void,
@@ -226,22 +396,27 @@ pub unsafe extern "C" fn anytone_backup(
     ffi_status(err_out, || {
         let port = arg_str(port, "port")?;
         let out_path = arg_str(out_path, "out_path")?;
-        let mut radio = open_radio(port)?;
-        radio.enter().map_err(|e| e.to_string())?;
+        let model = resolve_model(model, port)?;
+        let driver = driver_for(model);
+        let mut transport = open_transport(port)?;
+        let mut t: &mut dyn Transport = &mut transport;
         let mut cb = progress_closure(progress, user);
-        let data = radio.read_codeplug(&mut cb);
-        let exit = radio.exit();
-        let data = data.map_err(|e| e.to_string())?;
-        exit.map_err(|e| e.to_string())?;
+        let data = driver
+            .read_image(&mut t, &mut cb)
+            .map_err(|e| e.to_string())?;
         fs::write(out_path, &data).map_err(|e| format!("failed to write {out_path}: {e}"))?;
         Ok(())
     })
 }
 
-/// Write the codeplug file `in_path` back to the radio on `port`, with the
-/// same safety gates as the CLI: `force` must be true, the file size must
-/// match, the identify string must look like a D878UV, and every block is
-/// read back and verified by the core.
+/// Write the codeplug file `in_path` back to the radio on `port`.
+///
+/// The model comes from the FILE, never from the caller: the file's bytes are
+/// what determines which protocol could possibly write them. The connected
+/// radio is then handshaked with that model's driver and its identity checked,
+/// so pointing a file at the wrong radio fails before a single block is sent.
+/// The other gates are unchanged: `force` must be true, and every written block
+/// is read back and verified by the core.
 ///
 /// # Safety
 /// `port`/`in_path` must be valid C strings; `err_out` null or a valid
@@ -259,13 +434,12 @@ pub unsafe extern "C" fn anytone_restore(
         let port = arg_str(port, "port")?;
         let in_path = arg_str(in_path, "in_path")?;
         let data = fs::read(in_path).map_err(|e| format!("failed to read {in_path}: {e}"))?;
-        let expected = codeplug_size();
-        if data.len() != expected {
-            return Err(format!(
-                "codeplug file is {} bytes, expected {expected}",
+        let model = Model::detect(&data).ok_or_else(|| {
+            format!(
+                "codeplug file is {} bytes, which matches no supported radio image",
                 data.len()
-            ));
-        }
+            )
+        })?;
         if !force {
             return Err(
                 "restore overwrites the radio's configuration; take a fresh backup \
@@ -273,28 +447,18 @@ pub unsafe extern "C" fn anytone_restore(
                     .to_string(),
             );
         }
-        let mut radio = open_radio(port)?;
-        radio.enter().map_err(|e| e.to_string())?;
-        let model = radio.identify().map_err(|e| e.to_string())?;
-        if !is_supported_model(&model) {
-            let _ = radio.exit();
-            return Err(format!(
-                "refusing to write: identify string {model:?} is not a supported D878UV radio"
-            ));
-        }
+        let mut transport = open_transport(port)?;
+        let mut t: &mut dyn Transport = &mut transport;
         let mut cb = progress_closure(progress, user);
-        let result = radio.write_codeplug(&data, &mut cb);
-        // Always attempt a clean exit from program mode, even on failure.
-        let exit = radio.exit();
-        result.map_err(|e| e.to_string())?;
-        exit.map_err(|e| e.to_string())?;
-        Ok(())
+        // The model came from the file above; the guard confirms the radio on
+        // the other end agrees before a single write block goes out.
+        write_verified_image(model, &mut t, &data, port, &mut cb)
     })
 }
 
-/// Parse the codeplug file `bin_path` offline and return its channels and
-/// zones as JSON: `{"channels":[...],"zones":[...]}`. Returns null and sets
-/// `err_out` on failure.
+/// Parse the codeplug file `bin_path` offline and return the tagged envelope
+/// `{"model","display_name","capabilities",<model key>:{...}}`. Returns null
+/// and sets `err_out` on failure.
 ///
 /// # Safety
 /// `bin_path` must be a valid C string; `err_out` null or a valid `char *`
@@ -307,18 +471,18 @@ pub unsafe extern "C" fn anytone_dump_json(
     ffi_string(err_out, || {
         let bin_path = arg_str(bin_path, "bin_path")?;
         let data = fs::read(bin_path).map_err(|e| format!("failed to read {bin_path}: {e}"))?;
-        let codeplug = Codeplug::parse(&data).map_err(|e| e.to_string())?;
-        serde_json::to_string(&codeplug.to_json())
+        let document = Document::parse(&data).map_err(|e| e.to_string())?;
+        serde_json::to_string(&document.to_json())
             .map_err(|e| format!("failed to encode codeplug JSON: {e}"))
     })
 }
 
-/// Apply a batch of channel/zone edits to the codeplug file `bin_in` and write
-/// the result to `bin_out` (the two paths may be equal). `edits_json` is
-/// `{"channels":[{"index",..optional "name","rx_frequency_hz",
-/// "tx_frequency_hz"}],"zones":[{"index",optional "name"}]}`. Every edit
-/// round-trips through the `Codeplug` model and is verified by re-parsing the
-/// output, so only the intended bytes change.
+/// Apply a batch of edits to the codeplug file `bin_in` and write the result to
+/// `bin_out` (the two paths may be equal). `edits_json` is the tagged envelope
+/// (`{"anytone":{"channels":[...],"zones":[...]}}`) or, for backward
+/// compatibility, a bare spec with no model key. Every edit round-trips through
+/// the typed model and is verified by re-parsing the output, so only the
+/// intended bytes change.
 ///
 /// # Safety
 /// `bin_in`/`edits_json`/`bin_out` must be valid C strings; `err_out` null or
@@ -338,11 +502,12 @@ pub unsafe extern "C" fn anytone_apply_edits(
     })
 }
 
-/// Load `bin_in`, apply the edits described by `edits_json` through the shared
-/// [`crate::codeplug::apply_edits`], and write the verified result to `bin_out`.
+/// Load `bin_in`, apply the edits described by `edits_json` through
+/// [`crate::document::apply_edits`], and write the verified result to
+/// `bin_out`.
 fn apply_edits_impl(bin_in: &str, edits_json: &str, bin_out: &str) -> Result<(), String> {
     let data = fs::read(bin_in).map_err(|e| format!("failed to read {bin_in}: {e}"))?;
-    let out = crate::codeplug::apply_edits(&data, edits_json)?;
+    let out = crate::document::apply_edits(&data, edits_json)?;
     fs::write(bin_out, &out).map_err(|e| format!("failed to write {bin_out}: {e}"))?;
     Ok(())
 }
@@ -350,11 +515,12 @@ fn apply_edits_impl(bin_in: &str, edits_json: &str, bin_out: &str) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codeplug::{
-        channel_addr, global_offset, set_bcd8_be, write_ascii, zone_channels_addr, zone_name_addr,
-        CHANNEL_BITMAP, CONTACT_BITMAP, ZONE_BITMAP, ZONE_CHANNELS_A, ZONE_CHANNELS_B,
-        ZONE_CHANNELS_SLOT, ZONE_CHANNEL_LIST, ZONE_CHANNEL_LIST_SIZE,
+    use crate::anytone::codeplug::{
+        channel_addr, global_offset, zone_channels_addr, zone_name_addr, Codeplug, CHANNEL_BITMAP,
+        CONTACT_BITMAP, ZONE_BITMAP, ZONE_CHANNELS_A, ZONE_CHANNELS_B, ZONE_CHANNELS_SLOT,
+        ZONE_CHANNEL_LIST, ZONE_CHANNEL_LIST_SIZE,
     };
+    use crate::bytes::{set_bcd8_be, write_ascii};
     use std::path::PathBuf;
 
     /// Build a minimal synthetic codeplug image: channel 0 (digital, 439 MHz
@@ -448,6 +614,8 @@ mod tests {
         let out = unsafe { anytone_dump_json(cpath.as_ptr(), &mut err) };
         let json = take(out);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["model"], "anytone-d878uv2");
+        let v = &v["anytone"];
         assert_eq!(v["channels"][0]["name"], "CALLING");
         assert_eq!(v["channels"][0]["rx_frequency_hz"], 439_000_000);
         assert_eq!(v["channels"][0]["color_code"], 1);
@@ -512,6 +680,275 @@ mod tests {
     }
 
     #[test]
+    fn models_json_lists_the_anytone() {
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let json = take(unsafe { anytone_models_json(&mut err) });
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let models = v.as_array().unwrap();
+        assert_eq!(models.len(), Model::ALL.len());
+        assert_eq!(models[0]["id"], "anytone-d878uv2");
+        assert_eq!(models[0]["display_name"], "AnyTone AT-D878UVII Plus");
+        assert_eq!(models[0]["image_size"], codeplug_size());
+        assert_eq!(models[0]["capabilities"]["supports_dmr"], true);
+        assert_eq!(
+            models[0]["capabilities"]["sections"]
+                .as_array()
+                .unwrap()
+                .len(),
+            7
+        );
+    }
+
+    #[test]
+    fn detect_model_recognizes_the_anytone_image() {
+        let path = temp_path("detect.bin");
+        fs::write(&path, synthetic_image()).unwrap();
+        let cpath = c(path.to_str().unwrap());
+        let mut err: *mut c_char = std::ptr::null_mut();
+        assert_eq!(
+            take(unsafe { anytone_detect_model(cpath.as_ptr(), &mut err) }),
+            "anytone-d878uv2"
+        );
+
+        // A file of any other length belongs to no radio this build knows.
+        fs::write(&path, vec![0u8; 12_800]).unwrap();
+        let mut err2: *mut c_char = std::ptr::null_mut();
+        assert!(unsafe { anytone_detect_model(cpath.as_ptr(), &mut err2) }.is_null());
+        assert!(take(err2).contains("matches no supported radio image"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn codeplug_size_for_matches_the_model_and_rejects_unknown_ids() {
+        let cid = c("anytone-d878uv2");
+        let mut err: *mut c_char = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { anytone_codeplug_size_for(cid.as_ptr(), &mut err) },
+            codeplug_size()
+        );
+
+        let qid = c("qyt-kt5000");
+        let mut errq: *mut c_char = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { anytone_codeplug_size_for(qid.as_ptr(), &mut errq) },
+            crate::qyt::device::IMAGE_SIZE
+        );
+
+        let bogus = c("no-such-radio");
+        let mut err2: *mut c_char = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { anytone_codeplug_size_for(bogus.as_ptr(), &mut err2) },
+            0
+        );
+        assert!(take(err2).contains("unknown radio model"));
+    }
+
+    /// A hand-built QYT image, tag included so the detector recognizes it.
+    fn synthetic_qyt_image() -> Vec<u8> {
+        crate::qyt::codeplug::test_support::synthetic_qyt_image()
+    }
+
+    #[test]
+    fn detect_model_names_the_qyt_image() {
+        let path = temp_path("detect-qyt.bin");
+        fs::write(&path, synthetic_qyt_image()).unwrap();
+        let cpath = c(path.to_str().unwrap());
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let id = take(unsafe { anytone_detect_model(cpath.as_ptr(), &mut err) });
+        assert_eq!(id, "qyt-kt5000");
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn models_json_lists_both_radios() {
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let json = take(unsafe { anytone_models_json(&mut err) });
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let ids: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["anytone-d878uv2", "qyt-kt5000"]);
+        let qyt = &v[1];
+        assert_eq!(qyt["display_name"], "QYT KT-5000");
+        assert_eq!(qyt["image_size"], 12_800);
+        assert_eq!(qyt["capabilities"]["channel_capacity"], 200);
+        assert_eq!(qyt["capabilities"]["supports_dmr"], false);
+    }
+
+    #[test]
+    fn dump_json_reports_the_qyt_envelope() {
+        let path = temp_path("dump-qyt.bin");
+        fs::write(&path, synthetic_qyt_image()).unwrap();
+        let cpath = c(path.to_str().unwrap());
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let json = take(unsafe { anytone_dump_json(cpath.as_ptr(), &mut err) });
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(v["model"], "qyt-kt5000");
+        assert_eq!(v["display_name"], "QYT KT-5000");
+        assert_eq!(v["capabilities"]["sections"][0], "qyt_channels");
+        assert_eq!(v["qyt"]["channels"][0]["name"], "FRS-01");
+        assert_eq!(v["qyt"]["channels"][2]["tx_tone"]["hz_tenths"], 1000);
+        assert_eq!(v["qyt"]["settings"]["squelch"], 6);
+        assert_eq!(v["qyt"]["bands"].as_array().unwrap().len(), 2);
+        assert!(v.get("anytone").is_none());
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn apply_edits_roundtrips_a_qyt_envelope() {
+        let input = synthetic_qyt_image();
+        let pin = temp_path("qyt-edit-in.bin");
+        let pout = temp_path("qyt-edit-out.bin");
+        fs::write(&pin, &input).unwrap();
+
+        let edits = r#"{"qyt":{
+            "channels":[{"index":0,"name":"FFI","rx_tone":{"kind":"ctcss","hz_tenths":885}}],
+            "settings":{"squelch":3}
+        }}"#;
+        let (cin, cedits, cout) = (
+            c(pin.to_str().unwrap()),
+            c(edits),
+            c(pout.to_str().unwrap()),
+        );
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let status =
+            unsafe { anytone_apply_edits(cin.as_ptr(), cedits.as_ptr(), cout.as_ptr(), &mut err) };
+        assert_eq!(status, 0, "apply_edits failed: {}", take(err));
+
+        let out = fs::read(&pout).unwrap();
+        let cp = crate::qyt::codeplug::QytCodeplug::parse(&out).unwrap();
+        let ch = cp.channels().next().unwrap();
+        assert_eq!(ch.name, "FFI");
+        assert_eq!(
+            ch.rx_tone,
+            crate::qyt::codeplug::Tone::Ctcss { hz_tenths: 885 }
+        );
+        assert_eq!(cp.settings().squelch, 3);
+        // Channel 0's unnamed byte-15 bits survived the C ABI round trip.
+        assert_eq!(out[15], 0x24);
+
+        fs::remove_file(&pin).ok();
+        fs::remove_file(&pout).ok();
+    }
+
+    #[test]
+    fn apply_edits_rejects_a_batch_meant_for_the_other_radio() {
+        let pin = temp_path("qyt-misaddressed-in.bin");
+        let pout = temp_path("qyt-misaddressed-out.bin");
+        fs::write(&pin, synthetic_qyt_image()).unwrap();
+        let (cin, cedits, cout) = (
+            c(pin.to_str().unwrap()),
+            c(r#"{"anytone":{"channels":[{"index":0,"name":"NO"}]}}"#),
+            c(pout.to_str().unwrap()),
+        );
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let status =
+            unsafe { anytone_apply_edits(cin.as_ptr(), cedits.as_ptr(), cout.as_ptr(), &mut err) };
+        assert_eq!(status, -1);
+        assert!(take(err).contains("addressed to a different radio"));
+        assert!(!pout.exists(), "a rejected edit must write no output file");
+        fs::remove_file(&pin).ok();
+    }
+
+    #[test]
+    fn ports_json_reports_a_model_alongside_likely_radio() {
+        // Without hardware the list is usually empty, so this pins the contract
+        // rather than the contents: the two fields must always agree.
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let json = take(unsafe { anytone_ports_json(&mut err) });
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for p in v.as_array().unwrap() {
+            assert!(p.get("model").is_some(), "every port carries a model key");
+            assert_eq!(p["likely_radio"], !p["model"].is_null());
+        }
+    }
+
+    #[test]
+    fn resolve_model_errors_on_an_unknown_port_with_no_explicit_model() {
+        // A path no serial port has, so the USB lookup can name nothing. With
+        // two supported models, guessing one would mean speaking the wrong
+        // protocol at somebody's radio.
+        let err = unsafe { resolve_model(std::ptr::null(), "/dev/cu.not-a-real-port") }
+            .expect_err("an unattributable port must not resolve to a default model");
+        assert!(err.contains("/dev/cu.not-a-real-port"), "{err}");
+        assert!(
+            err.contains("qyt-kt5000"),
+            "the error must list what to pass: {err}"
+        );
+        assert!(err.contains("anytone-d878uv2"), "{err}");
+    }
+
+    #[test]
+    fn resolve_model_honours_an_explicit_model_on_an_unknown_port() {
+        // This is the whole QYT story until its VID/PID is known.
+        let id = c("qyt-kt5000");
+        let m = unsafe { resolve_model(id.as_ptr(), "/dev/cu.not-a-real-port") }.unwrap();
+        assert_eq!(m, Model::QytKt5000);
+
+        let bogus = c("no-such-radio");
+        let err = unsafe { resolve_model(bogus.as_ptr(), "/dev/cu.not-a-real-port") }
+            .expect_err("an unknown model id must be rejected, not inferred around");
+        assert!(err.contains("no-such-radio"), "{err}");
+    }
+
+    #[test]
+    fn dump_json_reports_model_and_capabilities() {
+        let path = temp_path("envelope.bin");
+        fs::write(&path, synthetic_image()).unwrap();
+        let cpath = c(path.to_str().unwrap());
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let json = take(unsafe { anytone_dump_json(cpath.as_ptr(), &mut err) });
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["model"], "anytone-d878uv2");
+        assert_eq!(v["display_name"], "AnyTone AT-D878UVII Plus");
+        assert_eq!(v["capabilities"]["channel_name_length"], 16);
+        assert_eq!(v["capabilities"]["power_options"][0]["tag"], "Low");
+        assert_eq!(v["anytone"]["channels"][0]["name"], "CALLING");
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn apply_edits_accepts_a_legacy_flat_spec() {
+        // The pre-envelope shape the CLI still sends. Keeping it working is why
+        // the envelope treats a missing model key as "this whole object is the
+        // spec" rather than as an empty edit batch.
+        let pin = temp_path("legacy-in.bin");
+        let pout = temp_path("legacy-out.bin");
+        fs::write(&pin, synthetic_image()).unwrap();
+        let (cin, ce, cout) = (
+            c(pin.to_str().unwrap()),
+            c(r#"{"channels":[{"index": 0, "name": "LEGACY"}]}"#),
+            c(pout.to_str().unwrap()),
+        );
+        let mut err: *mut c_char = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { anytone_apply_edits(cin.as_ptr(), ce.as_ptr(), cout.as_ptr(), &mut err) },
+            0,
+            "legacy flat spec was rejected"
+        );
+        let cp = Codeplug::parse(&fs::read(&pout).unwrap()).unwrap();
+        assert_eq!(cp.channels().next().unwrap().name, "LEGACY");
+
+        // And the tagged form reaches the same code path.
+        let ce2 = c(r#"{"anytone":{"channels":[{"index": 0, "name": "TAGGED"}]}}"#);
+        let mut err2: *mut c_char = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { anytone_apply_edits(cin.as_ptr(), ce2.as_ptr(), cout.as_ptr(), &mut err2) },
+            0,
+            "tagged envelope was rejected"
+        );
+        let cp = Codeplug::parse(&fs::read(&pout).unwrap()).unwrap();
+        assert_eq!(cp.channels().next().unwrap().name, "TAGGED");
+
+        fs::remove_file(&pin).ok();
+        fs::remove_file(&pout).ok();
+    }
+
+    #[test]
     fn apply_edits_rejects_inactive_channel() {
         let pin = temp_path("inactive.bin");
         fs::write(&pin, synthetic_image()).unwrap();
@@ -544,7 +981,11 @@ mod tests {
             "add_group_lists": [{"name": "LOCAL", "members": [0]}],
             "add_radio_ids": [{"name": "HOME", "number": 3141592}]
         }"#;
-        let (cin, ce, cout) = (c(pin.to_str().unwrap()), c(edits), c(pout.to_str().unwrap()));
+        let (cin, ce, cout) = (
+            c(pin.to_str().unwrap()),
+            c(edits),
+            c(pout.to_str().unwrap()),
+        );
         let mut err: *mut c_char = std::ptr::null_mut();
         let status =
             unsafe { anytone_apply_edits(cin.as_ptr(), ce.as_ptr(), cout.as_ptr(), &mut err) };
@@ -554,6 +995,7 @@ mod tests {
         let mut err2: *mut c_char = std::ptr::null_mut();
         let json = take(unsafe { anytone_dump_json(cout.as_ptr(), &mut err2) });
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let v = &v["anytone"];
         assert_eq!(v["channels"].as_array().unwrap().len(), 2);
         assert_eq!(v["contacts"][0]["name"], "LOCAL 9");
         assert_eq!(v["contacts"][0]["number"], 9);
@@ -607,9 +1049,13 @@ mod tests {
         let mut err3: *mut c_char = std::ptr::null_mut();
         let json = take(unsafe { anytone_dump_json(cin.as_ptr(), &mut err3) });
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let v = &v["anytone"];
         assert_eq!(v["contacts"].as_array().unwrap().len(), 1);
         assert_eq!(v["contacts"][0]["index"], 1);
-        assert_eq!(v["group_lists"][0]["members"].as_array().unwrap(), &vec![serde_json::json!(1)]);
+        assert_eq!(
+            v["group_lists"][0]["members"].as_array().unwrap(),
+            &vec![serde_json::json!(1)]
+        );
 
         fs::remove_file(&pin).ok();
     }
@@ -659,11 +1105,27 @@ mod tests {
 
     #[test]
     fn identify_bad_port_sets_error() {
+        // With an explicit model there is nothing to infer, so the failure is
+        // the port itself.
+        let cport = c("/dev/nonexistent-anytone-port");
+        let cmodel = c("anytone-d878uv2");
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let out =
+            unsafe { anytone_identify_json(cport.as_ptr(), cmodel.as_ptr(), &mut err) };
+        assert!(out.is_null());
+        assert!(take(err).contains("failed to open"));
+    }
+
+    #[test]
+    fn an_unrecognized_port_with_no_model_is_ambiguous_now_that_there_are_two() {
+        // The legacy shim carries no model parameter. With one supported radio
+        // it could assume; with two it must say so rather than guess and then
+        // talk the wrong protocol at whatever is plugged in.
         let cport = c("/dev/nonexistent-anytone-port");
         let mut err: *mut c_char = std::ptr::null_mut();
         let out = unsafe { anytone_identify(cport.as_ptr(), &mut err) };
         assert!(out.is_null());
-        assert!(take(err).contains("failed to open"));
+        assert!(take(err).contains("cannot tell which radio"));
     }
 
     #[test]

@@ -182,6 +182,19 @@ final class CodeplugDumpTests: XCTestCase {
     func testDecodesCoreJSON() throws {
         let json = """
         {
+          "model": "anytone-d878uv2",
+          "display_name": "AnyTone AT-D878UVII Plus",
+          "capabilities": {
+            "sections": ["channels", "zones", "scan_lists", "contacts",
+                         "group_lists", "radio_ids", "aprs", "future_section"],
+            "channel_capacity": 4000, "channel_name_length": 16,
+            "supports_dmr": true, "tone_encoding": "table_index",
+            "power_options": [{"tag": "Low", "label": "Low"},
+                              {"tag": "Turbo", "label": "Turbo"}],
+            "bandwidth_options": [{"tag": "Narrow", "label": "Narrow"},
+                                  {"tag": "Wide", "label": "Wide"}]
+          },
+          "anytone": {
           "channels": [{
             "index": 0, "name": "Simplex", "rx_frequency_hz": 146520000,
             "tx_frequency_hz": 146520000, "mode": "Analog", "power": "High",
@@ -210,10 +223,20 @@ final class CodeplugDumpTests: XCTestCase {
             "manual_tx_interval": 5, "auto_tx_interval": 45, "fm_power": 3,
             "fm_tx_frequency_hz": 144390000
           }
+          }
         }
         """
-        let dump = try JSONDecoder().decode(CodeplugDump.self, from: Data(json.utf8))
+        let envelope = try JSONDecoder().decode(CodeplugDump.self, from: Data(json.utf8))
+        XCTAssertEqual(envelope.model, .anyToneD878UV2)
+        XCTAssertEqual(envelope.displayName, "AnyTone AT-D878UVII Plus")
+        XCTAssertEqual(envelope.capabilities.channelCapacity, 4000)
+        XCTAssertEqual(envelope.capabilities.powerOptions.last?.label, "Turbo")
+        // "future_section" is a section this build has no pane for. Dropping it
+        // rather than throwing is what keeps an older app usable against a newer
+        // core.
+        XCTAssertEqual(envelope.capabilities.sections, CodeplugSection.anyToneSections)
 
+        let dump = try XCTUnwrap(envelope.anytone)
         XCTAssertEqual(dump.channels.first?.rxFrequencyHz, 146_520_000)
         XCTAssertEqual(dump.channels.first?.groupListIndex, 255)
         XCTAssertEqual(dump.channels.first?.rxSignalingMode, "Ctcss")
@@ -236,8 +259,8 @@ final class CodeplugDumpTests: XCTestCase {
 @MainActor
 final class CodeplugStoreTests: XCTestCase {
 
-    private func makeDump() -> CodeplugDump {
-        CodeplugDump(
+    private func makeAnyToneDump() -> AnyToneDump {
+        AnyToneDump(
             channels: [DumpChannel(index: 0, name: "Simplex", rxFrequencyHz: 146_520_000,
                                    txFrequencyHz: 146_520_000, mode: "Analog", power: "High",
                                    bandwidth: "Wide", colorCode: 1, timeSlot: 1,
@@ -246,6 +269,24 @@ final class CodeplugStoreTests: XCTestCase {
             contacts: [DumpContact(index: 0, name: "Parrot", number: 9990, callType: "Private")],
             groupLists: [DumpGroupList(index: 0, name: "Wide", members: [0])],
             radioIds: [DumpRadioID(index: 0, name: "Me", number: 3_113_043)]
+        )
+    }
+
+    /// A full envelope with whatever section list the caller wants, so a
+    /// document whose radio lacks a section can be simulated without a .bin.
+    private func makeDump(sections: [CodeplugSection] = CodeplugSection.anyToneSections) -> CodeplugDump {
+        CodeplugDump(
+            model: .anyToneD878UV2,
+            capabilities: Capabilities(
+                sections: sections,
+                channelCapacity: 4000,
+                channelNameLength: 16,
+                supportsDMR: true,
+                toneEncoding: "table_index",
+                powerOptions: [PickerOption(tag: "Low", label: "Low")],
+                bandwidthOptions: [PickerOption(tag: "Wide", label: "Wide")]
+            ),
+            anytone: makeAnyToneDump()
         )
     }
 
@@ -266,6 +307,89 @@ final class CodeplugStoreTests: XCTestCase {
         let store = CodeplugStore()
         store.load(makeDump(), url: URL(fileURLWithPath: "/tmp/codeplug.bin"))
         XCTAssertEqual(store.channels.first?.id, store.channels.first?.index)
+    }
+
+    func testSectionsForAnyToneAreTheFullSet() {
+        let store = CodeplugStore()
+        // Before anything is open the sidebar still shows the AnyTone shape, so
+        // it doesn't collapse and then jump back when a file arrives.
+        XCTAssertEqual(store.sections, CodeplugSection.anyToneSections)
+
+        store.load(makeDump(), url: URL(fileURLWithPath: "/tmp/codeplug.bin"))
+        XCTAssertEqual(store.model, .anyToneD878UV2)
+        XCTAssertEqual(store.sections, CodeplugSection.anyToneSections)
+        XCTAssertTrue(store.capabilities.supportsDMR)
+    }
+
+    /// The sidebar's selection is invalidated by `ContentView`'s onChange when a
+    /// document's radio has no such section. This drives the store side of that:
+    /// the section really does disappear from `sections`.
+    func testSidebarSelectionResetsWhenItsSectionDisappears() {
+        let store = CodeplugStore()
+        var selection = SidebarItem.codeplug(.aprs)
+
+        let withoutAPRS = CodeplugSection.anyToneSections.filter { $0 != .aprs }
+        store.load(makeDump(sections: withoutAPRS),
+                   url: URL(fileURLWithPath: "/tmp/codeplug.bin"))
+        XCTAssertFalse(store.sections.contains(.aprs))
+
+        // The exact expression ContentView applies on a capabilities change.
+        if case .codeplug(let section) = selection,
+           !store.capabilities.sections.contains(section) {
+            selection = .device
+        }
+        XCTAssertEqual(selection, .device)
+    }
+
+    func testIncompatibilityReasonNamesTheDetectedModel() throws {
+        let store = CodeplugStore()
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+
+        // A real AnyTone-sized image is detected, so there is no complaint.
+        let good = dir.appendingPathComponent("compat-\(UUID().uuidString).bin")
+        try Data(count: RadioCore.expectedCodeplugSize).write(to: good)
+        defer { try? FileManager.default.removeItem(at: good) }
+        XCTAssertNil(store.incompatibilityReason(for: good))
+        XCTAssertEqual(try RadioCore.detectModel(binPath: good.path), .anyToneD878UV2)
+
+        // A file matching no radio is named against every model the core knows,
+        // not against a hardcoded AnyTone.
+        let bad = dir.appendingPathComponent("incompat-\(UUID().uuidString).bin")
+        try Data(count: 12_800).write(to: bad)
+        defer { try? FileManager.default.removeItem(at: bad) }
+        let reason = try XCTUnwrap(store.incompatibilityReason(for: bad))
+        XCTAssertTrue(reason.contains("12800"), reason)
+        for model in RadioCore.supportedModels {
+            XCTAssertTrue(reason.contains(model.displayName), reason)
+            XCTAssertTrue(reason.contains("\(model.imageSize)"), reason)
+        }
+    }
+}
+
+/// The model layer the app reads off the core, rather than off a parallel Swift
+/// table that could drift from it.
+final class RadioModelTests: XCTestCase {
+
+    func testSupportedModelsComeFromTheCore() throws {
+        let models = RadioCore.supportedModels
+        XCTAssertEqual(models.map(\.id), [.anyToneD878UV2, .qytKt5000])
+        let anytone = try XCTUnwrap(models.first)
+        XCTAssertEqual(anytone.imageSize, RadioCore.expectedCodeplugSize)
+        XCTAssertEqual(anytone.capabilities.sections, CodeplugSection.anyToneSections)
+    }
+
+    func testCodeplugSizeForMatchesTheLegacyConstant() throws {
+        XCTAssertEqual(try RadioCore.codeplugSize(for: .anyToneD878UV2),
+                       RadioCore.expectedCodeplugSize)
+    }
+
+    /// The raw values are the core's JSON keys, not display text. Getting this
+    /// wrong makes `capabilities.sections` decode to an empty sidebar.
+    func testSectionRawValuesMatchTheCoreJSONKeys() {
+        XCTAssertEqual(CodeplugSection.scanLists.rawValue, "scan_lists")
+        XCTAssertEqual(CodeplugSection.groupLists.rawValue, "group_lists")
+        XCTAssertEqual(CodeplugSection.radioIds.rawValue, "radio_ids")
+        XCTAssertEqual(CodeplugSection.scanLists.title, "Scan Lists")
     }
 }
 

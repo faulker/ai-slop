@@ -43,7 +43,10 @@ fn dump_rejects_wrong_size_file() {
         .output()
         .expect("failed to run anytone-cli");
 
-    assert!(!output.status.success(), "dump should fail on a wrong-size file");
+    assert!(
+        !output.status.success(),
+        "dump should fail on a wrong-size file"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

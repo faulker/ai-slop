@@ -55,6 +55,36 @@ enum RadioCore {
     /// incompatible file with a clear message before touching it.
     static var expectedCodeplugSize: Int { anytone_codeplug_size() }
 
+    /// Every radio this build supports, as the core describes them. Read once
+    /// per call; the list is a handful of entries and never changes at runtime.
+    static var supportedModels: [SupportedModel] {
+        var err: UnsafeMutablePointer<CChar>? = nil
+        guard let json = consume(anytone_models_json(&err)) else {
+            _ = consume(err)
+            return []
+        }
+        return (try? decode([SupportedModel].self, from: json)) ?? []
+    }
+
+    /// Which radio the image file at `binPath` belongs to. Throws when the file
+    /// can't be read or matches no supported radio.
+    static func detectModel(binPath: String) throws -> RadioModel {
+        var err: UnsafeMutablePointer<CChar>? = nil
+        guard let id = consume(anytone_detect_model(binPath, &err)) else { throw nativeError(err) }
+        guard let model = RadioModel(rawValue: id) else {
+            throw RadioCoreError.native("the core reported an unknown radio model “\(id)”")
+        }
+        return model
+    }
+
+    /// The exact byte length of a full codeplug image for `model`.
+    static func codeplugSize(for model: RadioModel) throws -> Int {
+        var err: UnsafeMutablePointer<CChar>? = nil
+        let size = anytone_codeplug_size_for(model.rawValue, &err)
+        guard size != 0 else { throw nativeError(err) }
+        return size
+    }
+
     /// Enumerate serial ports, flagging likely radios.
     static func listPorts() throws -> [PortEntry] {
         var err: UnsafeMutablePointer<CChar>? = nil
@@ -69,21 +99,36 @@ enum RadioCore {
         return model
     }
 
+    /// Identify the radio on `port`, reporting which model answered as well as
+    /// its raw identity string. `model` selects which protocol to speak; nil
+    /// lets the core infer it from the port's USB identity.
+    static func identity(port: String, model: RadioModel? = nil) throws -> RadioIdentity {
+        var err: UnsafeMutablePointer<CChar>? = nil
+        guard let json = consume(anytone_identify_json(port, model?.rawValue, &err)) else {
+            throw nativeError(err)
+        }
+        return try decode(RadioIdentity.self, from: json)
+    }
+
     /// Read the full codeplug from the radio into the file at `path`.
-    /// `progress` is called on the calling (background) thread.
-    static func backup(port: String, to path: String, progress: @escaping (Int, Int) -> Void) throws {
+    /// `model` selects which protocol to speak; nil lets the core infer it from
+    /// the port's USB identity. `progress` is called on the calling
+    /// (background) thread.
+    static func backup(port: String, model: RadioModel? = nil, to path: String,
+                       progress: @escaping (Int, Int) -> Void) throws {
         var err: UnsafeMutablePointer<CChar>? = nil
         let box = ProgressBox(progress)
         let user = Unmanaged.passRetained(box).toOpaque()
         defer { Unmanaged<ProgressBox>.fromOpaque(user).release() }
-        if anytone_backup(port, path, progressTrampoline, user, &err) != 0 {
+        if anytone_backup(port, model?.rawValue, path, progressTrampoline, user, &err) != 0 {
             throw nativeError(err)
         }
     }
 
     /// Write the codeplug file at `path` back to the radio. `force` must be
-    /// true or the core refuses (same gate as the CLI); the core also checks
-    /// the model string and read-back verifies every block.
+    /// true or the core refuses (same gate as the CLI). The core takes the model
+    /// from the file itself and refuses to write if the connected radio doesn't
+    /// identify as that model, and read-back verifies every block.
     static func restore(port: String, from path: String, force: Bool,
                         progress: @escaping (Int, Int) -> Void) throws {
         var err: UnsafeMutablePointer<CChar>? = nil
@@ -102,11 +147,15 @@ enum RadioCore {
         return try decode(CodeplugDump.self, from: json)
     }
 
-    /// Apply a batch of edits (channels, zones, contacts, group lists, radio
-    /// IDs; add/remove/update) to `input`, writing the result to `output` (the
-    /// paths may be equal). Edits round-trip through the Rust Codeplug model and
+    /// Apply a batch of edits to `input`, writing the result to `output` (the
+    /// paths may be equal). Edits round-trip through the Rust codeplug model and
     /// are verified by re-parsing.
-    static func applyEdits(input: String, spec: EditSpec, output: String) throws {
+    ///
+    /// `spec` is generic over the encodable edit shapes because each radio has
+    /// its own: the AnyTone still sends its `EditSpec` bare, which the core
+    /// accepts for backward compatibility, while the QYT sends a
+    /// `QytEditEnvelope` that names the model it is addressed to.
+    static func applyEdits<Spec: Encodable>(input: String, spec: Spec, output: String) throws {
         let data: Data
         do {
             data = try JSONEncoder().encode(spec)

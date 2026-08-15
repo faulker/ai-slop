@@ -11,7 +11,7 @@ enum SidebarItem: Hashable, Identifiable {
     var label: String {
         switch self {
         case .device: return "Device"
-        case .codeplug(let section): return section.rawValue
+        case .codeplug(let section): return section.title
         }
     }
 
@@ -40,7 +40,7 @@ struct ContentView: View {
                 // even with no file open (when the codeplug panes are disabled).
                 .toolbar { FileToolbar() }
         }
-        .navigationTitle(store.fileURL?.lastPathComponent ?? "AnyTone Mac")
+        .navigationTitle(store.fileURL?.lastPathComponent ?? "Codeplug")
         .navigationSubtitle(store.isDirty ? "Edited" : "")
         // A radio read/write can run for minutes and can be kicked off from any
         // pane, so its progress takes over the center of the window rather than
@@ -50,6 +50,13 @@ struct ContentView: View {
         // A closed file can't have a section selected.
         .onChange(of: store.fileURL) { url in
             if url == nil, case .codeplug = selection { selection = .device }
+        }
+        // Opening a document for a radio without the selected section would
+        // otherwise leave the sidebar pointing at a row that no longer exists.
+        .onChange(of: store.capabilities) { caps in
+            if case .codeplug(let section) = selection, !caps.sections.contains(section) {
+                selection = .device
+            }
         }
         .alert("Error", isPresented: errorBinding) {
             Button("OK", role: .cancel) {}
@@ -69,7 +76,7 @@ struct ContentView: View {
             Button("Discard", role: .destructive) { store.discardRecovery() }
         } message: { manifest in
             Text("""
-            AnyTone Mac quit unexpectedly with unsaved changes to \
+            Codeplug quit unexpectedly with unsaved changes to \
             "\(URL(fileURLWithPath: manifest.originalPath).lastPathComponent)". \
             You can pick up where you left off, or discard them and open the file as saved.
             """)
@@ -81,7 +88,7 @@ struct ContentView: View {
             if completion.kind == .read, let url = completion.fileURL {
                 Button("Open in Editor") {
                     store.open(url: url)
-                    selection = .codeplug(.channels)
+                    selection = store.sections.first.map(SidebarItem.codeplug) ?? .device
                 }
                 Button("Not Now", role: .cancel) {}
             } else {
@@ -129,7 +136,7 @@ struct ContentView: View {
                 row(.device)
             }
             Section("Codeplug") {
-                ForEach(CodeplugSection.allCases) { section in
+                ForEach(store.sections) { section in
                     row(.codeplug(section))
                         // Kept visible but inert with no file open: hiding these
                         // would make the sidebar jump on open and would hide what

@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 
-use super::{get_bcd8_be, read_ascii, set_bcd8_be, write_ascii};
+use crate::bytes::{get_bcd8_be, read_ascii, set_bcd8_be, write_ascii};
 use crate::error::{Error, Result};
 
 /// Size of a radio-ID record in bytes (qdmr `RadioIDElement::size()` = 0x20).
@@ -60,7 +60,11 @@ impl RadioId {
 
     /// Set the radio-ID name, rewriting only the 16-byte name field.
     pub fn set_name(&mut self, name: &str) {
-        write_ascii(&mut self.raw[NAME_OFFSET..NAME_OFFSET + NAME_LEN], name, 0x00);
+        write_ascii(
+            &mut self.raw[NAME_OFFSET..NAME_OFFSET + NAME_LEN],
+            name,
+            0x00,
+        );
         *self = Self::from_raw(self.index, self.raw);
     }
 

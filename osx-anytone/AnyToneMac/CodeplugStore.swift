@@ -88,6 +88,15 @@ enum Recovery {
 final class CodeplugStore: ObservableObject {
     /// The user's document. Written only by `save()`.
     @Published private(set) var fileURL: URL?
+
+    /// Which radio the open document belongs to, or nil with nothing open.
+    @Published private(set) var model: RadioModel?
+
+    /// What the open document's radio can hold. Falls back to the AnyTone shape
+    /// with nothing open so the sidebar doesn't collapse and then jump when a
+    /// file is opened.
+    @Published private(set) var capabilities: Capabilities = .anyTonePlaceholder
+
     @Published private(set) var channels: [DumpChannel] = []
     @Published private(set) var zones: [DumpZone] = []
     @Published private(set) var scanLists: [DumpScanList] = []
@@ -96,6 +105,15 @@ final class CodeplugStore: ObservableObject {
     @Published private(set) var contacts: [DumpContact] = []
     @Published private(set) var groupLists: [DumpGroupList] = []
     @Published private(set) var radioIds: [DumpRadioID] = []
+
+    // The QYT payload. Exactly one of the two families is populated at a time:
+    // `load` fills the one the open document's model names and clears the other.
+    @Published private(set) var qytChannels: [DumpQytChannel] = []
+    @Published private(set) var qytSettings: DumpQytSettings?
+    @Published private(set) var qytBands: [DumpQytBand] = []
+    /// The radio's own ASCII tag at `0x0FE0`, read-only and empty with no QYT
+    /// document open.
+    @Published private(set) var qytModelTag = ""
 
     /// True when the work file holds changes the document doesn't have yet.
     @Published private(set) var isDirty = false
@@ -151,7 +169,7 @@ final class CodeplugStore: ObservableObject {
             // slots they touched, so every section is flagged and no row is. The
             // alternative — showing nothing as edited — would be a lie.
             unsavedSlots = [:]
-            unsavedSections = Set(CodeplugSection.allCases)
+            unsavedSections = Set(sections)
             clearHistory()
             pendingRecovery = nil
             setStatus("Restored unsaved changes to \(original.lastPathComponent)")
@@ -200,29 +218,46 @@ final class CodeplugStore: ObservableObject {
             clearUnsaved()
             clearHistory()
             Recovery.clearManifest()
-            setStatus("Opened \(url.lastPathComponent): \(channels.count) channels, "
-                + "\(zones.count) zones, \(contacts.count) contacts, "
-                + "\(groupLists.count) group lists, \(radioIds.count) radio IDs")
+            setStatus("Opened \(url.lastPathComponent): \(entitySummary)")
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// What the open document holds, counted per the radio it belongs to. The
+    /// QYT has no zones, contacts, group lists or radio IDs, so reporting the
+    /// AnyTone families for it would print five zeros.
+    private var entitySummary: String {
+        if model == .qytKt5000 {
+            return "\(qytChannels.count) channels, \(qytBands.count) VFO channels"
+        }
+        return "\(channels.count) channels, \(zones.count) zones, "
+            + "\(contacts.count) contacts, \(groupLists.count) group lists, "
+            + "\(radioIds.count) radio IDs"
     }
 
     /// A plain-language reason `url` is not a codeplug this build can open, or
     /// nil if its size matches what the core expects. Split out of `open` so the
     /// version gate can be exercised in tests without a modal panel.
     func incompatibilityReason(for url: URL) -> String? {
-        let expected = RadioCore.expectedCodeplugSize
         guard let size = try? FileManager.default
             .attributesOfItem(atPath: url.path)[.size] as? Int else {
             return nil // Unreadable size: let the normal open path report the I/O error.
         }
-        guard size != expected else { return nil }
+        // The core matches the file's bytes against every radio it supports, so
+        // a file it recognizes is openable whichever radio it turns out to be for.
+        if (try? RadioCore.detectModel(binPath: url.path)) != nil { return nil }
+        let known = RadioCore.supportedModels
+            .map { "\($0.displayName) (\($0.imageSize) bytes)" }
+            .joined(separator: ", ")
         return "“\(url.lastPathComponent)” isn’t a compatible codeplug. It is "
-            + "\(size) bytes, but this app expects \(expected) bytes for the AnyTone "
-            + "D878UV. It looks like it came from a different radio model or an older, "
-            + "incompatible firmware version."
+            + "\(size) bytes, which matches no radio this app supports: \(known). It looks "
+            + "like it came from a different radio model or an older, incompatible firmware "
+            + "version."
     }
+
+    /// The sections the open document's radio has, in sidebar order.
+    var sections: [CodeplugSection] { capabilities.sections }
 
     /// Close the open codeplug and return to the empty state. Clears the staging
     /// work file and undo history too, so nothing from this document lingers to
@@ -230,6 +265,8 @@ final class CodeplugStore: ObservableObject {
     /// unsaved changes before calling this.
     func close() {
         fileURL = nil
+        model = nil
+        capabilities = .anyTonePlaceholder
         channels = []
         zones = []
         scanLists = []
@@ -237,6 +274,10 @@ final class CodeplugStore: ObservableObject {
         contacts = []
         groupLists = []
         radioIds = []
+        qytChannels = []
+        qytSettings = nil
+        qytBands = []
+        qytModelTag = ""
         isDirty = false
         errorMessage = nil
         clearUnsaved()
@@ -247,14 +288,26 @@ final class CodeplugStore: ObservableObject {
 
     /// Populate the records from a parsed dump. Split out of `open` so it can be
     /// driven from a synthetic dump without the FFI or a real file.
+    ///
+    /// A dump carries exactly one model's payload, so the other model's records
+    /// are cleared here rather than left behind: a stale AnyTone channel list
+    /// under a QYT document would be a different radio's data still on screen.
     func load(_ dump: CodeplugDump, url: URL) {
-        channels = dump.channels
-        zones = dump.zones
-        scanLists = dump.scanLists
-        aprs = dump.aprs
-        contacts = dump.contacts
-        groupLists = dump.groupLists
-        radioIds = dump.radioIds
+        model = dump.model
+        capabilities = dump.capabilities
+        let anytone = dump.anytone
+        channels = anytone?.channels ?? []
+        zones = anytone?.zones ?? []
+        scanLists = anytone?.scanLists ?? []
+        aprs = anytone?.aprs
+        contacts = anytone?.contacts ?? []
+        groupLists = anytone?.groupLists ?? []
+        radioIds = anytone?.radioIds ?? []
+        let qyt = dump.qyt
+        qytChannels = qyt?.channels ?? []
+        qytSettings = qyt?.settings
+        qytBands = qyt?.bands ?? []
+        qytModelTag = qyt?.modelTag ?? ""
         fileURL = url
         errorMessage = nil
     }
@@ -414,6 +467,61 @@ final class CodeplugStore: ObservableObject {
         }
     }
 
+    /// Stage an edited QYT channel. Only the fields the core has setters for are
+    /// diffed; power, bandwidth and the remaining flag bits are decoded for
+    /// display but not yet writable, so they are not sent.
+    func update(_ ch: DumpQytChannel) {
+        guard let old = qytChannels.first(where: { $0.index == ch.index }), old != ch else { return }
+        var e = QytChannelEdit(index: ch.index)
+        if ch.name != old.name { e.name = ch.name }
+        if ch.rxFrequencyHz != old.rxFrequencyHz { e.rxFrequencyHz = ch.rxFrequencyHz }
+        if ch.txFrequencyHz != old.txFrequencyHz {
+            // An absent TX frequency has to be sent as an explicit null, which
+            // is how the core is told to make the channel receive-only.
+            if let hz = ch.txFrequencyHz { e.txFrequencyHz = hz } else { e.clearTxFrequency = true }
+        }
+        if ch.rxTone != old.rxTone { e.rxTone = ch.rxTone }
+        if ch.txTone != old.txTone { e.txTone = ch.txTone }
+        if ch.scanAdd != old.scanAdd { e.scanAdd = ch.scanAdd }
+        if stageQyt({ $0.channels.append(e) }, "Updated channel \(formatSlot(ch.index))") {
+            markUnsaved(.qytChannels, slots: [ch.index])
+        }
+    }
+
+    /// Stage the settings pane's draft. Only the fields that differ from the
+    /// open document are sent, so the four unnamed bytes inside the header — and
+    /// the whole unmodelled region above it — are never rewritten.
+    ///
+    /// This is one call per Apply rather than one per keystroke on purpose: each
+    /// staging round trip is a full parse, edit, serialize and re-dump in the
+    /// core, and it produces one undo entry.
+    func updateQytSettings(_ s: DumpQytSettings) {
+        guard let old = qytSettings else { return }
+        let edit = qytSettingsEdit(from: old, to: s)
+        guard !edit.isEmpty else { return }
+        if stageQyt({ $0.settings = edit }, "Updated settings") {
+            // The header has no slots, so only the section is marked.
+            markUnsaved(.qytSettings, slots: [])
+        }
+    }
+
+    /// Stage the VFO pane's draft: both slots diffed, one round trip.
+    func updateQytBands(_ bands: [DumpQytBand]) {
+        var edits: [QytBandEdit] = []
+        for band in bands {
+            guard let old = qytBands.first(where: { $0.index == band.index }) else { continue }
+            let edit = qytBandEdit(from: old, to: band)
+            if !edit.isEmpty { edits.append(edit) }
+        }
+        guard !edits.isEmpty else { return }
+        let noun = edits.count == 1
+            ? "VFO \(qytBandName(edits[0].index))"
+            : "\(edits.count) VFO channels"
+        if stageQyt({ $0.bands = edits }, "Updated \(noun)") {
+            markUnsaved(.qytBands, slots: edits.map(\.index))
+        }
+    }
+
     /// Stage a bulk update to multiple channels at once. Each field in
     /// `update` that is non-nil is applied to every listed channel index.
     func bulkUpdateChannels(_ update: BulkChannelUpdate) {
@@ -433,6 +541,24 @@ final class CodeplugStore: ObservableObject {
         }
         if bulkStage(spec, "Bulk-updated \(update.indices.count) channels") {
             markUnsaved(.channels, slots: update.indices)
+        }
+    }
+
+    /// Stage a bulk update to multiple QYT channels. Only non-nil fields are
+    /// sent, through the same tagged envelope a single-channel edit uses.
+    func bulkUpdateQytChannels(_ update: BulkQytChannelUpdate) {
+        guard !update.indices.isEmpty else { return }
+        // Nothing opted in: leave the document alone rather than round-tripping
+        // an empty channel list through the core.
+        guard update.scanAdd != nil else { return }
+        if stageQyt({ spec in
+            for index in update.indices {
+                var e = QytChannelEdit(index: index)
+                if let v = update.scanAdd { e.scanAdd = v }
+                spec.channels.append(e)
+            }
+        }, "Bulk-updated \(update.indices.count) channels") {
+            markUnsaved(.qytChannels, slots: update.indices)
         }
     }
 
@@ -470,9 +596,31 @@ final class CodeplugStore: ObservableObject {
         addedSlot(of: \.radioIds, section: .radioIds, noun: "radio ID") { $0.addRadioIds.append(RadioIDEdit()) }
     }
 
+    /// Program the first free QYT channel slot. Written out rather than routed
+    /// through `addedSlot` because that helper stages an AnyTone `EditSpec`;
+    /// the slot-diffing it does is the four lines below.
+    func addQytChannel() -> Int? {
+        let before = Set(qytChannels.map(\.id))
+        guard stageQyt({ $0.addChannels.append(QytChannelEdit()) }, "Added channel") else {
+            return nil
+        }
+        guard let slot = qytChannels.map(\.id).first(where: { !before.contains($0) }) else {
+            return nil
+        }
+        markUnsaved(.qytChannels, slots: [slot])
+        setStatus("Added channel \(formatSlot(slot)) — unsaved")
+        return slot
+    }
+
     func removeChannel(_ i: Int) {
         if stage({ $0.removeChannels.append(i) }, "Removed channel \(formatSlot(i))") {
             markRemoved(.channels, slot: i)
+        }
+    }
+
+    func removeQytChannel(_ i: Int) {
+        if stageQyt({ $0.removeChannels.append(i) }, "Removed channel \(formatSlot(i))") {
+            markRemoved(.qytChannels, slot: i)
         }
     }
 
@@ -515,6 +663,13 @@ final class CodeplugStore: ObservableObject {
     func moveChannel(_ from: Int, to: Int) {
         if stage({ $0.moveChannels.append(MoveOp(from: from, to: to)) }, "Moved channel to #\(formatSlot(to))") {
             markMoved(.channels, from: from, to: to)
+        }
+    }
+
+    func moveQytChannel(_ from: Int, to: Int) {
+        if stageQyt({ $0.moveChannels.append(MoveOp(from: from, to: to)) },
+                    "Moved channel to #\(formatSlot(to))") {
+            markMoved(.qytChannels, from: from, to: to)
         }
     }
 
@@ -666,10 +821,23 @@ final class CodeplugStore: ObservableObject {
         return bulkStage(spec, describe)
     }
 
-    /// Apply a pre-built edit spec to the work file and reload. Used directly by
-    /// bulk operations, which build the full spec themselves.
+    /// Apply one QYT operation to the work file and reload, wrapped in the
+    /// model-tagged envelope the core needs to tell a QYT batch from an AnyTone
+    /// one. Everything downstream — undo, unsaved marks, recovery, save — is the
+    /// same path the AnyTone edits take, because all of it works on the work
+    /// file's bytes rather than on the spec.
     @discardableResult
-    private func bulkStage(_ spec: EditSpec, _ describe: String) -> Bool {
+    private func stageQyt(_ op: (inout QytEditSpec) -> Void, _ describe: String) -> Bool {
+        var spec = QytEditSpec()
+        op(&spec)
+        return bulkStage(QytEditEnvelope(qyt: spec), describe)
+    }
+
+    /// Apply a pre-built edit spec to the work file and reload. Used directly by
+    /// bulk operations, which build the full spec themselves. Generic over the
+    /// spec type so each radio's edit shape goes through this one path.
+    @discardableResult
+    private func bulkStage<Spec: Encodable>(_ spec: Spec, _ describe: String) -> Bool {
         guard let url = fileURL else { return false }
         // Capture the pre-edit state before touching the work file, so a
         // successful edit can be pushed onto the undo stack.

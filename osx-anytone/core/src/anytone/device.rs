@@ -9,19 +9,19 @@
 
 use std::collections::BTreeSet;
 
-use crate::codeplug::{
+use crate::anytone::codeplug::{
     channel_addr, contact_block_addr, global_offset, group_list_addr, radio_id_addr,
-    zone_channels_addr, zone_name_addr, Codeplug, BETWEEN_CONTACT_BANKS, CHANNEL_BITMAP,
-    CHANNEL_SIZE, CONTACT_BANKS, CONTACT_BITMAP, CONTACT_BLOCK, CONTACT_ID_TABLE, CONTACT_INDEX,
-    scan_list_addr, GROUP_LISTS, GROUP_LIST_BITMAP, GROUP_LIST_ELEMENT, NUM_CHANNELS,
-    NUM_CONTACTS, NUM_GROUP_LISTS, NUM_RADIO_IDS, NUM_SCAN_LISTS, NUM_ZONES, RADIO_IDS,
-    RADIO_ID_BITMAP, RADIO_ID_SIZE, SCAN_LIST_BITMAP, SCAN_LIST_SIZE, ZONE_BITMAP,
-    ZONE_CHANNELS_SLOT, ZONE_CHANNEL_LIST, ZONE_CHANNEL_LIST_SIZE, ZONE_NAME_SLOT,
+    scan_list_addr, zone_channels_addr, zone_name_addr, Codeplug, BETWEEN_CONTACT_BANKS,
+    CHANNEL_BITMAP, CHANNEL_SIZE, CONTACT_BANKS, CONTACT_BITMAP, CONTACT_BLOCK, CONTACT_ID_TABLE,
+    CONTACT_INDEX, GROUP_LISTS, GROUP_LIST_BITMAP, GROUP_LIST_ELEMENT, NUM_CHANNELS, NUM_CONTACTS,
+    NUM_GROUP_LISTS, NUM_RADIO_IDS, NUM_SCAN_LISTS, NUM_ZONES, RADIO_IDS, RADIO_ID_BITMAP,
+    RADIO_ID_SIZE, SCAN_LIST_BITMAP, SCAN_LIST_SIZE, ZONE_BITMAP, ZONE_CHANNELS_SLOT,
+    ZONE_CHANNEL_LIST, ZONE_CHANNEL_LIST_SIZE, ZONE_NAME_SLOT,
 };
-use crate::error::{Error, Result};
-use crate::protocol::{
+use crate::anytone::protocol::{
     enter_program_mode, exit_program_mode, identify, read_block, write_block, BLOCK_SIZE,
 };
+use crate::error::{Error, Result};
 use crate::transport::Transport;
 
 /// Flash erase granularity. The radio erases in `0x8000`-byte sectors: the first
@@ -504,7 +504,6 @@ impl<T: Transport> Radio<T> {
         }
         Ok(())
     }
-
 }
 
 /// True for regions transferred in full: channels, zones, and every valid
@@ -632,7 +631,7 @@ pub fn is_supported_model(identify_string: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::MockTransport;
+    use crate::anytone::mock::MockTransport;
 
     /// Build a mock whose flat memory image is large enough to cover the
     /// highest-addressed region in [`REGIONS`].
@@ -643,6 +642,14 @@ mod tests {
             .max()
             .unwrap();
         MockTransport::new(end, "ID878UV V100")
+    }
+
+    /// Pin the AnyTone image size as a bare literal. Every later change that
+    /// touches the region table has to justify moving this number, and the
+    /// Swift side hardcodes the same value in its compatibility check.
+    #[test]
+    fn anytone_codeplug_size_is_pinned() {
+        assert_eq!(codeplug_size(), 1_789_328);
     }
 
     #[test]
@@ -863,7 +870,11 @@ mod tests {
         }
         // And the modelled data did land: the channel bitmap marks channel 0.
         let cbm = CHANNEL_BITMAP as usize;
-        assert_eq!(mem.memory()[cbm] & 1, 1, "channel 0 bitmap bit should be set");
+        assert_eq!(
+            mem.memory()[cbm] & 1,
+            1,
+            "channel 0 bitmap bit should be set"
+        );
     }
 
     #[test]

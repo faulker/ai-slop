@@ -2,7 +2,7 @@
 //! handshake and the block checksum. All multi-byte addresses are big-endian.
 //!
 //! Every function here operates over a [`Transport`], so the entire protocol is
-//! testable against [`crate::transport::MockTransport`] with no hardware.
+//! testable against [`crate::anytone::mock::MockTransport`] with no hardware.
 
 use crate::error::{Error, Result};
 use crate::transport::Transport;
@@ -24,7 +24,7 @@ pub fn checksum(bytes: &[u8]) -> u8 {
 }
 
 /// Enter program mode: send `"PROGRAM"` and require the `"QX"` + ACK reply.
-pub fn enter_program_mode<T: Transport>(t: &mut T) -> Result<()> {
+pub fn enter_program_mode(t: &mut dyn Transport) -> Result<()> {
     t.write_all(b"PROGRAM")?;
     let mut reply = [0u8; 3];
     t.read_exact(&mut reply)?;
@@ -39,7 +39,7 @@ pub fn enter_program_mode<T: Transport>(t: &mut T) -> Result<()> {
 /// Send the identify command (`0x02`) and return the model/version string the
 /// radio reports. The reply is `'I'` + ASCII string + ACK; we read up to a
 /// bounded number of bytes and stop at the trailing ACK.
-pub fn identify<T: Transport>(t: &mut T) -> Result<String> {
+pub fn identify(t: &mut dyn Transport) -> Result<String> {
     t.write_all(&[0x02])?;
     let mut lead = [0u8; 1];
     t.read_exact(&mut lead)?;
@@ -70,7 +70,7 @@ pub fn identify<T: Transport>(t: &mut T) -> Result<String> {
 /// Read a single 16-byte block at `addr`. Sends `'R'` + addr[4 BE] + len, then
 /// validates the `'W'` + addr[4] + len + data[16] + checksum + ACK response,
 /// including address echo and checksum.
-pub fn read_block<T: Transport>(t: &mut T, addr: u32) -> Result<[u8; BLOCK_SIZE]> {
+pub fn read_block(t: &mut dyn Transport, addr: u32) -> Result<[u8; BLOCK_SIZE]> {
     let mut cmd = [0u8; 6];
     cmd[0] = b'R';
     cmd[1..5].copy_from_slice(&addr.to_be_bytes());
@@ -129,7 +129,7 @@ pub fn read_block<T: Transport>(t: &mut T, addr: u32) -> Result<[u8; BLOCK_SIZE]
 /// as `'W' addr size data sum ack(=0x06)` and sends the whole 24-byte struct.
 /// Omitting it leaves the radio waiting for one more byte, so it never ACKs and
 /// the read times out — unlike the read command, which has no trailing byte.
-pub fn write_block<T: Transport>(t: &mut T, addr: u32, data: &[u8; BLOCK_SIZE]) -> Result<()> {
+pub fn write_block(t: &mut dyn Transport, addr: u32, data: &[u8; BLOCK_SIZE]) -> Result<()> {
     let mut cmd = Vec::with_capacity(1 + 4 + 1 + BLOCK_SIZE + 1 + 1);
     cmd.push(b'W');
     cmd.extend_from_slice(&addr.to_be_bytes());
@@ -153,7 +153,7 @@ pub fn write_block<T: Transport>(t: &mut T, addr: u32, data: &[u8; BLOCK_SIZE]) 
 }
 
 /// Exit program mode: send `"END"` and require the ACK reply.
-pub fn exit_program_mode<T: Transport>(t: &mut T) -> Result<()> {
+pub fn exit_program_mode(t: &mut dyn Transport) -> Result<()> {
     t.write_all(b"END")?;
     let mut ack = [0u8; 1];
     t.read_exact(&mut ack)?;
@@ -169,7 +169,7 @@ pub fn exit_program_mode<T: Transport>(t: &mut T) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::MockTransport;
+    use crate::anytone::mock::MockTransport;
 
     #[test]
     fn checksum_matches_hand_computed_vectors() {

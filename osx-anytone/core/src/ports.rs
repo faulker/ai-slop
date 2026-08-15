@@ -1,18 +1,38 @@
 //! Serial port enumeration and radio detection on macOS.
 //!
-//! The radio enumerates as a standard CDC-ACM device (`/dev/cu.usbmodem*`).
-//! We list all ports and flag any whose USB VID/PID matches a known AnyTone
-//! variant, but detection is confirmed later via the identify command, so a
-//! non-matching VID/PID is not treated as a hard failure.
+//! A radio enumerates as a standard USB serial device (`/dev/cu.usbmodem*` or
+//! `/dev/cu.usbserial*`). We list all ports and attribute any whose USB VID/PID
+//! is in [`KNOWN_USB_IDS`] to the model that bridge belongs to, but attribution
+//! is confirmed later via the identify handshake, so a non-matching VID/PID is
+//! not a hard failure: the caller can name the model explicitly instead.
 
 use crate::error::Result;
+use crate::model::Model;
 use std::collections::HashSet;
 
-/// Known (VID, PID) pairs for the AT-D878UVII Plus USB bridges.
-/// GD32 variant and STM32 variant, respectively.
-pub const KNOWN_USB_IDS: &[(u16, u16)] = &[(0x28e9, 0x018a), (0x2e3c, 0x5740)];
+/// Known (VID, PID, model) triples for USB bridges we can attribute on sight.
+///
+/// The two AnyTone entries are the AT-D878UVII Plus GD32 and STM32 bridge
+/// variants, respectively.
+///
+/// There is deliberately no QYT KT-5000 entry, and there never will be.
+///
+/// Checked against the hardware on 2026-08-06: the KT-5000's programming cable
+/// enumerates as `067b:2303`, a stock Prolific PL2303. That chip is in
+/// thousands of unrelated adapters, so attributing it here would tell every
+/// PL2303 owner their USB-to-RS232 cable is a radio, and would let a codeplug
+/// be aimed at whatever else happened to be plugged in. The radio simply cannot
+/// be identified from its USB descriptors.
+///
+/// A KT-5000 therefore appears as an unattributed port and is reached by the
+/// caller naming the model explicitly. That is the correct design for this
+/// radio, not a placeholder waiting on a capture.
+pub const KNOWN_USB_IDS: &[(u16, u16, Model)] = &[
+    (0x28e9, 0x018a, Model::AnyToneD878UV2),
+    (0x2e3c, 0x5740, Model::AnyToneD878UV2),
+];
 
-/// A discovered serial port and whether it looks like an AnyTone radio.
+/// A discovered serial port and which radio, if any, its USB identity names.
 #[derive(Debug, Clone)]
 pub struct PortInfo {
     /// Device path, e.g. `/dev/cu.usbmodem1234`.
@@ -23,13 +43,50 @@ pub struct PortInfo {
     pub pid: Option<u16>,
     /// USB product string, if the OS reported one.
     pub product: Option<String>,
-    /// True when the VID/PID matches a known AnyTone bridge.
+    /// The model this port's VID/PID names, or `None` when unrecognized.
+    pub model: Option<Model>,
+    /// True when the VID/PID matches a known radio bridge. Always exactly
+    /// `model.is_some()`; kept as its own field because callers that only ask
+    /// "is this worth showing as a radio" should not have to care which model.
     pub likely_radio: bool,
 }
 
-/// Return true if this VID/PID pair is a known AnyTone USB bridge.
+impl PortInfo {
+    /// Build a port entry, deriving [`model`](PortInfo::model) and
+    /// [`likely_radio`](PortInfo::likely_radio) from the USB identity so the two
+    /// can never disagree.
+    pub fn new(
+        name: String,
+        vid: Option<u16>,
+        pid: Option<u16>,
+        product: Option<String>,
+    ) -> PortInfo {
+        let model = match (vid, pid) {
+            (Some(v), Some(d)) => model_for_usb_id(v, d),
+            _ => None,
+        };
+        PortInfo {
+            name,
+            vid,
+            pid,
+            product,
+            model,
+            likely_radio: model.is_some(),
+        }
+    }
+}
+
+/// The model this VID/PID pair belongs to, or `None` if we don't know it.
+pub fn model_for_usb_id(vid: u16, pid: u16) -> Option<Model> {
+    KNOWN_USB_IDS
+        .iter()
+        .find(|(v, p, _)| *v == vid && *p == pid)
+        .map(|(_, _, m)| *m)
+}
+
+/// Return true if this VID/PID pair is a known radio USB bridge.
 pub fn is_known_radio(vid: u16, pid: u16) -> bool {
-    KNOWN_USB_IDS.contains(&(vid, pid))
+    model_for_usb_id(vid, pid).is_some()
 }
 
 /// macOS exposes every serial device twice: once as a callout device
@@ -58,8 +115,8 @@ fn dedupe_callout_ports(ports: &mut Vec<PortInfo>) {
     ports.retain(|p| !shadowed.contains(&p.name));
 }
 
-/// Enumerate the serial ports, flagging likely radios by VID/PID and collapsing
-/// each macOS `cu.`/`tty.` pair down to its callout half.
+/// Enumerate the serial ports, attributing each to a model by VID/PID where we
+/// can and collapsing each macOS `cu.`/`tty.` pair down to its callout half.
 pub fn list_ports() -> Result<Vec<PortInfo>> {
     let ports = serialport::available_ports()?;
     let mut out = Vec::with_capacity(ports.len());
@@ -70,17 +127,7 @@ pub fn list_ports() -> Result<Vec<PortInfo>> {
             }
             _ => (None, None, None),
         };
-        let likely_radio = match (vid, pid) {
-            (Some(v), Some(d)) => is_known_radio(v, d),
-            _ => false,
-        };
-        out.push(PortInfo {
-            name: p.port_name,
-            vid,
-            pid,
-            product,
-            likely_radio,
-        });
+        out.push(PortInfo::new(p.port_name, vid, pid, product));
     }
     dedupe_callout_ports(&mut out);
     Ok(out)
@@ -93,8 +140,10 @@ pub fn list_ports() -> Result<Vec<PortInfo>> {
 /// - `Err(..)` (ambiguous) when more than one likely radio was found; the
 ///   caller should ask the user to disambiguate with an explicit port.
 pub fn autodetect_radio() -> Result<Option<String>> {
-    let mut radios: Vec<PortInfo> =
-        list_ports()?.into_iter().filter(|p| p.likely_radio).collect();
+    let mut radios: Vec<PortInfo> = list_ports()?
+        .into_iter()
+        .filter(|p| p.likely_radio)
+        .collect();
     match radios.len() {
         0 => Ok(None),
         1 => Ok(Some(radios.remove(0).name)),
@@ -109,15 +158,15 @@ mod tests {
     use super::*;
 
     /// A radio port with the given device path. VID/PID are a known AnyTone
-    /// bridge so `likely_radio` reflects what the real enumeration would say.
+    /// bridge so `model`/`likely_radio` reflect what the real enumeration would
+    /// say.
     fn radio_at(name: &str) -> PortInfo {
-        PortInfo {
-            name: name.to_string(),
-            vid: Some(0x28e9),
-            pid: Some(0x018a),
-            product: Some("AnyTone".to_string()),
-            likely_radio: true,
-        }
+        PortInfo::new(
+            name.to_string(),
+            Some(0x28e9),
+            Some(0x018a),
+            Some("AnyTone".to_string()),
+        )
     }
 
     fn names(ports: &[PortInfo]) -> Vec<&str> {
@@ -180,6 +229,55 @@ mod tests {
         assert!(is_known_radio(0x2e3c, 0x5740));
         assert!(!is_known_radio(0x1234, 0x5678));
         assert!(!is_known_radio(0x28e9, 0x0000));
+    }
+
+    #[test]
+    fn known_usb_ids_all_attribute_a_model() {
+        // Both of today's entries are the AnyTone's two bridge variants. The
+        // QYT is deliberately absent: it has no distinguishable USB identity.
+        // See the note on KNOWN_USB_IDS.
+        assert_eq!(KNOWN_USB_IDS.len(), 2);
+        for (vid, pid, model) in KNOWN_USB_IDS {
+            assert_eq!(model_for_usb_id(*vid, *pid), Some(*model));
+            assert_eq!(*model, Model::AnyToneD878UV2);
+        }
+        assert_eq!(model_for_usb_id(0x1234, 0x5678), None);
+    }
+
+    #[test]
+    fn port_info_model_matches_likely_radio() {
+        // The invariant every consumer relies on: a port is "likely a radio"
+        // exactly when we could name which radio it is.
+        // Known AnyTone bridge, its other variant, a generic CH340 of the kind
+        // a QYT cable uses, a non-USB port, and half an identity.
+        let cases = [
+            (Some(0x28e9), Some(0x018a)),
+            (Some(0x2e3c), Some(0x5740)),
+            (Some(0x1a86), Some(0x7523)),
+            (None, None),
+            (Some(0x28e9), None),
+        ];
+        for (vid, pid) in cases {
+            let p = PortInfo::new("/dev/cu.test".to_string(), vid, pid, None);
+            assert_eq!(
+                p.likely_radio,
+                p.model.is_some(),
+                "likely_radio disagreed with model for {vid:?}/{pid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognized_adapter_is_left_unattributed() {
+        // The QYT's own bridge lands here today. It must not be guessed at.
+        let p = PortInfo::new(
+            "/dev/cu.usbserial-1420".to_string(),
+            Some(0x1a86),
+            Some(0x7523),
+            Some("USB-SERIAL CH340".to_string()),
+        );
+        assert_eq!(p.model, None);
+        assert!(!p.likely_radio);
     }
 
     #[test]

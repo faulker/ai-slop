@@ -31,7 +31,7 @@ targets:
         PRODUCT_NAME: AnyToneMac
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: AnyTone Mac
+        INFOPLIST_KEY_CFBundleDisplayName: Codeplug
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"

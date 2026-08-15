@@ -1,7 +1,15 @@
-# osx-anytone — macOS Programming Tool for AnyTone AT-D878UVII Plus
+# osx-anytone — Codeplug, a macOS Programming Tool for the AnyTone AT-D878UVII Plus and QYT KT-5000
 
-A native macOS app to **create, download, and upload codeplugs** for the AnyTone
-AT-D878UVII Plus over the USB programming cable — replacing the Windows-only CPS.
+> **Status note.** This document was written for the AnyTone, which was the only
+> supported radio for most of the project's life. QYT KT-5000 support was added
+> later; section 3 (Architecture) has been rewritten to describe the per-model
+> structure that shipped. The phased plan in section 4 is AnyTone history and is
+> kept as written. For the KT-5000's protocol and memory layout see
+> [`docs/qyt-kt5000-memory-map.md`](docs/qyt-kt5000-memory-map.md).
+
+**Codeplug** is a native macOS app to **create, download, and upload codeplugs**
+for the AnyTone AT-D878UVII Plus over the USB programming cable — replacing the
+Windows-only CPS.
 
 > Terminology: AnyTone calls the config a **codeplug** (the user said "CUPs"; the
 > real term is codeplug / CPS = Customer Programming Software). This document uses
@@ -14,7 +22,7 @@ Phase 2 🟢 (model + offline `dump`/`edit` for channels, zones, DMR contacts /
 talk groups, RX group lists, and radio IDs — full add / remove / update, with the
 contact reverse-lookup tables rebuilt on contact changes; **offsets not yet
 validated against real D878UVII hardware**; scan lists / settings still TODO) ·
-Phase 3 ✅ code-complete & build-verified (SwiftUI GUI `AnyToneMac` over a C FFI;
+Phase 3 ✅ code-complete & build-verified (SwiftUI GUI, named Codeplug, over a C FFI;
 `./build.sh` produces `build/Debug/AnyToneMac.app`; Device identify/backup/
 restore + offline editor with add/remove/edit panes for every entity family).
 **Not yet run end-to-end against real hardware** (see README hardware checkpoints)
@@ -80,21 +88,72 @@ Links collected in §8.
 
 Follows this repo's existing Swift-GUI-over-Rust-core pattern (see `spell-i/`).
 
+The crate is organised **per radio model**. Everything specific to one radio, its
+wire protocol, memory layout, and the fake radio its tests drive, lives in that
+model's module. Model-agnostic pieces sit at the top level.
+
 ```
 osx-anytone/
-├── core/                 # Rust: anytone-core (protocol + codeplug model)
+├── core/                    # Rust: anytone-core
 │   ├── src/
-│   │   ├── transport.rs  # serial trait + macOS CDC-ACM impl + MockTransport
-│   │   ├── protocol.rs   # enter/identify/read/write/exit, checksum, framing
-│   │   ├── device.rs     # high-level read_codeplug / write_codeplug / backup
-│   │   ├── codeplug/     # binary model: channels, zones, contacts, scanlists…
-│   │   └── ffi.rs        # C ABI for the Swift app (cbindgen header)
-│   └── Cargo.toml
-├── cli/                  # Rust: anytone-cli (backup/restore/dump/info)
-├── AnyToneMac/           # SwiftUI app (XcodeGen project.yml + build.sh)
+│   │   ├── transport.rs     # Transport trait + macOS CDC-ACM impl (model-agnostic)
+│   │   ├── bytes.rs         # shared codecs: BCD (BE + LE), Latin1, bitmaps
+│   │   ├── model.rs         # enum Model, struct Capabilities, detect()
+│   │   ├── driver.rs        # trait RadioDriver, driver_for(model)
+│   │   ├── document.rs      # enum Document, the tagged JSON envelope
+│   │   ├── ports.rs         # port discovery, (VID, PID, Model) attribution
+│   │   ├── ffi.rs           # C ABI for the Swift app (hand-written header)
+│   │   ├── anytone/         # AnyTone AT-D878UVII Plus
+│   │   │   ├── protocol.rs  # PROGRAM/identify/R/W/END, checksum, framing
+│   │   │   ├── device.rs    # REGIONS, sector read-modify-write, codeplug I/O
+│   │   │   ├── driver.rs    # AnyToneDriver: RadioDriver
+│   │   │   ├── mock.rs      # in-memory fake radio (AnyTone grammar)
+│   │   │   └── codeplug/    # channels, zones, contacts, scan lists, group lists…
+│   │   └── qyt/             # QYT KT-5000
+│   │       ├── protocol.rs  # handshake, 'S'/'X', 16-bit BE addrs, no checksum
+│   │       ├── device.rs    # flat 12.8 KB image read/write
+│   │       ├── driver.rs    # QytDriver: RadioDriver
+│   │       ├── mock.rs      # in-memory fake radio (QYT grammar)
+│   │       └── codeplug/    # channels, settings, VFOs
+│   └── tests/qyt_capture.rs # golden tests vs the real vendor USB captures
+├── cli/                     # Rust: anytone-cli (backup/restore/dump/info)
+├── AnyToneMac/              # SwiftUI app (XcodeGen project.yml + build.sh)
+├── docs/
+│   ├── codeplug-memory-map.md
+│   └── qyt-kt5000-memory-map.md
 ├── PLAN.md
 └── README.md
 ```
+
+### Multi-model design decisions
+
+- **Wire protocol: object-safe `trait RadioDriver`**, one impl per model. The two
+  protocols share nothing but "push bytes / pull bytes", so a trait keeps the FFI
+  free of `match`.
+- **Region/memory map: deliberately not abstracted.** The AnyTone needs `REGIONS`
+  plus bitmap-driven sparse transfers plus 32 KB sector read-modify-write; the QYT
+  needs a flat `step_by(0x10)` loop. A trait over one instance each is not an
+  abstraction. Each driver owns its transfer loop.
+- **Entity model: a 2-variant `enum Document`**, not a trait. Only four operations
+  are shared (parse / serialize / to_json / apply_edits) and the entity families
+  are disjoint.
+- **JSON: a tagged envelope**, `{model, display_name, capabilities, <model-key>: {...}}`,
+  rather than a flattened union. Nesting keeps the AnyTone payload's strict
+  non-optional decoding, which makes a dropped entity family fail loudly instead of
+  silently rendering as empty. An edits object with no model key is re-parsed as a
+  bare AnyTone spec, so older edit files and the CLI keep working.
+- **Capabilities live in the core**, not a Swift table, so Rust stays the single
+  source of truth and the two cannot drift.
+- **Cross-model write guard.** `restore` detects the model from the *file*, then
+  refuses to write unless the connected radio's identity matches. Tested in both
+  directions, asserting zero write bytes are emitted.
+- **Separate Swift panes per model, not conditional columns.** macOS 13 is the
+  deployment target and `TableColumnBuilder.buildIf` is macOS 14.4+, so conditional
+  columns will not compile. This is also semantically correct: `rxCtcss` is a tone
+  table index on the AnyTone and 0.1 Hz units on the QYT, and a shared union whose
+  meaning depends on a sibling `model` field is how frequency-corruption bugs happen.
+  This does not scale past about three radios; at radio #3, move to a
+  capabilities-driven schema renderer.
 
 Rationale:
 - **Rust core** matches repo/global conventions, is fully unit-testable without

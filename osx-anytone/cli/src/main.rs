@@ -8,9 +8,11 @@ use std::io::Write;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use anytone_core::document::Document;
+use anytone_core::driver::{driver_for, write_verified_image};
+use anytone_core::model::Model;
 use anytone_core::{
-    autodetect_radio, codeplug_size, is_supported_model, list_ports, Codeplug, Radio,
-    SerialTransport,
+    autodetect_radio, list_ports, Radio, SerialTransport, Transport,
 };
 use clap::{Parser, Subcommand};
 
@@ -31,6 +33,13 @@ struct Cli {
     /// matching radio port is auto-selected.
     #[arg(long, global = true)]
     port: Option<String>,
+
+    /// Radio model id: "anytone-d878uv2" or "qyt-kt5000". Required when the
+    /// port's USB identity does not name a model, which is the normal case for
+    /// the QYT: it talks through a generic USB-serial cable whose VID/PID is
+    /// shared with unrelated hardware, so it can never be attributed on sight.
+    #[arg(long, global = true)]
+    model: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -106,8 +115,8 @@ fn main() -> ExitCode {
 fn run(cli: &Cli) -> anytone_core::Result<()> {
     match &cli.command {
         Command::Ports => cmd_ports(),
-        Command::Info => cmd_info(&resolve_port(cli)?),
-        Command::Backup { file } => cmd_backup(&resolve_port(cli)?, file),
+        Command::Info => cmd_info(&resolve_port(cli)?, resolve_model(cli)?),
+        Command::Backup { file } => cmd_backup(&resolve_port(cli)?, resolve_model(cli)?, file),
         Command::Restore { file, force } => cmd_restore(&resolve_port(cli)?, file, *force),
         Command::Dump { file } => cmd_dump(file),
         Command::DumpRange {
@@ -129,7 +138,9 @@ fn cmd_edit(file: &str, edits: &str, output: Option<&str>) -> anytone_core::Resu
     let data = fs::read(file)?;
     let edits_json = fs::read_to_string(edits)?;
     let out_path = output.unwrap_or(file);
-    let result = anytone_core::apply_edits(&data, &edits_json)
+    // Model-aware: the envelope dispatches on the model detected from `file`,
+    // and a spec with no model key is still accepted as an AnyTone spec.
+    let result = anytone_core::document::apply_edits(&data, &edits_json)
         .map_err(anytone_core::Error::InvalidArgument)?;
     fs::write(out_path, &result)?;
     println!("applied edits: wrote {} bytes to {out_path}", result.len());
@@ -140,8 +151,10 @@ fn cmd_edit(file: &str, edits: &str, output: Option<&str>) -> anytone_core::Resu
 /// print its channels and zones as pretty JSON to stdout.
 fn cmd_dump(file: &str) -> anytone_core::Result<()> {
     let data = fs::read(file)?;
-    let codeplug = Codeplug::parse(&data)?;
-    let json = serde_json::to_string_pretty(&codeplug.to_json())
+    // Model-aware: the radio a .bin belongs to is detected from its contents, so
+    // this works for either supported radio without a --model hint.
+    let document = Document::parse(&data)?;
+    let json = serde_json::to_string_pretty(&document.to_json())
         .map_err(|e| anytone_core::Error::Parse(format!("failed to encode JSON: {e}")))?;
     println!("{json}");
     Ok(())
@@ -232,6 +245,39 @@ fn open_radio(port: &str) -> anytone_core::Result<Radio<SerialTransport>> {
     Ok(Radio::new(t))
 }
 
+/// Resolve which radio we are talking to.
+///
+/// An explicit `--model` always wins. Otherwise fall back to the model named by
+/// the port's USB identity. A generic USB-serial bridge names no model, so the
+/// QYT normally requires `--model qyt-kt5000`; guessing there would mean
+/// speaking the wrong protocol at whatever is on the other end of the cable.
+fn resolve_model(cli: &Cli) -> anytone_core::Result<Model> {
+    if let Some(id) = &cli.model {
+        return Model::from_id(id).ok_or_else(|| {
+            let known: Vec<&str> = Model::ALL.iter().map(|m| m.id()).collect();
+            anytone_core::Error::InvalidArgument(format!(
+                "unknown model {id:?}; expected one of: {}",
+                known.join(", ")
+            ))
+        });
+    }
+    let port = resolve_port(cli)?;
+    let named = list_ports()?
+        .into_iter()
+        .find(|p| p.name == port)
+        .and_then(|p| p.model);
+    named.ok_or_else(|| {
+        anytone_core::Error::InvalidArgument(format!(
+            "cannot tell which radio is on {port}; pass --model (one of: {})",
+            Model::ALL
+                .iter()
+                .map(|m| m.id())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })
+}
+
 /// `ports`: enumerate serial ports and mark likely radios.
 fn cmd_ports() -> anytone_core::Result<()> {
     let ports = list_ports()?;
@@ -252,27 +298,37 @@ fn cmd_ports() -> anytone_core::Result<()> {
 }
 
 /// `info`: enter program mode, identify, print, exit.
-fn cmd_info(port: &str) -> anytone_core::Result<()> {
-    let mut radio = open_radio(port)?;
-    radio.enter()?;
-    let model = radio.identify()?;
-    radio.exit()?;
-    println!("model/version: {model}");
-    if !is_supported_model(&model) {
-        eprintln!("warning: identify string does not look like a D878UV-family radio");
+fn cmd_info(port: &str, model: Model) -> anytone_core::Result<()> {
+    let driver = driver_for(model);
+    let mut t = SerialTransport::open(port, BAUD, TIMEOUT)?;
+    let identity = {
+        let mut dyn_t: &mut dyn Transport = &mut t;
+        driver.identify(&mut dyn_t)?
+    };
+    println!("model:         {} ({})", model.display_name(), model.id());
+    println!("identity:      {identity}");
+    if !driver.accepts_identity(&identity) {
+        eprintln!(
+            "warning: identity does not look like a {}; check --model",
+            model.display_name()
+        );
     }
     Ok(())
 }
 
 /// `backup`: read the full codeplug and write it to `file`.
-fn cmd_backup(port: &str, file: &str) -> anytone_core::Result<()> {
-    let mut radio = open_radio(port)?;
-    radio.enter()?;
-    let model = radio.identify()?;
-    eprintln!("radio: {model}");
+fn cmd_backup(port: &str, model: Model, file: &str) -> anytone_core::Result<()> {
+    let driver = driver_for(model);
+    let mut t = SerialTransport::open(port, BAUD, TIMEOUT)?;
     let mut progress = make_progress("reading");
-    let data = radio.read_codeplug(&mut progress)?;
-    radio.exit()?;
+    eprintln!("radio: {}", model.display_name());
+    // One driver call per open port. Each method is a complete session, and the
+    // QYT rejects a second handshake on an open link, so there is deliberately
+    // no separate identify() here.
+    let data = {
+        let mut dyn_t: &mut dyn Transport = &mut t;
+        driver.read_image(&mut dyn_t, &mut progress)?
+    };
     eprintln!();
     fs::write(file, &data)?;
     println!("wrote {} bytes to {file}", data.len());
@@ -283,43 +339,43 @@ fn cmd_backup(port: &str, file: &str) -> anytone_core::Result<()> {
 /// model, and relying on per-block read-back verification inside the core.
 fn cmd_restore(port: &str, file: &str, force: bool) -> anytone_core::Result<()> {
     let data = fs::read(file)?;
-    if data.len() != codeplug_size() {
-        return Err(anytone_core::Error::InvalidArgument(format!(
-            "codeplug file is {} bytes, expected {}",
-            data.len(),
-            codeplug_size()
-        )));
-    }
+
+    // Which radio this image belongs to is a property of the file, not a flag.
+    // Deriving it here is what lets the core refuse to write a codeplug to the
+    // wrong radio.
+    let model = Model::detect(&data).ok_or_else(|| {
+        anytone_core::Error::InvalidArgument(format!(
+            "{file} is {} bytes, which matches no supported radio image",
+            data.len()
+        ))
+    })?;
 
     if !force {
-        return Err(anytone_core::Error::InvalidArgument(
-            "restore writes to the radio and can overwrite its config; \
-             re-run with --force to proceed (back up first!)"
-                .into(),
-        ));
-    }
-
-    let mut radio = open_radio(port)?;
-    radio.enter()?;
-    let model = radio.identify()?;
-    if !is_supported_model(&model) {
-        radio.exit()?;
         return Err(anytone_core::Error::InvalidArgument(format!(
-            "refusing to write: identify string {model:?} is not a supported D878UV radio"
+            "restore writes to the radio and can overwrite its config; \
+             re-run with --force to proceed (back up first!). This file is a \
+             {} image.",
+            model.display_name()
         )));
     }
 
-    eprintln!("!!! WRITING CODEPLUG TO RADIO ({model}) !!!");
+    eprintln!("!!! WRITING CODEPLUG TO RADIO ({}) !!!", model.display_name());
     eprintln!("!!! Do not disconnect the cable or power off the radio. !!!");
 
+    let mut t = SerialTransport::open(port, BAUD, TIMEOUT)?;
     let mut progress = make_progress("writing");
-    let result = radio.write_codeplug(&data, &mut progress);
-    // Always attempt a clean exit from program mode, even on failure.
-    let exit = radio.exit();
+    // One driver call per open port: write_verified_image handshakes, checks the
+    // radio's identity, and transfers, all inside a single session.
+    let result = {
+        let mut dyn_t: &mut dyn Transport = &mut t;
+        write_verified_image(model, &mut dyn_t, &data, port, &mut progress)
+    };
     eprintln!();
-    result?;
-    exit?;
-    println!("restore complete and verified: {} bytes to {file}", data.len());
+    result.map_err(anytone_core::Error::InvalidArgument)?;
+    println!("restore complete: {} bytes to {file}", data.len());
+    if model == Model::QytKt5000 {
+        println!("the radio reboots now; reconnect before reading back to verify");
+    }
     Ok(())
 }
 

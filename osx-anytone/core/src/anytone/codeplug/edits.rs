@@ -401,16 +401,24 @@ pub fn apply_edits(data: &[u8], edits_json: &str) -> Result<Vec<u8>, String> {
             return Err(format!("contact {i} still active after removal"));
         }
     }
-    verify_moved("channel", &spec.move_channels, |i| check.channels().any(|c| c.index == i))?;
-    verify_moved("zone", &spec.move_zones, |i| check.zones().any(|z| z.index == i))?;
+    verify_moved("channel", &spec.move_channels, |i| {
+        check.channels().any(|c| c.index == i)
+    })?;
+    verify_moved("zone", &spec.move_zones, |i| {
+        check.zones().any(|z| z.index == i)
+    })?;
     verify_moved("scan list", &spec.move_scan_lists, |i| {
         check.scan_lists().any(|s| s.index == i)
     })?;
-    verify_moved("contact", &spec.move_contacts, |i| check.contacts().any(|c| c.index == i))?;
+    verify_moved("contact", &spec.move_contacts, |i| {
+        check.contacts().any(|c| c.index == i)
+    })?;
     verify_moved("group list", &spec.move_group_lists, |i| {
         check.group_lists().any(|g| g.index == i)
     })?;
-    verify_moved("radio ID", &spec.move_radio_ids, |i| check.radio_ids().any(|r| r.index == i))?;
+    verify_moved("radio ID", &spec.move_radio_ids, |i| {
+        check.radio_ids().any(|r| r.index == i)
+    })?;
 
     Ok(out)
 }
@@ -581,7 +589,9 @@ fn apply_channel_fields(ch: &mut Channel, index: usize, f: &ChannelFields) -> Re
     }
     if let Some(cc) = f.color_code {
         if cc > 15 {
-            return Err(format!("channel {index} color code {cc} is out of range (0-15)"));
+            return Err(format!(
+                "channel {index} color code {cc} is out of range (0-15)"
+            ));
         }
         ch.set_color_code(cc);
     }

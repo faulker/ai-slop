@@ -1,26 +1,60 @@
 import SwiftUI
 
 /// Which entity family the Codeplug editor is currently showing.
-enum CodeplugSection: String, CaseIterable, Identifiable {
-    case channels = "Channels"
-    case zones = "Zones"
-    case scanLists = "Scan Lists"
-    case contacts = "Contacts"
-    case groupLists = "Group Lists"
-    case radioIds = "Radio IDs"
-    case aprs = "APRS"
+///
+/// The raw values are the section names the core reports in a document's
+/// `capabilities.sections`, so they are snake_case JSON keys, not display text.
+/// `title` is what the user reads.
+enum CodeplugSection: String, Codable, CaseIterable, Identifiable {
+    case channels = "channels"
+    case zones = "zones"
+    case scanLists = "scan_lists"
+    case contacts = "contacts"
+    case groupLists = "group_lists"
+    case radioIds = "radio_ids"
+    case aprs = "aprs"
+    // The QYT sections carry their own prefix because a QYT channel and an
+    // AnyTone channel are different record shapes with different field meanings
+    // and get different panes; sharing one `channels` case would invite a pane
+    // to render the wrong one.
+    case qytChannels = "qyt_channels"
+    case qytSettings = "qyt_settings"
+    case qytBands = "qyt_bands"
 
     var id: String { rawValue }
 
+    /// The AnyTone's sections, in sidebar order. Only a placeholder for the
+    /// sidebar before any document is open — once one is, the core's
+    /// capabilities are what decide.
+    static let anyToneSections: [CodeplugSection] = [
+        .channels, .zones, .scanLists, .contacts, .groupLists, .radioIds, .aprs,
+    ]
+
+    var title: String {
+        switch self {
+        case .channels, .qytChannels: return "Channels"
+        case .zones: return "Zones"
+        case .scanLists: return "Scan Lists"
+        case .contacts: return "Contacts"
+        case .groupLists: return "Group Lists"
+        case .radioIds: return "Radio IDs"
+        case .aprs: return "APRS"
+        case .qytSettings: return "Settings"
+        case .qytBands: return "VFO Channels"
+        }
+    }
+
     var symbol: String {
         switch self {
-        case .channels: return "list.bullet"
+        case .channels, .qytChannels: return "list.bullet"
         case .zones: return "square.grid.2x2"
         case .scanLists: return "antenna.radiowaves.left.and.right"
         case .contacts: return "person.2"
         case .groupLists: return "person.3"
         case .radioIds: return "number"
         case .aprs: return "location.circle"
+        case .qytSettings: return "gearshape"
+        case .qytBands: return "slider.horizontal.3"
         }
     }
 }
@@ -45,6 +79,9 @@ struct CodeplugView: View {
                 case .groupLists: GroupListsPane()
                 case .radioIds: RadioIDsPane()
                 case .aprs: APRSPane()
+                case .qytChannels: QytChannelsPane()
+                case .qytSettings: QytSettingsPane()
+                case .qytBands: QytBandsPane()
                 }
             }
         }
@@ -81,6 +118,40 @@ struct CodeplugFileToolbar: ToolbarContent {
     @EnvironmentObject private var device: DeviceStore
     @State private var confirmWrite = false
 
+    /// The connected ports this document may actually be written to. A radio of
+    /// the wrong model is left out of the menu entirely rather than offered and
+    /// then refused: one click from here is a confirmation dialog for a
+    /// destructive, unrecoverable operation.
+    private var targets: [PortEntry] {
+        writableTargets(among: device.candidatePorts, for: store.model,
+                        manual: device.manualSelection)
+    }
+
+    /// What to say when nothing is writable, which is a different situation from
+    /// nothing being connected. An unattributed adapter is the QYT's normal
+    /// state today, so that case points at the fix instead of stopping at "no".
+    private var noTargetsReason: String {
+        if device.candidatePorts.isEmpty { return "No radios connected" }
+        let modelName = store.model?.displayName ?? "this radio"
+        if device.candidatePorts.contains(where: { $0.model == nil }) {
+            return "Choose \(modelName) for the connected adapter on the Device tab"
+        }
+        return "No connected \(modelName)"
+    }
+
+    /// Select `radio` and open the confirmation, unless it can't take this
+    /// document — then say why, and never show the dialog at all. The core's
+    /// identity check is the backstop; this is the sentence the user can act on.
+    private func begin(write radio: PortEntry) {
+        if let reason = writeRefusalReason(port: radio, documentModel: store.model,
+                                           manual: device.manualSelection) {
+            device.errorMessage = reason
+            return
+        }
+        device.selectedPort = radio.name
+        confirmWrite = true
+    }
+
     var body: some ToolbarContent {
         ToolbarItem {
             // A split button: click Save, or pick Save As from the chevron. Save
@@ -106,15 +177,12 @@ struct CodeplugFileToolbar: ToolbarContent {
             // radios so the user picks the target directly, and stays live even
             // with nothing connected so Refresh is always reachable.
             Menu {
-                if device.radios.isEmpty {
-                    Text("No radios connected")
+                if targets.isEmpty {
+                    Text(noTargetsReason)
                 } else {
-                    ForEach(device.radios) { radio in
-                        Button(radio.product ?? radio.name) {
-                            device.selectedPort = radio.name
-                            confirmWrite = true
-                        }
-                        .disabled(device.busy)
+                    ForEach(targets) { radio in
+                        Button(radio.product ?? radio.name) { begin(write: radio) }
+                            .disabled(device.busy)
                     }
                 }
                 Divider()
@@ -239,6 +307,25 @@ struct UnsavedDot: View {
             .foregroundStyle(.orange)
             .help("Unsaved changes")
             .accessibilityLabel("Unsaved changes")
+    }
+}
+
+/// Stands in for a section the core reports but this build has no editor for
+/// yet. The sidebar row comes from the radio's capabilities, so saying plainly
+/// that the pane isn't built beats hiding a section the radio really has.
+struct UnbuiltPane: View {
+    let noun: String
+
+    var body: some View {
+        VStack(spacing: Spacing.inline) {
+            Text("No editor for these \(noun) yet")
+                .font(.title3.weight(.medium))
+            Text("The values round-trip untouched when you save or write to the radio.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 380)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

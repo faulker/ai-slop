@@ -15,7 +15,7 @@
 
 use serde::Serialize;
 
-use super::{get_bcd8_be, read_ascii};
+use crate::bytes::{get_bcd8_be, read_ascii};
 
 /// Byte size of the APRS settings element (qdmr `APRSSettingsElement::size()`).
 pub const APRS_SETTINGS_SIZE: usize = 0x100;
@@ -79,7 +79,10 @@ impl AprsConfig {
             return None;
         }
         Some(AprsConfig {
-            source_call: read_ascii(&rec[SOURCE_CALL_OFFSET..SOURCE_CALL_OFFSET + CALL_LEN], 0x00),
+            source_call: read_ascii(
+                &rec[SOURCE_CALL_OFFSET..SOURCE_CALL_OFFSET + CALL_LEN],
+                0x00,
+            ),
             source_ssid: rec[SOURCE_SSID_OFFSET],
             destination_call: read_ascii(&rec[DEST_CALL_OFFSET..DEST_CALL_OFFSET + CALL_LEN], 0x00),
             destination_ssid: rec[DEST_SSID_OFFSET],
