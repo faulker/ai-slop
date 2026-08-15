@@ -141,6 +141,8 @@ name and command.
 | `Ctrl-\` | Detach, back to the grid |
 | `Ctrl-n` / `Ctrl-p` | Next / previous session, without detaching |
 | `M-d` | Detach. Still bound from before `Ctrl-\` existed |
+| Wheel up | Scroll back through the job's history (50,000 lines) |
+| `Esc` | Leave scroll mode, back to the live end of the output |
 
 Your own tmux prefix and bindings keep working too, since your config is sourced first, so
 splitting the pane or opening another window is still yours to do. The job's tile keeps showing the
@@ -158,6 +160,16 @@ not reach your job while you are attached. Detach and use the grid if you need t
 | Left click a tile | Focus it |
 | Wheel up / down | Scroll the focused job's output |
 
+The wheel works in both places, but two different things handle it. In the grid and list views the
+TUI does, scrolling the tile you have focused. Inside an attached session the TUI is not running at
+all, so tmux does: the wheel drops the pane into tmux's scroll (copy) mode and walks back through
+the pane's history. `Esc` or `q` returns you to the live end, and the status bar says so while you
+are scrolled back.
+
+Mouse mode is on for the private server, which is what makes that wheel scroll work. The tradeoff is
+the usual tmux one: your terminal's own click-and-drag text selection needs `Shift` (or `Option` on
+iTerm2 and Terminal.app) held down while you are attached.
+
 **Compose prompt**
 
 | Key | Action |
@@ -165,6 +177,16 @@ not reach your job while you are attached. Detach and use the grid if you need t
 | `Enter` | Commit this line, start another |
 | `Enter` on an empty line, `Ctrl-s` | Launch everything queued |
 | `Ctrl-u` | Clear the line |
+| `Esc` | Cancel |
+
+**Confirm and quit dialogs**
+
+| Key | Action |
+|---|---|
+| `←` `→` `↑` `↓` | Move the highlighted option |
+| `Enter` | Choose the highlighted option |
+| `y` / `n` | Yes / no (confirm dialogs) |
+| `k` / `x` | Keep / kill all (quit dialog) |
 | `Esc` | Cancel |
 
 ## How it works
@@ -189,11 +211,30 @@ to get out of sync, which is why `--list` and `--attach` keep working across reb
 The private server sources your `~/.tmux.conf` first, then applies its own settings on top, so your
 prefix and bindings still work while attached. Nothing is ever written to your tmux config.
 
+Each job pane runs through your `$SHELL` with that shell's profile loaded (login and interactive
+flags, so zsh picks up `.zshrc`, bash picks up `.bashrc`, and so on). That matches what a normal
+terminal emulator does, including PATH and other env from your rc files. multi-run writes a small
+`user-shell` wrapper next to its generated tmux.conf for this; it is regenerated when needed.
+
 Those settings on top include the attached-session status bar, the no-prefix keys, and
 `base-index 0` / `pane-base-index 0`. The bases matter: multi-run addresses each job as
 `<session>:0.0` rather than "whatever pane that session is currently on", so a window or split you
 open yourself while attached is never mistaken for the job by the tile, the exit status, or `s`/`e`.
 Pinning the bases makes that address true even if your own config numbers windows from 1.
+
+The private tmux server starts in the directory you ran multi-run in, and keeps it for its whole
+life: it is a daemon that outlives the invocation that started it, and `exit-empty off` means ours
+never exits even with nothing left to hold. Delete or rename that directory afterwards and the
+server is left pointing at a path that no longer exists. From then on every pane it creates inherits
+the broken directory no matter what `new-session -c` said, so each tile opens with `shell-init:
+error retrieving current directory` and anything that calls `getcwd` at shell startup breaks (a
+version-manager hook such as fnm's, for one).
+
+Nothing can move a running process's working directory from outside, so multi-run checks for this at
+startup instead. A stale server holding no sessions is replaced silently, which is the common case
+because an idle server sticks around indefinitely. A stale server that still holds jobs is reported
+rather than thrown away: replacing it would discard output you may not have read yet, so the message
+points at `--restart-server` and leaves the decision to you.
 
 The generated config carries a version header. When a new version of multi-run rewrites it,
 multi-run also sources it into a server that is already running, so new keys and the status bar
@@ -211,6 +252,11 @@ slate.
 - Switching sessions with `Ctrl-n` / `Ctrl-p` and then detaching leaves the grid's selection on the
   job you originally attached to. tmux does not tell the tool which session the client was on when
   it went away.
+- The stale-server check reads the server process's working directory from `/proc` on Linux and
+  through `lsof` elsewhere. Where neither is available the check is skipped rather than guessed at,
+  and a stale server stays undiagnosed until you run `--restart-server`. It also cannot see the case
+  where the old directory has been replaced by a *new* directory at the same path, since the path
+  resolves again even though the server is still holding the old one.
 
 ## Documentation
 

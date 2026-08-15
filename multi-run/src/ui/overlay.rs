@@ -17,6 +17,36 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Widget, Wrap};
 
+/// Blue-tinted panel fill so dialogs read as popups over the tile grid,
+/// not as more of the same default terminal background.
+const DIALOG_BG: Color = Color::Rgb(28, 36, 56);
+/// Cyan border/title to reinforce the modal chrome.
+const DIALOG_BORDER: Color = Color::Cyan;
+/// Primary dialog copy: light so it stays readable on `DIALOG_BG`.
+const DIALOG_FG: Color = Color::White;
+/// Hints and secondary labels: brighter than `DarkGray`, which washed out
+/// on dark terminals.
+const DIALOG_MUTED: Color = Color::Gray;
+
+/// Shared fill + foreground for every centered dialog panel.
+fn dialog_style() -> Style {
+    Style::default().fg(DIALOG_FG).bg(DIALOG_BG)
+}
+
+/// Bordered block painted with the dialog palette (fill + cyan chrome).
+fn dialog_block(title: &str) -> Block<'_> {
+    Block::bordered()
+        .title(title.to_string())
+        .style(dialog_style())
+        .border_style(Style::default().fg(DIALOG_BORDER).bg(DIALOG_BG))
+        .title_style(
+            Style::default()
+                .fg(DIALOG_BORDER)
+                .bg(DIALOG_BG)
+                .add_modifier(Modifier::BOLD),
+        )
+}
+
 /// What to draw for the currently open modal. One variant per DESIGN.md
 /// section 4 `Modal` variant (minus `Modal::None`, which the caller
 /// represents as `Option::None` rather than a variant here).
@@ -32,6 +62,8 @@ pub enum Overlay<'a> {
     },
     Confirm {
         prompt: &'a str,
+        /// 0 = yes, 1 = no.
+        selected: usize,
     },
     /// Counts feed the "N running, M finished" line; `reattach_hint` is the
     /// full `multi-run -a <id>` command shown under "keep".
@@ -39,6 +71,8 @@ pub enum Overlay<'a> {
         running: usize,
         finished: usize,
         reattach_hint: &'a str,
+        /// 0 = keep, 1 = kill.
+        selected: usize,
     },
     Toast {
         text: &'a str,
@@ -60,12 +94,13 @@ pub fn render(overlay: &Overlay, area: Rect, buf: &mut Buffer) {
             queued,
             launch_on_submit,
         } => render_compose(input, queued, *launch_on_submit, area, buf),
-        Overlay::Confirm { prompt } => render_confirm(prompt, area, buf),
+        Overlay::Confirm { prompt, selected } => render_confirm(prompt, *selected, area, buf),
         Overlay::ExitPrompt {
             running,
             finished,
             reattach_hint,
-        } => render_exit_prompt(*running, *finished, reattach_hint, area, buf),
+            selected,
+        } => render_exit_prompt(*running, *finished, reattach_hint, *selected, area, buf),
         Overlay::Toast { text, is_error } => render_toast(text, *is_error, area, buf),
         Overlay::ErrorLog { entries, scroll } => render_error_log(entries, *scroll, area, buf),
     }
@@ -86,12 +121,18 @@ fn centered(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-/// Clear `rect` and draw `block` as its border, returning the inner rect to
-/// fill with content. Clearing matters because overlays sit on top of
-/// already-drawn tiles; without it, wide glyphs or partial redraws from the
-/// tile underneath can show through gaps.
+/// Clear `rect`, paint the dialog fill, then draw `block` as its border,
+/// returning the inner rect to fill with content. Clearing matters because
+/// overlays sit on top of already-drawn tiles; without it, wide glyphs or
+/// partial redraws from the tile underneath can show through gaps. The
+/// explicit fill makes the popup visually distinct from the grid behind it.
 fn popup(block: Block<'_>, rect: Rect, buf: &mut Buffer) -> Rect {
     Clear.render(rect, buf);
+    for y in rect.top()..rect.bottom() {
+        for x in rect.left()..rect.right() {
+            buf[(x, y)].set_style(dialog_style());
+        }
+    }
     let inner = block.inner(rect);
     block.render(rect, buf);
     inner
@@ -101,42 +142,46 @@ fn render_help(area: Rect, buf: &mut Buffer) {
     // Tall enough for every line; `centered` clamps to the terminal, so a
     // short window simply shows fewer of them.
     let rect = centered(56, 31, area);
-    let block = Block::bordered()
-        .title(" Help ")
-        .title_alignment(Alignment::Center);
+    let block = dialog_block(" Help ").title_alignment(Alignment::Center);
     let inner = popup(block, rect, buf);
 
+    let heading = Style::default()
+        .fg(DIALOG_BORDER)
+        .bg(DIALOG_BG)
+        .add_modifier(Modifier::BOLD);
+    let body = dialog_style();
+    let muted = Style::default().fg(DIALOG_MUTED).bg(DIALOG_BG);
     let lines = vec![
-        Line::from("Global").style(Style::default().add_modifier(Modifier::BOLD)),
-        Line::from("  ?          toggle this help"),
-        Line::from("  v          toggle grid / list view"),
-        Line::from("  1 / 2      grid / list view"),
-        Line::from("  n          new command"),
-        Line::from("  !          error log"),
-        Line::from("  q, Ctrl-c  quit"),
+        Line::from("Global").style(heading),
+        Line::from("  ?          toggle this help").style(body),
+        Line::from("  v          toggle grid / list view").style(body),
+        Line::from("  1 / 2      grid / list view").style(body),
+        Line::from("  n          new command").style(body),
+        Line::from("  !          error log").style(body),
+        Line::from("  q, Ctrl-c  quit").style(body),
         Line::from(""),
-        Line::from("Navigation").style(Style::default().add_modifier(Modifier::BOLD)),
-        Line::from("  j/k, h/l   move focus"),
-        Line::from("  Tab / S-Tab switch panel"),
-        Line::from("  arrows     scroll selected panel"),
-        Line::from("  g / G      first / last job"),
-        Line::from("  Alt-1..9   focus job N"),
-        Line::from("  [ / ]      previous / next page"),
-        Line::from("  Ctrl-u/d   half page (list view)"),
-        Line::from("  Ctrl-b/f   full page (list view)"),
+        Line::from("Navigation").style(heading),
+        Line::from("  j/k, h/l   move focus").style(body),
+        Line::from("  Tab / S-Tab switch panel").style(body),
+        Line::from("  arrows     scroll selected panel").style(body),
+        Line::from("  g / G      first / last job").style(body),
+        Line::from("  Alt-1..9   focus job N").style(body),
+        Line::from("  [ / ]      previous / next page").style(body),
+        Line::from("  Ctrl-u/d   half page (list view)").style(body),
+        Line::from("  Ctrl-b/f   full page (list view)").style(body),
         Line::from(""),
-        Line::from("Session").style(Style::default().add_modifier(Modifier::BOLD)),
-        Line::from("  Enter, a   attach"),
-        Line::from("  Ctrl-\\     detach (while attached)"),
-        Line::from("  Ctrl-n/p   next / previous session"),
-        Line::from("  s          stop (keeps output)"),
-        Line::from("  X          force kill (drops output)"),
-        Line::from("  d / D      dismiss / dismiss all finished"),
-        Line::from("  r          re-run"),
+        Line::from("Session").style(heading),
+        Line::from("  Enter, a   attach").style(body),
+        Line::from("  Ctrl-\\     detach (while attached)").style(body),
+        Line::from("  Ctrl-n/p   next / previous session").style(body),
+        Line::from("  s          stop (keeps output)").style(body),
+        Line::from("  X          force kill (drops output)").style(body),
+        Line::from("  d / D      dismiss / dismiss all finished").style(body),
+        Line::from("  r          re-run").style(body),
         Line::from(""),
-        Line::from("Esc to close").style(Style::default().fg(Color::DarkGray)),
+        Line::from("Esc to close").style(muted),
     ];
-    Paragraph::new(lines).render(inner, buf);
+    Paragraph::new(lines).style(dialog_style()).render(inner, buf);
 }
 
 fn render_compose(
@@ -152,43 +197,45 @@ fn render_compose(
     } else {
         " Add command "
     };
-    let block = Block::bordered().title(title);
+    let block = dialog_block(title);
     let inner = popup(block, rect, buf);
 
+    let muted = Style::default().fg(DIALOG_MUTED).bg(DIALOG_BG);
     let mut lines: Vec<Line<'static>> = Vec::new();
     if !queued.is_empty() {
-        lines.push(Line::from("queued:").style(Style::default().fg(Color::DarkGray)));
+        lines.push(Line::from("queued:").style(muted));
         for cmd in queued {
-            lines.push(Line::from(format!("  {cmd}")));
+            lines.push(Line::from(format!("  {cmd}")).style(dialog_style()));
         }
     }
     lines.push(Line::from(vec![
-        Span::raw("> "),
-        Span::raw(input.to_string()),
+        Span::styled("> ", dialog_style()),
+        Span::styled(input.to_string(), dialog_style()),
     ]));
     lines.push(Line::from(""));
     lines.push(
-        Line::from("Enter: next  Ctrl-s: launch  Ctrl-u: clear line  Esc: cancel")
-            .style(Style::default().fg(Color::DarkGray)),
+        Line::from("Enter: next  Ctrl-s: launch  Ctrl-u: clear line  Esc: cancel").style(muted),
     );
     Paragraph::new(lines)
+        .style(dialog_style())
         .wrap(Wrap { trim: false })
         .render(inner, buf);
 }
 
-fn render_confirm(prompt: &str, area: Rect, buf: &mut Buffer) {
-    let rect = centered((prompt.len() as u16 + 6).max(30), 5, area);
-    let block = Block::bordered()
-        .title(" Confirm ")
-        .title_alignment(Alignment::Center);
+fn render_confirm(prompt: &str, selected: usize, area: Rect, buf: &mut Buffer) {
+    let rect = centered((prompt.len() as u16 + 6).max(36), 5, area);
+    let block = dialog_block(" Confirm ").title_alignment(Alignment::Center);
     let inner = popup(block, rect, buf);
 
+    let yes = choice_span("[y] yes", selected == 0);
+    let no = choice_span("[n] no", selected == 1);
     let lines = vec![
-        Line::from(prompt.to_string()),
+        Line::from(prompt.to_string()).style(dialog_style()),
         Line::from(""),
-        Line::from("[y] yes    [n] no").style(Style::default().fg(Color::DarkGray)),
+        Line::from(vec![yes, Span::styled("    ", dialog_style()), no]),
     ];
     Paragraph::new(lines)
+        .style(dialog_style())
         .alignment(Alignment::Center)
         .render(inner, buf);
 }
@@ -197,31 +244,51 @@ fn render_exit_prompt(
     running: usize,
     finished: usize,
     reattach_hint: &str,
+    selected: usize,
     area: Rect,
     buf: &mut Buffer,
 ) {
     let rect = centered(64, 9, area);
-    let block = Block::bordered().title(" Quit multi-run ");
+    let block = dialog_block(" Quit multi-run ");
     let inner = popup(block, rect, buf);
 
+    let muted = Style::default().fg(DIALOG_MUTED).bg(DIALOG_BG);
     let total = running + finished;
     let summary = format!(
         "{running} session{} still running, {finished} finished.",
         if running == 1 { "" } else { "s" }
     );
-    let lines = vec![
-        Line::from(summary),
-        Line::from(""),
-        Line::from("  [k]  keep them running"),
-        Line::from(format!("       reattach with:  {reattach_hint}"))
-            .style(Style::default().fg(Color::DarkGray)),
-        Line::from(format!(
+    let keep_label = choice_span("  [k]  keep them running", selected == 0);
+    let kill_label = choice_span(
+        &format!(
             "  [x]  kill all {total} session{}",
             if total == 1 { "" } else { "s" }
-        )),
-        Line::from("  [Esc] cancel"),
+        ),
+        selected == 1,
+    );
+    let lines = vec![
+        Line::from(summary).style(dialog_style()),
+        Line::from(""),
+        Line::from(keep_label),
+        Line::from(format!("       reattach with:  {reattach_hint}")).style(muted),
+        Line::from(kill_label),
+        Line::from("  [Esc] cancel  ↑↓/←→ move  Enter choose").style(muted),
     ];
-    Paragraph::new(lines).render(inner, buf);
+    Paragraph::new(lines).style(dialog_style()).render(inner, buf);
+}
+
+/// Style a dialog choice: bright reverse highlight when selected so arrows
+/// have a clear target; light muted otherwise (readable on `DIALOG_BG`).
+fn choice_span(label: &str, selected: bool) -> Span<'static> {
+    let style = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(DIALOG_MUTED).bg(DIALOG_BG)
+    };
+    Span::styled(label.to_string(), style)
 }
 
 /// A small, non-blocking corner box. Transient: `app.rs` clears it after 5s
@@ -235,14 +302,19 @@ fn render_toast(text: &str, is_error: bool, area: Rect, buf: &mut Buffer) {
         width,
         height: 3.min(area.height),
     };
-    let style = if is_error {
-        Style::default().fg(Color::Red)
+    let accent = if is_error {
+        Color::Red
     } else {
-        Style::default().fg(Color::Yellow)
+        Color::Yellow
     };
-    let block = Block::bordered().border_style(style);
+    let block = Block::bordered()
+        .style(dialog_style())
+        .border_style(Style::default().fg(accent).bg(DIALOG_BG))
+        .title_style(Style::default().fg(accent).bg(DIALOG_BG));
     let inner = popup(block, rect, buf);
-    Paragraph::new(text).render(inner, buf);
+    Paragraph::new(text)
+        .style(dialog_style().fg(accent))
+        .render(inner, buf);
 }
 
 fn render_error_log(entries: &[String], scroll: u16, area: Rect, buf: &mut Buffer) {
@@ -251,20 +323,23 @@ fn render_error_log(entries: &[String], scroll: u16, area: Rect, buf: &mut Buffe
         area.height.saturating_sub(4).max(6),
         area,
     );
-    let block = Block::bordered().title(" Errors (Esc to close) ");
+    let block = dialog_block(" Errors (Esc to close) ");
     let inner = popup(block, rect, buf);
 
     let text: Text<'static> = if entries.is_empty() {
-        Text::from("No errors logged.")
+        Text::from(Line::from("No errors logged.").style(dialog_style()))
     } else {
         Text::from(
             entries
                 .iter()
-                .map(|e| Line::from(e.clone()))
+                .map(|e| Line::from(e.clone()).style(dialog_style()))
                 .collect::<Vec<_>>(),
         )
     };
-    Paragraph::new(text).scroll((scroll, 0)).render(inner, buf);
+    Paragraph::new(text)
+        .style(dialog_style())
+        .scroll((scroll, 0))
+        .render(inner, buf);
 }
 
 #[cfg(test)]
@@ -348,6 +423,7 @@ mod tests {
     fn confirm_overlay_shows_prompt_and_yn_hint() {
         let overlay = Overlay::Confirm {
             prompt: "Kill job g1.2?",
+            selected: 0,
         };
         let buf = render_to_buffer(&overlay, 50, 10);
         let text = buffer_text(&buf);
@@ -362,6 +438,7 @@ mod tests {
             running: 2,
             finished: 1,
             reattach_hint: "multi-run -a g1",
+            selected: 0,
         };
         let buf = render_to_buffer(&overlay, 70, 12);
         let text = buffer_text(&buf);
@@ -404,5 +481,59 @@ mod tests {
         let buf = render_to_buffer(&overlay, 60, 20);
         let text = buffer_text(&buf);
         assert!(text.contains("No errors logged"));
+    }
+
+    /// Confirm dialogs use the tinted popup fill and light body text so they
+    /// read as modals, not as more terminal default background.
+    #[test]
+    fn confirm_dialog_uses_popup_background_and_light_text() {
+        let overlay = Overlay::Confirm {
+            prompt: "Kill job g1.2?",
+            selected: 0,
+        };
+        let buf = render_to_buffer(&overlay, 50, 10);
+
+        // Sample the center of the dialog panel (inside the border).
+        let cell = &buf[(25, 5)];
+        assert_eq!(
+            cell.style().bg,
+            Some(DIALOG_BG),
+            "dialog background should be the tinted popup color"
+        );
+        assert_eq!(
+            cell.style().fg,
+            Some(DIALOG_FG),
+            "dialog body text should be light for readability"
+        );
+    }
+
+    /// Unselected choices must stay lighter than DarkGray so they remain
+    /// readable on the tinted dialog background.
+    #[test]
+    fn confirm_unselected_choice_is_not_dark_gray() {
+        let overlay = Overlay::Confirm {
+            prompt: "Kill job g1.2?",
+            selected: 0, // yes selected; no is muted
+        };
+        let buf = render_to_buffer(&overlay, 50, 10);
+        let text = buffer_text(&buf);
+        // Find a cell that belongs to the unselected "[n] no" label.
+        let mut found_muted = false;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                if cell.symbol() == "n" && text.contains("[n]") {
+                    let fg = cell.style().fg;
+                    if fg == Some(DIALOG_MUTED) {
+                        found_muted = true;
+                        assert_ne!(fg, Some(Color::DarkGray));
+                    }
+                }
+            }
+        }
+        assert!(
+            found_muted,
+            "expected unselected choice to use DIALOG_MUTED, got:\n{text}"
+        );
     }
 }

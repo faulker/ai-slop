@@ -196,8 +196,9 @@ pub enum ViewArg {
     about = "Run shell commands in parallel tmux sessions with a live TUI"
 )]
 pub struct Cli {
-    /// Shell commands to run, one per argument. Each runs via /bin/sh -c
-    /// in the current directory. If omitted, the compose screen opens.
+    /// Shell commands to run, one per argument. Each runs via the user's
+    /// `$SHELL` (with that shell's profile loaded, e.g. `.zshrc`) in the
+    /// current directory. If omitted, the compose screen opens.
     #[arg(allow_hyphen_values = true)]
     pub commands: Vec<String>,
 

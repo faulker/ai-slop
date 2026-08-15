@@ -52,7 +52,10 @@ These are explicitly out of scope. Do not build them.
 - **No general keystroke proxying.** We do not forward arbitrary keys through `send-keys`. Research
   item 6 is clear that this produces a subtly broken terminal. We support exactly `C-c`, `C-d`, and
   an optional literal line, and require a real attach for anything else.
-- **No mouse forwarding into panes.** `send-keys` cannot express mouse events at all (item 6).
+- **No mouse forwarding into panes from the TUI.** `send-keys` cannot express mouse events at all
+  (item 6), so a wheel notch in the grid scrolls our own tile buffer and never reaches the pane.
+  Attaching is a real terminal handoff rather than a proxy, so the mouse does work there; tmux's
+  `mouse on` handles it (section 5).
 - **No remote hosts, no ssh, no Windows.** tmux is a hard dependency.
 - **No supervision.** We do not restart crashed commands, retry, or apply backoff. `r` re-runs on
   demand and that is the whole feature.
@@ -86,8 +89,9 @@ because pulling `regex` for one grammar is not worth it.
 multi-run [OPTIONS] [COMMAND]...
 
 Arguments:
-  [COMMAND]...  Shell commands to run, one per argument. Each runs via /bin/sh -c
-                in the current directory. If omitted, the compose screen opens.
+  [COMMAND]...  Shell commands to run, one per argument. Each runs via the user's
+                $SHELL with that shell's profile loaded (e.g. .zshrc) in the
+                current directory. If omitted, the compose screen opens.
 
 Options:
   -c, --command <CMD>    Add a command. Repeatable. Use this when the command
@@ -400,9 +404,9 @@ pub enum Modal {
     /// Bare-launch compose screen, and the mid-run "add command" prompt.
     /// `launch_on_submit` distinguishes them.
     Compose { input: String, queued: Vec<String>, launch_on_submit: bool },
-    Confirm { prompt: String, action: Box<Action> },
-    /// Quit was requested and live jobs exist.
-    ExitPrompt,
+    Confirm { prompt: String, action: Box<Action>, selected: usize },
+    /// Quit was requested and live jobs exist. `selected`: 0 = keep, 1 = kill.
+    ExitPrompt { selected: usize },
     /// Transient, auto-clears after 5s. Full history reachable with `!`.
     Toast { text: String, at: std::time::Instant, is_error: bool },
     ErrorLog { scroll: u16 },
@@ -439,6 +443,7 @@ pub enum Action {
     OpenCompose, OpenHelp, OpenErrorLog, CloseModal,
     ComposeChar(char), ComposeBackspace, ComposeClear, ComposeSubmit, ComposeCommit,
     ConfirmYes, ConfirmNo,
+    SelectPrev, SelectNext, SelectActivate,
     Quit, QuitKeepAll, QuitKillAll,
 }
 ```
@@ -496,7 +501,7 @@ Generated content (`tmux/conf.rs`):
 
 ```tmux
 # multi-run generated config. Do not edit; regenerated when the version below changes.
-# multi-run-conf-version: 3
+# multi-run-conf-version: 5
 
 source-file -q ~/.tmux.conf          # omitted when --no-user-conf
 source-file -q ~/.config/tmux/tmux.conf
@@ -506,7 +511,8 @@ set -g remain-on-exit-format ""      # omitted below tmux 3.3 (gotcha A, section
 set -g exit-empty off
 set -g detach-on-destroy on
 set -g history-limit 50000
-set -g default-shell /bin/sh
+set -g mouse on                      # wheel scrolls an attached session
+set -g default-shell <config-dir>/user-shell   # wrapper: exec $SHELL -il -c …
 set -g escape-time 10
 set -g base-index 0                  # job pane is always <session>:0.0
 set -g pane-base-index 0
@@ -521,12 +527,31 @@ bind-key -n 'C-\' detach-client
 bind-key -n M-d detach-client
 bind-key -n C-n switch-client -n
 bind-key -n C-p switch-client -p
+bind-key -T copy-mode Escape send-keys -X cancel
+bind-key -T copy-mode-vi Escape send-keys -X cancel
 ```
 
 **Attached-session keys.** `C-\`, `C-n` and `C-p` match the ccsm session browser; `M-d` stays bound
 from version 1. The status bar exists to make them discoverable, since none of them are visible
 from the TUI's own keymap. Nothing here creates windows for the user: a job session is one pane,
 and only the user's own prefix bindings can change that.
+
+**Attached-session scrollback.** Two different things handle the wheel, and only one of them is
+ours. In the grid and list views the TUI owns mouse capture and scrolls the focused tile
+(section 7's `ScrollUp`/`ScrollDown`). Inside an attached session the TUI is not running: `attach.rs`
+step 4 tears mouse reporting down before handing the terminal over, so a wheel notch is tmux's to
+interpret. Without `mouse on` tmux has no root-table `WheelUpPane` binding to fire and the notch
+does nothing, which is why the single-session view was unscrollable while the grid was not. With it
+on, the stock binding runs `copy-mode -e` and the pane walks back through `history-limit`.
+
+`mouse on` is set after the `source-file` lines, like every other `set -g` here, so a user config
+with `set -g mouse off` cannot take the attached view's scrollback away. The cost is the usual tmux
+one: terminal-native selection needs `Shift` held while attached.
+
+The two `Escape` bindings back the status bar's "ESC exits scroll mode" hint. tmux only cancels copy
+mode on `Escape` under `mode-keys emacs`; with `mode-keys vi` (which tmux also infers from a vi-ish
+`$EDITOR`) the stock binding is `clear-selection`, which leaves the pane in copy mode and the hint
+lying. Binding both tables makes it true either way.
 
 **Job-pane addressing.** Because the user *can* split or add a window with their own bindings,
 "the session's current pane" is not reliably the job. Everything that reads or acts on a job targets `=<S>:0.0` (`capture-pane`, `send-keys`,
@@ -602,9 +627,13 @@ set-option -t =mr-k3f9-1: @mr_label   backend checks
 
 Notes:
 
-- The command string is the **last** argument to `new-session`. With
-  `set -g default-shell /bin/sh` in our config it runs as `/bin/sh -c '<cmd>'`, which is why
-  gotcha B (tmux uses `$SHELL`, so a fish user gets different syntax) does not bite us.
+- The command string is the **last** argument to `new-session`. Our config sets
+  `default-shell` to a generated `user-shell` wrapper that re-execs the user's
+  real `$SHELL` with login/interactive flags (e.g. `zsh -il -c '<cmd>'`), so
+  each job pane loads the same profile files a normal terminal session would
+  (`.zshrc`, `.bashrc`, fish login config, …). Command syntax therefore matches
+  the user's shell. The wrapper bakes the shell path in; it must not read
+  `$SHELL` at runtime, because tmux sets `$SHELL` to `default-shell` itself.
 - `-x`/`-y` are the tile's inner size, computed before creation (research item 4). If the layout is
   not known yet, use 80x24 and let the first debounced resize correct it.
 - Targets use `=name:` on `set-option`, with the trailing colon, per **gotcha D**. Without the
@@ -921,8 +950,10 @@ until the user dismisses it" requirement.
 
 | Key | Action |
 |---|---|
-| `y` / `Enter` | Confirm |
-| `n` / `Esc` | Cancel |
+| `y` | Confirm (confirm dialog only) |
+| `n` / `Esc` | Cancel (confirm: cancel; exit: Esc cancels) |
+| `←` `→` `↑` `↓` / Tab / Shift-Tab | Move the highlighted option |
+| `Enter` | Activate the highlighted option |
 
 Exit prompt only:
 
@@ -933,7 +964,8 @@ Exit prompt only:
 | `Esc` | Cancel, stay in the tool |
 
 The exit prompt uses `k`/`x` rather than `y`/`n` because "yes" is genuinely ambiguous when the
-question is "keep or kill".
+question is "keep or kill". Arrow keys and Enter work the same way on both dialogs so the highlight
+is usable without memorizing the letter shortcuts.
 
 `keymap.rs` implements this as one pure function,
 `fn map(view: ViewMode, modal: &Modal, key: KeyEvent) -> Option<Action>`, with modal maps checked

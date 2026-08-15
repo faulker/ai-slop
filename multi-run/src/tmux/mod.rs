@@ -55,6 +55,11 @@ use crate::error::{self, TmuxError};
 /// same socket does not have this option and is excluded server-side.
 const MR_GROUP_FILTER: &str = "#{!=:#{@mr_group},}";
 
+/// `display-message` format for the stale-server check: the server's own pid
+/// and how many sessions it is holding, in one invocation. Both are server
+/// scoped, so no target is needed.
+const SERVER_STATUS_FORMAT: &str = "#{pid}\t#{server_sessions}";
+
 /// `-F` format string for the session half of the metadata poll. Fields are
 /// separated by a literal tab byte, written here as the Rust escape `\t`
 /// (verified against tmux 3.7b that DESIGN.md section 5's `#{l:\t}` renders
@@ -108,6 +113,59 @@ pub struct NewSessionSpec {
     pub started: u64,
     /// `@mr_label` is only written when this is `Some`.
     pub label: Option<String>,
+}
+
+/// Verdict of [`Tmux::server_cwd_state`].
+///
+/// The tmux server starts in the directory multi-run was launched from and
+/// keeps it for life: it is a daemon that outlives the invocation which
+/// started it, and `exit-empty off` (see `tmux/conf.rs`) means ours never
+/// exits even with nothing left to hold. Delete or rename that directory later
+/// and the server is left holding an unlinked inode. `getcwd` inside it fails,
+/// and from then on every pane the server forks inherits the broken directory:
+/// `new-session -c <dir>` does not rescue it, tmux reports an empty
+/// `pane_current_path`, and each job's shell opens with `shell-init: error
+/// retrieving current directory`, taking with it anything that calls `getcwd`
+/// at shell startup, e.g. a version-manager hook such as fnm's.
+///
+/// Nothing can move a running process's working directory from the outside, so
+/// the only cure is a new server, which is `main.rs`'s call to make: it is free
+/// when the stale server is holding no sessions and destructive otherwise.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServerCwd {
+    /// No server on our socket, so nothing can be stale yet.
+    NoServer,
+    /// The server is standing in a directory that still exists.
+    Live,
+    /// The server's directory has been deleted or renamed. Every pane it
+    /// creates from now on is broken. `sessions` is how much a restart costs.
+    Gone { cwd: PathBuf, sessions: u32 },
+    /// The check could not be made (a platform whose process table we cannot
+    /// read, or output we could not parse). Treated as "carry on": a
+    /// diagnostic must not become a new way to fail.
+    Unknown,
+}
+
+/// A running process's working directory, or `None` where we cannot ask.
+///
+/// Linux publishes it as a symlink under `/proc`, which for a deleted
+/// directory reads back with a " (deleted)" suffix. Everywhere else this goes
+/// through `lsof`, whose `-F n` output prefixes each path with `n`, and which
+/// keeps reporting the original path after a delete. Both leave the caller
+/// with a path that fails to resolve, which is the signal it wants.
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    if cfg!(target_os = "linux") {
+        return std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
+    }
+    let out = Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-F", "n"])
+        .output()
+        .ok()?;
+    String::from_utf8(out.stdout).ok()?.lines().find_map(|line| {
+        line.strip_prefix('n')
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
 /// The two record sets returned by one metadata poll (DESIGN.md section 5,
@@ -204,6 +262,22 @@ impl Tmux {
         format!("={session_name}:0")
     }
 
+    /// The single place a `tmux` child process is configured. `full` is the
+    /// complete argv after the program name. `attach.rs` spawns through here
+    /// too, since it needs the same setup with inherited stdio rather than
+    /// captured output.
+    ///
+    /// No working directory is set, deliberately: the child inherits ours, and
+    /// multi-run never chdirs, so the tmux server starts in the directory the
+    /// user ran multi-run in. That directory is the server's for life (it is a
+    /// daemon, and `exit-empty off` means ours never exits to shed it), which
+    /// is what [`Tmux::server_cwd_state`] exists to keep an eye on.
+    pub fn command(full: &[String]) -> Command {
+        let mut cmd = Command::new("tmux");
+        cmd.args(full);
+        cmd
+    }
+
     /// Run one possibly-chained tmux invocation and classify a non-zero exit
     /// via `error::classify`. `subcommand` is a short label (e.g.
     /// `"new-session"`) used only for diagnostics in the resulting
@@ -212,14 +286,50 @@ impl Tmux {
     fn invoke(&self, subcommand: &str, args: Vec<String>) -> Result<Output, TmuxError> {
         let mut full = self.base();
         full.extend(args);
-        let out = Command::new("tmux")
-            .args(&full)
-            .output()
-            .map_err(TmuxError::Io)?;
+        let out = Self::command(&full).output().map_err(TmuxError::Io)?;
         if out.status.success() {
             Ok(out)
         } else {
             Err(error::classify(subcommand, &full, &out))
+        }
+    }
+
+    /// Whether the already-running server is still standing in a directory
+    /// that exists. See [`ServerCwd`] for why this is worth a syscall.
+    ///
+    /// Runs only against a server that is already up; with none running there
+    /// is nothing to be stale and the answer is [`ServerCwd::NoServer`]. The
+    /// pid and session count come from one `display-message`, and the pid's
+    /// working directory from the platform's process table.
+    pub fn server_cwd_state(&self) -> ServerCwd {
+        let out = match self.invoke(
+            "display-message",
+            vec![
+                "display-message".into(),
+                "-p".into(),
+                SERVER_STATUS_FORMAT.into(),
+            ],
+        ) {
+            Ok(out) => out,
+            // Every other failure is someone else's to report: this check must
+            // never be the thing that stops a launch.
+            Err(_) => return ServerCwd::NoServer,
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let (pid, sessions) = match text.trim().split_once('\t') {
+            Some((pid, sessions)) => (pid.trim(), sessions.trim()),
+            None => return ServerCwd::Unknown,
+        };
+        let (Ok(pid), Ok(sessions)) = (pid.parse::<u32>(), sessions.parse::<u32>()) else {
+            return ServerCwd::Unknown;
+        };
+        match process_cwd(pid) {
+            // A path the server still holds but that no longer resolves is
+            // exactly the unlinked-directory case. Linux marks it by appending
+            // " (deleted)", macOS reports the old path as-is; neither exists.
+            Some(cwd) if !cwd.exists() => ServerCwd::Gone { cwd, sessions },
+            Some(_) => ServerCwd::Live,
+            None => ServerCwd::Unknown,
         }
     }
 
@@ -257,9 +367,10 @@ impl Tmux {
     /// process (DESIGN.md section 5, invocation 2). Guards: item 1
     /// (`remain-on-exit` is already global via the `-f` config, so there is
     /// no race even for an instantly-exiting command), item 2 (`@mr_*`
-    /// namespacing), gotcha B (the command runs under `/bin/sh` because our
-    /// config sets `default-shell`), gotcha C (exact-match targeting for the
-    /// `set-option` calls), gotcha D (the trailing colon on every target).
+    /// namespacing), profile loading (config `default-shell` is the
+    /// `user-shell` wrapper that re-execs `$SHELL` with login/interactive
+    /// flags), gotcha C (exact-match targeting for the `set-option` calls),
+    /// gotcha D (the trailing colon on every target).
     pub fn create_session(&self, spec: &NewSessionSpec) -> Result<(), TmuxError> {
         let t = Self::target(&spec.session_name);
         let mut args: Vec<String> = vec![
@@ -700,6 +811,16 @@ mod tests {
     #[test]
     fn target_is_exact_match_with_trailing_colon() {
         assert_eq!(Tmux::target("mr-k3f9-1"), "=mr-k3f9-1:");
+    }
+
+    /// The server takes its lifelong working directory from whichever of our
+    /// invocations starts it, and that is meant to be the directory multi-run
+    /// itself was started in. Leaving the child's directory unset is what
+    /// achieves it, since multi-run never chdirs.
+    #[test]
+    fn tmux_children_inherit_our_working_directory() {
+        let cmd = Tmux::command(&["list-sessions".to_string()]);
+        assert_eq!(cmd.get_current_dir(), None);
     }
 
     #[test]

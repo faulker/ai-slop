@@ -8,7 +8,6 @@
 //! `Outcome`.
 
 use std::io::{self, Write};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -101,9 +100,7 @@ pub fn round_trip(h: Handoff<'_>) -> Outcome {
     // Step 7. Blocking foreground child with inherited stdio. Print nothing
     // between here and the restore: tmux writes "[detached ...]" to the
     // primary screen on the way out, and step 9's Clear wipes it.
-    let status = Command::new("tmux")
-        .args(h.tmux.attach_argv(h.session))
-        .status();
+    let status = Tmux::command(&h.tmux.attach_argv(h.session)).status();
 
     // Steps 8 to 10. Always restore, whatever the attach did.
     let _ = enable_raw_mode();

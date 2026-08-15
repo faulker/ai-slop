@@ -40,7 +40,7 @@ use crate::error::TmuxError;
 use crate::model::{Group, Job, JobState, PaneFacts};
 use crate::poll::{TileKind, TileSpec, TmuxOp, ToMain, ToPoller};
 use crate::preflight::Tier;
-use crate::tmux::{CaptureMode, NewSessionSpec, Tmux};
+use crate::tmux::{CaptureMode, NewSessionSpec, ServerCwd, Tmux};
 use crate::ui::layout::ViewMode;
 
 /// Exit code when tmux is not installed (DESIGN.md section 2).
@@ -78,6 +78,7 @@ fn run(cli: Cli) -> Result<i32> {
         tmux::conf::ConfOptions {
             source_user_conf: !cli.no_user_conf,
             tmux_3_3_plus: tier == Tier::Full,
+            ..tmux::conf::ConfOptions::default()
         },
     )
     .with_context(|| format!("cannot write tmux config at {}", conf_path.display()))?;
@@ -96,6 +97,8 @@ fn run(cli: Cli) -> Result<i32> {
         // Killing a stopped server is not an error worth reporting: the goal
         // is "no server running", which is already true.
         let _ = tmux.kill_server();
+    } else {
+        handle_stale_server(&tmux);
     }
 
     if cli.list {
@@ -120,6 +123,35 @@ fn run(cli: Cli) -> Result<i32> {
     });
 
     tui(tmux, tier, commands, attach_target, view, cli.label.clone())
+}
+
+/// Deal with a server whose working directory has been deleted out from under
+/// it (see `tmux::ServerCwd`). Every pane such a server creates is born broken,
+/// and the only cure is a new server, so:
+///
+/// - holding nothing: replace it silently. There is nothing to lose, and this
+///   is the common case, since `exit-empty off` keeps an idle server alive
+///   forever waiting to poison the next launch.
+/// - holding sessions: say so and carry on. Throwing away the user's jobs,
+///   including finished ones they have not read yet, is their call to make with
+///   `--restart-server`, not ours to make for them.
+fn handle_stale_server(tmux: &Tmux) {
+    match tmux.server_cwd_state() {
+        ServerCwd::Gone { sessions: 0, .. } => {
+            let _ = tmux.kill_server();
+        }
+        ServerCwd::Gone { cwd, sessions } => {
+            let plural = if sessions == 1 { "" } else { "s" };
+            eprintln!(
+                "multi-run: the running tmux server started in {}, which no longer exists, so new \
+                 jobs will report \"shell-init: error retrieving current directory\". Run \
+                 `multi-run --restart-server` to replace it, discarding {sessions} existing \
+                 session{plural}.",
+                cwd.display()
+            );
+        }
+        ServerCwd::NoServer | ServerCwd::Live | ServerCwd::Unknown => {}
+    }
 }
 
 /// Resolve tmux presence and version into a capability tier, or an error

@@ -420,7 +420,10 @@ mod tests {
     fn confirm_overlay_draws_on_top() {
         let g = group(vec![job(1, "cargo test", JobState::Running)]);
         let mut state = draw_state(&g, ViewMode::Grid);
-        state.overlay = Some(Overlay::Confirm { prompt: "Kill it?" });
+        state.overlay = Some(Overlay::Confirm {
+            prompt: "Kill it?",
+            selected: 0,
+        });
         let buf = render_to_buffer(&state, 60, 24);
         let text = buffer_text(&buf);
         assert!(
@@ -437,6 +440,7 @@ mod tests {
             running: 1,
             finished: 0,
             reattach_hint: "multi-run -a g1",
+            selected: 0,
         });
         let buf = render_to_buffer(&state, 70, 24);
         let text = buffer_text(&buf);

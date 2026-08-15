@@ -40,7 +40,7 @@ mod preflight;
 #[path = "../src/tmux/mod.rs"]
 mod tmux;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -1204,4 +1204,374 @@ fn source_conf_without_a_server_is_not_an_error() {
         .tmux
         .source_conf()
         .expect("no server is not a failure");
+}
+
+/// Job panes must load the user's shell profile (e.g. `.zshrc`), matching a
+/// normal terminal emulator. Uses a throwaway `ZDOTDIR` so the test never
+/// touches the real home directory's rc files.
+#[test]
+fn job_pane_loads_user_shell_profile() {
+    let Some(_) = tmux_or_skip() else { return };
+    if !PathBuf::from("/bin/zsh").is_file() {
+        eprintln!("skipping profile-load test: /bin/zsh not found");
+        return;
+    }
+
+    let zdot = std::env::temp_dir().join(format!(
+        "mr-zdot-{}-{}",
+        std::process::id(),
+        nanos()
+    ));
+    std::fs::create_dir_all(&zdot).unwrap();
+    std::fs::write(zdot.join(".zshrc"), "export MR_PROFILE_PROBE=from-zshrc\n").unwrap();
+
+    let socket = format!("mrtest-profile-{}-{}", std::process::id(), nanos());
+    let conf_path = std::env::temp_dir().join(format!("{socket}.conf"));
+    tmux::conf::ensure_with_user_shell(
+        &conf_path,
+        tmux::conf::ConfOptions {
+            source_user_conf: false,
+            tmux_3_3_plus: true,
+            default_shell: PathBuf::from("/bin/sh"), // overwritten by ensure
+        },
+        Path::new("/bin/zsh"),
+    )
+    .expect("write conf + user-shell wrapper");
+
+    let tmux = Tmux::new(socket.clone(), conf_path.clone());
+    let out = std::env::temp_dir().join(format!("{socket}.out"));
+    let _ = std::fs::remove_file(&out);
+
+    // ZDOTDIR must reach the pane: the tmux server inherits this process env.
+    // SAFETY: single-threaded test setup before any other test logic races on
+    // env; restored below. Integration tests run in separate processes under
+    // cargo by default for this binary's tests when not parallelized on env,
+    // but we still restore to be polite.
+    let prev_zdot = std::env::var_os("ZDOTDIR");
+    // std::env::set_var is unsafe on Rust 2024; integration test accepts it.
+    unsafe { std::env::set_var("ZDOTDIR", &zdot) };
+
+    let cmd = format!(
+        "printf '%s\\n' \"${{MR_PROFILE_PROBE:-unset}}\" > {}",
+        out.display()
+    );
+    let create = tmux.create_session(&mk_spec("mr-profile-1", "prof", 1, &cmd));
+
+    match prev_zdot {
+        Some(v) => unsafe { std::env::set_var("ZDOTDIR", v) },
+        None => unsafe { std::env::remove_var("ZDOTDIR") },
+    }
+
+    create.expect("create_session");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut body = String::new();
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(&out) {
+            body = text;
+            if body.contains("from-zshrc") || body.contains("unset") {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let _ = Command::new("tmux")
+        .args(["-L", &socket, "kill-server"])
+        .output();
+    let _ = std::fs::remove_file(&conf_path);
+    let _ = std::fs::remove_file(tmux::conf::wrapper_path(&conf_path));
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_dir_all(&zdot);
+    if let Some(sock) = socket_path(&socket) {
+        let _ = std::fs::remove_file(sock);
+    }
+
+    assert_eq!(
+        body.trim(),
+        "from-zshrc",
+        "job pane must source .zshrc via the user-shell wrapper"
+    );
+}
+
+/// Read a running process's working directory, or `None` on a platform where
+/// this test does not know how (in which case the caller skips the check).
+/// Mirrors the production `tmux::process_cwd`, which is private; the point of
+/// re-deriving it here is that the test agrees with the *system*, not with the
+/// implementation it is checking.
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    if cfg!(target_os = "linux") {
+        return std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
+    }
+    let out = Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-F", "n"])
+        .output()
+        .ok()?;
+    String::from_utf8(out.stdout).ok()?.lines().find_map(|l| {
+        l.strip_prefix('n')
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+    })
+}
+
+/// The server's pid, for tests that need to look at the process itself.
+fn server_pid(socket: &str) -> u32 {
+    let out = Command::new("tmux")
+        .args(["-L", socket, "display-message", "-p", "#{pid}"])
+        .output()
+        .expect("read server pid");
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("server pid is a number")
+}
+
+/// The tmux server takes its working directory from whichever multi-run
+/// invocation starts it, and keeps it for life. That directory must be the one
+/// multi-run was started in, which means our tmux children are spawned with no
+/// directory override of their own.
+#[test]
+fn server_starts_in_the_directory_multi_run_was_started_in() {
+    let Some(_) = tmux_or_skip() else { return };
+    let srv = TestServer::new("startdir");
+
+    // This is the invocation that starts the server, so its working directory
+    // (this test process's, which is the crate root) is the server's.
+    let spec = mk_spec("mr-start-1", "start", 1, "sleep 30");
+    srv.tmux.create_session(&spec).expect("create session");
+    wait_for_pane(&srv.tmux, "mr-start-1", Duration::from_secs(5), |p| !p.dead);
+
+    let Some(cwd) = process_cwd(server_pid(&srv.socket)) else {
+        eprintln!("skipping server cwd assertion: cannot read process cwd on this platform");
+        return;
+    };
+    assert_eq!(
+        std::fs::canonicalize(&cwd).expect("server cwd exists"),
+        std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+        "the server must start in the directory multi-run was started in"
+    );
+
+    // Inheriting that directory must not cost a job its own: `-c` still
+    // decides where the pane's shell starts.
+    let out = Command::new("tmux")
+        .args([
+            "-L",
+            &srv.socket,
+            "display-message",
+            "-p",
+            "-t",
+            "=mr-start-1:0.0",
+            "#{pane_current_path}",
+        ])
+        .output()
+        .expect("read pane_current_path");
+    let pane_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(
+        std::fs::canonicalize(&pane_path).expect("pane path exists"),
+        std::fs::canonicalize(&spec.cwd).expect("spec cwd exists"),
+        "job pane must start in the directory passed as new-session -c"
+    );
+}
+
+/// A live server standing in a directory that exists is not stale, and neither
+/// is a socket with no server on it at all.
+#[test]
+fn server_cwd_state_is_live_for_a_healthy_server() {
+    let Some(_) = tmux_or_skip() else { return };
+    let srv = TestServer::new("cwdlive");
+
+    assert_eq!(
+        srv.tmux.server_cwd_state(),
+        tmux::ServerCwd::NoServer,
+        "nothing can be stale before a server exists"
+    );
+
+    srv.tmux
+        .create_session(&mk_spec("mr-live-1", "live", 1, "sleep 30"))
+        .expect("create session");
+    wait_for_pane(&srv.tmux, "mr-live-1", Duration::from_secs(5), |p| !p.dead);
+
+    match srv.tmux.server_cwd_state() {
+        tmux::ServerCwd::Live => {}
+        tmux::ServerCwd::Unknown => {
+            eprintln!("skipping: cannot read process cwd on this platform")
+        }
+        other => panic!("healthy server reported as {other:?}"),
+    }
+}
+
+/// The regression this check exists for: a server left standing in a directory
+/// that is then deleted. Every pane it forks afterwards inherits the unlinked
+/// directory, `getcwd` fails there, and the job's shell opens with
+/// `shell-init: error retrieving current directory`. The state must be
+/// reported as `Gone`, carrying the session count `main.rs` uses to decide
+/// between replacing the server silently and telling the user about it.
+#[test]
+fn server_cwd_state_is_gone_once_its_directory_is_deleted() {
+    let Some(_) = tmux_or_skip() else { return };
+    let srv = TestServer::new("cwdgone");
+
+    let doomed = std::env::temp_dir().join(format!("{}-doomed", srv.socket));
+    std::fs::create_dir_all(&doomed).expect("create the doomed directory");
+
+    // Start the server the way a multi-run run from `doomed` would, then take
+    // the directory away, exactly as a rename or a `rm -rf` of a project would.
+    let started = Command::new("tmux")
+        .args([
+            "-L",
+            &srv.socket,
+            "-f",
+            &srv.conf_path.display().to_string(),
+            "start-server",
+        ])
+        .current_dir(&doomed)
+        .status()
+        .expect("start server from the doomed directory");
+    assert!(started.success(), "tmux start-server failed");
+    std::fs::remove_dir(&doomed).expect("delete the doomed directory");
+
+    let state = srv.tmux.server_cwd_state();
+    if state == tmux::ServerCwd::Unknown {
+        eprintln!("skipping: cannot read process cwd on this platform");
+        return;
+    }
+    // The reported path is only checked by its final component: the deleted
+    // directory can no longer be canonicalised, and macOS resolves the temp
+    // dir through the /var -> /private/var symlink, so the two spellings of
+    // the same directory never compare equal.
+    match state {
+        tmux::ServerCwd::Gone { cwd, sessions } => {
+            assert_eq!(cwd.file_name(), doomed.file_name());
+            assert_eq!(
+                sessions, 0,
+                "the session count is what decides whether replacing the server is free"
+            );
+        }
+        other => panic!(
+            "a server whose directory was deleted must be reported as Gone, got {other:?}"
+        ),
+    }
+
+    // And the cure has to work: a replacement server started from a directory
+    // that exists is healthy again.
+    srv.tmux.kill_server().expect("kill the stale server");
+    srv.tmux
+        .create_session(&mk_spec("mr-gone-1", "gone", 1, "sleep 30"))
+        .expect("create session on the replacement server");
+    wait_for_pane(&srv.tmux, "mr-gone-1", Duration::from_secs(5), |p| !p.dead);
+    assert_eq!(
+        srv.tmux.server_cwd_state(),
+        tmux::ServerCwd::Live,
+        "the replacement server must be healthy"
+    );
+}
+
+// ---- attached-session scrollback: mouse mode + copy-mode exit ------------
+
+/// The single-session (attached) view has no TUI mouse handling of its own:
+/// `attach.rs` tears the TUI's capture down before handing tmux the terminal.
+/// So the wheel only scrolls if the real server actually took `mouse on` from
+/// the generated config. A generated-string unit test cannot prove that; a
+/// user config sourced ahead of ours could have set it off, and tmux could
+/// reject the line outright.
+#[test]
+fn attached_session_has_mouse_and_scrollback_enabled() {
+    let Some(_) = tmux_or_skip() else { return };
+    let srv = TestServer::new("mouse");
+    srv.tmux
+        .create_session(&mk_spec("mr-mouse-1", "mouse", 1, "sleep 30"))
+        .expect("create session");
+    wait_for_pane(&srv.tmux, "mr-mouse-1", Duration::from_secs(5), |p| !p.dead);
+
+    let show = |opt: &str| {
+        let out = Command::new("tmux")
+            .args(["-L", &srv.socket, "show-options", "-gv", opt])
+            .output()
+            .expect("tmux show-options");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    assert_eq!(show("mouse"), "on", "the wheel cannot scroll without this");
+    assert_eq!(show("history-limit"), "50000");
+}
+
+/// The status bar tells the user "ESC exits scroll mode". Under `mode-keys
+/// vi` tmux's stock `Escape` is `clear-selection`, which does not exit, so
+/// the config binds both copy-mode tables. Assert the server really holds
+/// `cancel` in each.
+#[test]
+fn escape_cancels_copy_mode_on_a_real_server() {
+    let Some(_) = tmux_or_skip() else { return };
+    let srv = TestServer::new("escape");
+    srv.tmux
+        .create_session(&mk_spec("mr-esc-1", "escape", 1, "sleep 30"))
+        .expect("create session");
+    wait_for_pane(&srv.tmux, "mr-esc-1", Duration::from_secs(5), |p| !p.dead);
+
+    for table in ["copy-mode", "copy-mode-vi"] {
+        let out = Command::new("tmux")
+            .args(["-L", &srv.socket, "list-keys", "-T", table])
+            .output()
+            .expect("tmux list-keys");
+        let keys = String::from_utf8_lossy(&out.stdout);
+        let escape = keys
+            .lines()
+            .find(|l| l.contains(" Escape "))
+            .unwrap_or_else(|| panic!("no Escape binding in table {table}"));
+        assert!(
+            escape.contains("cancel"),
+            "Escape in {table} must cancel copy mode, got: {escape}"
+        );
+    }
+}
+
+/// End to end: the pane keeps real scrollback and copy mode can walk into
+/// it. This is the behaviour the user actually wanted, one layer below the
+/// wheel: `mouse on` only routes the wheel to `copy-mode -e`, so if copy
+/// mode could not reach history, enabling the mouse would change nothing.
+#[test]
+fn copy_mode_reaches_scrollback_above_the_visible_pane() {
+    let Some(_) = tmux_or_skip() else { return };
+    let srv = TestServer::new("scrollback");
+    // 60 lines of output through a 10-row pane: most of it is history.
+    srv.tmux
+        .create_session(&mk_spec(
+            "mr-scroll-1",
+            "scrollback",
+            1,
+            "for i in $(seq 1 60); do echo line-$i; done; sleep 30",
+        ))
+        .expect("create session");
+    wait_for_pane(&srv.tmux, "mr-scroll-1", Duration::from_secs(5), |p| !p.dead);
+
+    // Wait for the last line to land, then read back further than the pane
+    // is tall. `-S -40` starts 40 lines above the visible region, which only
+    // returns anything if history was retained.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let scrolled = loop {
+        let out = Command::new("tmux")
+            .args([
+                "-L",
+                &srv.socket,
+                "capture-pane",
+                "-p",
+                "-S",
+                "-40",
+                "-t",
+                "=mr-scroll-1:0.0",
+            ])
+            .output()
+            .expect("tmux capture-pane");
+        let scrolled = String::from_utf8_lossy(&out.stdout).to_string();
+        if scrolled.contains("line-60") && scrolled.contains("line-25") {
+            break scrolled;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out; captured scrollback was:\n{scrolled}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // line-25 scrolled off a 10-row pane long ago, so reading it back proves
+    // the wheel has somewhere to go.
+    assert!(scrolled.contains("line-25"));
 }

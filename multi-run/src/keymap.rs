@@ -94,6 +94,11 @@ pub enum Action {
     ComposeCommit,
     ConfirmYes,
     ConfirmNo,
+    /// Move the highlighted option in a choice dialog (confirm / exit).
+    SelectPrev,
+    SelectNext,
+    /// Activate the currently highlighted dialog option.
+    SelectActivate,
     Quit,
     QuitKeepAll,
     QuitKillAll,
@@ -341,21 +346,29 @@ fn map_compose(key: KeyEvent, line_empty: bool, launch_on_submit: bool) -> Optio
     }
 }
 
-/// Confirmation modal: `y`/`Enter` confirms, `n`/`Esc` cancels.
+/// Confirmation modal: `y` confirms, `n`/`Esc` cancels. Arrows move the
+/// highlight; Enter activates the highlighted option (default: yes).
 fn map_confirm(key: KeyEvent) -> Option<Action> {
     match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Some(Action::ConfirmYes),
+        KeyCode::Char('y') | KeyCode::Char('Y') => Some(Action::ConfirmYes),
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(Action::ConfirmNo),
+        KeyCode::Left | KeyCode::Up | KeyCode::BackTab => Some(Action::SelectPrev),
+        KeyCode::Right | KeyCode::Down | KeyCode::Tab => Some(Action::SelectNext),
+        KeyCode::Enter => Some(Action::SelectActivate),
         _ => None,
     }
 }
 
 /// Exit prompt: `k`/`x`/`Esc`, per DESIGN.md section 9. Deliberately not
-/// `y`/`n`; "yes" is ambiguous when the question is "keep or kill".
+/// `y`/`n`; "yes" is ambiguous when the question is "keep or kill". Arrows
+/// move the highlight between keep and kill; Enter activates it.
 fn map_exit_prompt(key: KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Char('k') | KeyCode::Char('K') => Some(Action::QuitKeepAll),
         KeyCode::Char('x') | KeyCode::Char('X') => Some(Action::QuitKillAll),
+        KeyCode::Left | KeyCode::Up | KeyCode::BackTab => Some(Action::SelectPrev),
+        KeyCode::Right | KeyCode::Down | KeyCode::Tab => Some(Action::SelectNext),
+        KeyCode::Enter => Some(Action::SelectActivate),
         KeyCode::Esc => Some(Action::CloseModal),
         _ => None,
     }
@@ -828,7 +841,7 @@ mod tests {
         );
         assert_eq!(
             map(ViewMode::Grid, &confirm, key(KeyCode::Enter)),
-            Some(Action::ConfirmYes)
+            Some(Action::SelectActivate)
         );
         assert_eq!(
             map(ViewMode::Grid, &confirm, key(KeyCode::Char('n'))),
@@ -837,6 +850,22 @@ mod tests {
         assert_eq!(
             map(ViewMode::Grid, &confirm, key(KeyCode::Esc)),
             Some(Action::ConfirmNo)
+        );
+        assert_eq!(
+            map(ViewMode::Grid, &confirm, key(KeyCode::Left)),
+            Some(Action::SelectPrev)
+        );
+        assert_eq!(
+            map(ViewMode::Grid, &confirm, key(KeyCode::Right)),
+            Some(Action::SelectNext)
+        );
+        assert_eq!(
+            map(ViewMode::Grid, &confirm, key(KeyCode::Up)),
+            Some(Action::SelectPrev)
+        );
+        assert_eq!(
+            map(ViewMode::Grid, &confirm, key(KeyCode::Down)),
+            Some(Action::SelectNext)
         );
         assert_eq!(map(ViewMode::Grid, &confirm, key(KeyCode::Char('z'))), None);
     }
@@ -857,6 +886,18 @@ mod tests {
         assert_eq!(
             map(ViewMode::Grid, &exit_prompt, key(KeyCode::Esc)),
             Some(Action::CloseModal)
+        );
+        assert_eq!(
+            map(ViewMode::Grid, &exit_prompt, key(KeyCode::Left)),
+            Some(Action::SelectPrev)
+        );
+        assert_eq!(
+            map(ViewMode::Grid, &exit_prompt, key(KeyCode::Right)),
+            Some(Action::SelectNext)
+        );
+        assert_eq!(
+            map(ViewMode::Grid, &exit_prompt, key(KeyCode::Enter)),
+            Some(Action::SelectActivate)
         );
         // Exit prompt deliberately does not use y/n.
         assert_eq!(

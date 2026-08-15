@@ -30,7 +30,7 @@ set -g remain-on-exit-format ""      # requires tmux >= 3.3; see item 1
 set -g exit-empty off
 set -g detach-on-destroy on
 set -g history-limit 50000
-set -g default-shell /bin/sh         # see item 1 gotcha
+set -g default-shell …/user-shell   # profile-loading wrapper; see gotcha B
 set -g escape-time 10
 bind -n M-d detach-client            # server-local, never touches user config
 ```
@@ -106,9 +106,16 @@ capture with `-S -1` to recover the scrolled line.
 
 Verified: `ps` inside the pane showed `zsh -c <command>`, because `default-shell` defaults to
 the user's login shell. If the user's shell is fish or another non-POSIX shell, your command
-string is interpreted with different syntax. Set `set -g default-shell /bin/sh` in the config
-for predictable semantics. Exit codes propagate correctly through the shell (verified `exit 42`
-→ `pane_dead_status=42`).
+string is interpreted with different syntax.
+
+**multi-run choice:** lean into the user's shell rather than forcing `/bin/sh`. Job panes should
+match a normal terminal emulator, including profile load (`.zshrc` and friends). A plain
+`default-shell /bin/zsh` is not enough: tmux still invokes `zsh -c`, which skips `.zshrc`.
+The generated `user-shell` wrapper re-execs the real shell with `-il` (or `-l` for fish). Bake
+the shell path into the wrapper; do not read `$SHELL` at runtime, because tmux sets `$SHELL` to
+whatever `default-shell` is (verified: a wrapper that trusted `$SHELL` recursed on itself).
+
+Exit codes propagate correctly through the shell (verified `exit 42` → `pane_dead_status=42`).
 
 An argv form also works and avoids a shell entirely: `new-session -d -s x /bin/echo hello world`
 (verified `rc=0`).
@@ -120,7 +127,8 @@ Verified: `exit 0` session vanished, `exit 1` session stayed with `pane_dead=1 s
 Not what `multi-run` wants (we want all output readable) but worth knowing.
 
 **RECOMMENDATION:** Private socket + `-f` config with `set -g remain-on-exit on`,
-`set -g remain-on-exit-format ""`, `set -g default-shell /bin/sh`. Detect completion by polling
+`set -g remain-on-exit-format ""`, and `default-shell` pointing at the profile-loading
+`user-shell` wrapper. Detect completion by polling
 `pane_dead` / `pane_dead_status` / `pane_dead_signal` in the same batched call that fetches
 everything else. Require tmux >= 3.3 for the empty banner format; degrade gracefully below that.
 
@@ -730,7 +738,7 @@ sequences into ratatui `Text`.
 | # | Gotcha | Fix |
 |---|---|---|
 | A | Dead-pane banner scrolls output up one line | `set -g remain-on-exit-format ""` (tmux >= 3.3) |
-| B | tmux runs commands with `$SHELL`, not `/bin/sh` | `set -g default-shell /bin/sh` |
+| B | `shell -c` skips interactive rc; `$SHELL` is overwritten by tmux | `user-shell` wrapper: `exec <baked-shell> -il "$@"` |
 | C | Session targets are prefix-matched (`-t L` matches `L2`) | use `=name` |
 | D | `set-option -t '=name'` fails | use `=name:` or the bare name |
 | E | `resize-window` silently sets `window-size manual`, overriding attached clients | `set-option -uw <sess> window-size` before attach, `resize-window` after detach |

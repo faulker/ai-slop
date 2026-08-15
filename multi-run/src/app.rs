@@ -62,9 +62,14 @@ pub enum Modal {
     Confirm {
         prompt: String,
         action: Pending,
+        /// 0 = yes, 1 = no. Arrow keys move this; Enter activates it.
+        selected: usize,
     },
     /// Quit was requested while live jobs exist.
-    ExitPrompt,
+    /// `selected`: 0 = keep, 1 = kill. Arrow keys move this; Enter activates it.
+    ExitPrompt {
+        selected: usize,
+    },
     Toast {
         text: String,
         at: Instant,
@@ -283,7 +288,7 @@ impl App {
                 launch_on_submit: *launch_on_submit,
             },
             Modal::Confirm { .. } => ModalState::Confirm,
-            Modal::ExitPrompt => ModalState::ExitPrompt,
+            Modal::ExitPrompt { .. } => ModalState::ExitPrompt,
             Modal::Toast { .. } => ModalState::Toast,
             Modal::ErrorLog { .. } => ModalState::ErrorLog,
         }
@@ -303,11 +308,19 @@ impl App {
                 queued,
                 launch_on_submit: *launch_on_submit,
             }),
-            Modal::Confirm { prompt, .. } => Some(Overlay::Confirm { prompt }),
-            Modal::ExitPrompt => Some(Overlay::ExitPrompt {
+            Modal::Confirm {
+                prompt,
+                selected,
+                ..
+            } => Some(Overlay::Confirm {
+                prompt,
+                selected: *selected,
+            }),
+            Modal::ExitPrompt { selected } => Some(Overlay::ExitPrompt {
                 running: self.count_running(),
                 finished: self.count_finished(),
                 reattach_hint: &self.reattach_hint,
+                selected: *selected,
             }),
             Modal::Toast { text, is_error, .. } => Some(Overlay::Toast {
                 text,
@@ -466,6 +479,7 @@ impl App {
                     self.modal = Modal::Confirm {
                         prompt,
                         action: Pending::DismissAllFinished,
+                        selected: 0,
                     };
                 }
             }
@@ -475,6 +489,7 @@ impl App {
                     self.modal = Modal::Confirm {
                         prompt,
                         action: Pending::KillFocused,
+                        selected: 0,
                     };
                 }
             }
@@ -566,11 +581,46 @@ impl App {
                 self.modal = Modal::None;
             }
 
+            Action::SelectPrev => match &mut self.modal {
+                Modal::Confirm { selected, .. } | Modal::ExitPrompt { selected } => {
+                    *selected = selected.saturating_sub(1);
+                }
+                _ => {}
+            },
+            Action::SelectNext => match &mut self.modal {
+                Modal::Confirm { selected, .. } | Modal::ExitPrompt { selected } => {
+                    *selected = (*selected + 1).min(1);
+                }
+                _ => {}
+            },
+            Action::SelectActivate => match &self.modal {
+                Modal::Confirm {
+                    selected, action, ..
+                } => {
+                    let pending = *action;
+                    let yes = *selected == 0;
+                    self.modal = Modal::None;
+                    if yes {
+                        return self.run_pending(pending);
+                    }
+                }
+                Modal::ExitPrompt { selected } => {
+                    let keep = *selected == 0;
+                    self.should_quit = true;
+                    return Some(if keep {
+                        Effect::QuitKeep
+                    } else {
+                        Effect::QuitKill
+                    });
+                }
+                _ => {}
+            },
+
             Action::Quit => {
                 // Live jobs mean the user has something to lose, so ask
                 // rather than assuming (PLAN.md, DESIGN.md section 9).
                 if self.count_running() > 0 || self.count_finished() > 0 {
-                    self.modal = Modal::ExitPrompt;
+                    self.modal = Modal::ExitPrompt { selected: 0 };
                 } else {
                     self.should_quit = true;
                     return Some(Effect::QuitKeep);
@@ -966,7 +1016,7 @@ mod tests {
     fn quitting_with_live_jobs_opens_the_exit_prompt() {
         let mut a = app(vec![job(1, JobState::Running)]);
         assert_eq!(a.apply(Action::Quit), None);
-        assert!(matches!(a.modal, Modal::ExitPrompt));
+        assert!(matches!(a.modal, Modal::ExitPrompt { .. }));
         assert!(!a.should_quit, "quit must not be immediate while jobs live");
     }
 
@@ -983,6 +1033,70 @@ mod tests {
         assert_eq!(a.apply(Action::QuitKeepAll), Some(Effect::QuitKeep));
         let mut b = app(vec![job(1, JobState::Running)]);
         assert_eq!(b.apply(Action::QuitKillAll), Some(Effect::QuitKill));
+    }
+
+    #[test]
+    fn exit_prompt_arrows_move_selection_and_enter_activates() {
+        let mut a = app(vec![job(1, JobState::Running)]);
+        a.apply(Action::Quit);
+        assert!(matches!(
+            a.modal,
+            Modal::ExitPrompt { selected: 0 }
+        ));
+
+        a.apply(Action::SelectNext);
+        assert!(matches!(
+            a.modal,
+            Modal::ExitPrompt { selected: 1 }
+        ));
+        // Does not wrap past the last option.
+        a.apply(Action::SelectNext);
+        assert!(matches!(
+            a.modal,
+            Modal::ExitPrompt { selected: 1 }
+        ));
+
+        a.apply(Action::SelectPrev);
+        assert!(matches!(
+            a.modal,
+            Modal::ExitPrompt { selected: 0 }
+        ));
+
+        // Enter on keep exits without killing.
+        assert_eq!(a.apply(Action::SelectActivate), Some(Effect::QuitKeep));
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn exit_prompt_enter_on_kill_emits_quit_kill() {
+        let mut a = app(vec![job(1, JobState::Running)]);
+        a.apply(Action::Quit);
+        a.apply(Action::SelectNext);
+        assert_eq!(a.apply(Action::SelectActivate), Some(Effect::QuitKill));
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn confirm_arrows_move_selection_and_enter_activates() {
+        let mut a = app(vec![job(1, JobState::Running)]);
+        a.apply(Action::KillFocused);
+        assert!(matches!(
+            a.modal,
+            Modal::Confirm { selected: 0, .. }
+        ));
+
+        // Move to no, Enter cancels without killing.
+        a.apply(Action::SelectNext);
+        assert_eq!(a.apply(Action::SelectActivate), None);
+        assert_eq!(a.group.jobs.len(), 1);
+        assert!(matches!(a.modal, Modal::None));
+
+        // Re-open and Enter on yes (default) kills.
+        a.apply(Action::KillFocused);
+        assert_eq!(
+            a.apply(Action::SelectActivate),
+            Some(Effect::Kill("mr-k3f9-1".into()))
+        );
     }
 
     #[test]
