@@ -19,6 +19,36 @@ pub const MIN_TILE_W: u16 = 24;
 /// Minimum inner content height of a tile: 5 rows of content plus a 2-cell
 /// border.
 pub const MIN_TILE_H: u16 = 7;
+/// Height a tile wants before the layout is willing to stack another row on
+/// top of it: 10 rows of content plus a 2-cell border. Above this a stacked
+/// (full-width) tile still shows a useful amount of output, so the layout
+/// prefers stacking; below it, splitting into columns reads better.
+pub const PREFERRED_TILE_H: u16 = 12;
+
+/// Width of the session list pane in `ViewMode::ListDetail`, including its
+/// border.
+pub const LIST_WIDTH: u16 = 28;
+
+/// Split a list/detail body into the session list on the left and the detail
+/// pane on the right. Lives here so rendering (`ui/mod.rs`) and the tmux
+/// resize sweep (`main.rs`) agree on how big the detail pane actually is; a
+/// mismatch leaves the focused pane rendering at the wrong width.
+pub fn list_detail_split(area: Rect) -> (Rect, Rect) {
+    let list_w = LIST_WIDTH.min(area.width);
+    let list = Rect {
+        x: area.x,
+        y: area.y,
+        width: list_w,
+        height: area.height,
+    };
+    let detail = Rect {
+        x: area.x + list_w,
+        y: area.y,
+        width: area.width.saturating_sub(list_w),
+        height: area.height,
+    };
+    (list, detail)
+}
 
 /// Which of the two top-level layouts the app is showing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -44,38 +74,45 @@ pub struct Focus {
     pub pane: Pane,
 }
 
-/// Choose a column count that keeps tiles close to a 2:1 cell aspect, which
-/// reads as roughly square once a terminal cell's own aspect (taller than
-/// wide) is accounted for. `n == 0` returns `(1, 1)`; there is nothing to lay
-/// out, and the caller should not draw any tiles, but a sane pair avoids a
-/// divide-by-zero in `clamp`.
+/// Choose how many columns to lay `n` tiles out in.
+///
+/// The layout is horizontal by default: one full-width tile per row, stacked
+/// top to bottom, which keeps every job's output as wide as the terminal and
+/// reads like a log. That only works while each row still has room to say
+/// something, so the column count is the smallest one whose rows are at least
+/// `PREFERRED_TILE_H` tall. On a short terminal no stacked arrangement clears
+/// that bar and the tiles become vertical columns side by side instead.
+///
+/// If nothing meets the preferred height, the smallest column count that
+/// still meets the hard minimum wins, and if even that is impossible the
+/// aspect-ideal count is used and the caller paginates. `n == 0` returns
+/// `(1, 1)`; there is nothing to lay out, and the caller should not draw any
+/// tiles, but a sane pair avoids a divide-by-zero in `clamp`.
 pub fn grid_dims(n: usize, area: Rect) -> (u16, u16) {
     if n == 0 {
         return (1, 1);
     }
-    let ideal = ideal_cols(n, area);
 
-    // The aspect-ideal column count can make tiles narrower or shorter than
-    // the minimum even when some other column count for the same `n` fits.
-    // Prefer the fitting count nearest the ideal, so a group only ever
-    // paginates when no arrangement at all fits.
-    let mut best: Option<u16> = None;
-    for cols in 1..=n as u16 {
-        let rows = (n as u16).div_ceil(cols);
-        if meets_minimum(cols, rows, area)
-            && best.is_none_or(|b| ideal.abs_diff(cols) < ideal.abs_diff(b))
-        {
-            best = Some(cols);
-        }
-    }
-
-    let cols = best.unwrap_or(ideal);
+    let cols = fewest_cols(n, area, PREFERRED_TILE_H)
+        .or_else(|| fewest_cols(n, area, MIN_TILE_H))
+        .unwrap_or_else(|| ideal_cols(n, area));
     (cols, (n as u16).div_ceil(cols))
 }
 
-/// Column count that puts tiles closest to a 2:1 cell aspect, ignoring the
-/// minimum tile size. Split out so `grid_dims` can measure how far a fitting
-/// arrangement sits from the shape we actually wanted.
+/// Fewest columns (so: most stacking) that give every one of `n` tiles at
+/// least `MIN_TILE_W` by `min_h` in `area`, or `None` when no column count
+/// does.
+fn fewest_cols(n: usize, area: Rect, min_h: u16) -> Option<u16> {
+    (1..=n as u16).find(|&cols| {
+        let rows = (n as u16).div_ceil(cols);
+        fits(cols, rows, area, min_h)
+    })
+}
+
+/// Column count that puts tiles closest to a 2:1 cell aspect, ignoring tile
+/// size limits entirely. Only used as `grid_dims`'s last resort, when the
+/// area is too small for any arrangement to fit and the caller is about to
+/// paginate anyway.
 fn ideal_cols(n: usize, area: Rect) -> u16 {
     let w = area.width.max(1) as f32;
     let h = area.height.max(1) as f32;
@@ -132,12 +169,17 @@ fn tile_rects(cols: u16, rows: u16, count: usize, area: Rect) -> Vec<Rect> {
         .collect()
 }
 
-/// Does a `cols` x `rows` grid over `area` give every tile at least the
-/// minimum size? Uses floor division, which is exactly the smallest tile
-/// `split_extent` can produce (the remainder only ever adds a unit, never
-/// subtracts one).
+/// Does a `cols` x `rows` grid over `area` give every tile at least
+/// `MIN_TILE_W` by `min_h`? Uses floor division, which is exactly the
+/// smallest tile `split_extent` can produce (the remainder only ever adds a
+/// unit, never subtracts one).
+fn fits(cols: u16, rows: u16, area: Rect, min_h: u16) -> bool {
+    cols > 0 && rows > 0 && area.width / cols >= MIN_TILE_W && area.height / rows >= min_h
+}
+
+/// Does a `cols` x `rows` grid over `area` clear the hard minimum tile size?
 fn meets_minimum(cols: u16, rows: u16, area: Rect) -> bool {
-    cols > 0 && rows > 0 && area.width / cols >= MIN_TILE_W && area.height / rows >= MIN_TILE_H
+    fits(cols, rows, area, MIN_TILE_H)
 }
 
 /// Resolved grid layout for one page of a group's jobs.
@@ -421,6 +463,98 @@ mod tests {
         };
         let (cols, rows) = grid_dims(5, zero);
         assert!(cols >= 1 && rows >= 1);
+    }
+
+    #[test]
+    fn grid_dims_stacks_full_width_rows_when_the_terminal_is_tall() {
+        // 60 rows leaves 20 per tile for three jobs, well over
+        // PREFERRED_TILE_H, so the default is one job per full-width row.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 60,
+        };
+        assert_eq!(grid_dims(3, area), (1, 3));
+        assert_eq!(grid_dims(4, area), (1, 4));
+    }
+
+    #[test]
+    fn grid_dims_becomes_vertical_columns_when_the_terminal_is_short() {
+        // 14 rows cannot stack anything: only a single row of side-by-side
+        // columns clears PREFERRED_TILE_H.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 14,
+        };
+        assert_eq!(grid_dims(3, area), (3, 1));
+        assert_eq!(grid_dims(4, area), (4, 1));
+    }
+
+    #[test]
+    fn grid_dims_splits_into_a_grid_between_the_two_extremes() {
+        // 80x24 fits two stacked rows of 12 but not three, so four jobs land
+        // in a 2x2 rather than four unreadable slivers.
+        let area = AREAS[0];
+        assert_eq!(grid_dims(2, area), (1, 2));
+        assert_eq!(grid_dims(4, area), (2, 2));
+    }
+
+    #[test]
+    fn grid_dims_prefers_stacking_over_the_aspect_ideal() {
+        // The old aspect-based choice put two jobs side by side on any wide
+        // terminal. Horizontal is the default now whenever the height allows.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 300,
+            height: 50,
+        };
+        let (cols, rows) = grid_dims(2, area);
+        assert_eq!((cols, rows), (1, 2));
+    }
+
+    #[test]
+    fn grid_dims_gives_up_on_the_preferred_height_before_the_minimum() {
+        // 40 rows and 6 jobs: stacking all six means rows of 6, under the
+        // preferred 12, so it splits. Every tile still clears MIN_TILE_H.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        };
+        let (cols, rows) = grid_dims(6, area);
+        assert!(meets_minimum(cols, rows, area));
+        assert!(cols >= 2, "expected a split, got {cols} columns");
+    }
+
+    // --- list/detail split ---------------------------------------------
+
+    #[test]
+    fn list_detail_split_gives_the_detail_pane_the_rest_of_the_width() {
+        let area = AREAS[1];
+        let (list, detail) = list_detail_split(area);
+        assert_eq!(list.width, LIST_WIDTH);
+        assert_eq!(detail.x, list.x + list.width);
+        assert_eq!(list.width + detail.width, area.width);
+        assert_eq!(detail.height, area.height);
+    }
+
+    #[test]
+    fn list_detail_split_on_a_narrow_area_does_not_overflow() {
+        let area = Rect {
+            x: 3,
+            y: 2,
+            width: 10,
+            height: 8,
+        };
+        let (list, detail) = list_detail_split(area);
+        assert_eq!(list.width, 10);
+        assert_eq!(detail.width, 0);
+        assert_eq!(detail.x, area.x + area.width);
     }
 
     // --- compute: bounds and overlap, table-driven --------------------

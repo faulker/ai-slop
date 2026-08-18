@@ -5,12 +5,15 @@ in a terminal UI. Every job gets a tile; you can jump into any tile for real int
 jump back out. Sessions outlive the tool, so you can quit, come back, and pick up where you left off.
 
 ```
-┌ sc2q.1 ✓ cargo fmt --check ── exit 0 ┐┌ sc2q.2 ● cargo watch -x test running ┐
-│                                      ││running 12 tests                      │
-│                                      ││test model::advance ... ok            │
-│                                      ││                                      │
-└──────────────────────────────────────┘└──────────────────────────────────────┘
-grid  sc2q.1 cargo fmt --check          ?:help  v:view  n:new  q:quit
+┌ sc2q.1 ✓ cargo fmt --check ─────────────────────────────────────── exit 0 ┐
+│                                                                           │
+│                                                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+┌ sc2q.2 ● cargo watch -x test ───────────────────────────────── 4s running ┐
+│running 12 tests                                                           │
+│test model::advance ... ok                                                 │
+└───────────────────────────────────────────────────────────────────────────┘
+grid  sc2q.1 cargo fmt --check                   ?:help  v:view  n:new  q:quit
 ```
 
 ## Requirements
@@ -52,6 +55,18 @@ multi-run --kill g1
 multi-run --kill all
 multi-run --view list "make -j8" "tail -f /var/log/system.log"
 ```
+
+### Layout
+
+Tiles stack horizontally by default: one job per full-width row, top to bottom, so every job's
+output is as wide as the terminal. That holds while each row still has about ten lines to work
+with. On a shorter terminal the tiles turn into vertical columns side by side instead, and in
+between the two you get a grid. Nothing to configure; it follows the terminal's width and height,
+and re-lays-out when you resize.
+
+Whatever the arrangement, the focused job's tmux pane is sized to the tile it is drawn in, so its
+output wraps to the space it actually has. In list view that means the whole detail pane, not the
+grid tile the job happened to have when you switched.
 
 ### Commands that have their own flags
 
@@ -110,7 +125,8 @@ Exit codes: `0` success including "nothing running", `1` a real tmux failure, `2
 | `j` / `k` | Next / previous job (crosses grid pages) |
 | `h` / `l` | Grid: tile left / right. List: session list / detail pane |
 | `Tab` / `Shift-Tab` | Grid: next / previous job. List: detail pane / session list |
-| `↑` `↓` `←` `→` | Scroll the selected panel |
+| `↑` `↓` | Sessions panel: previous / next session. Anywhere else: scroll the focused output |
+| `←` `→` | Sessions panel: cross to the detail pane and back. Anywhere else: scroll the focused output |
 | `g` `g` / `G` | First / last job. With the detail pane focused and scrolled back, `G` returns to the live bottom |
 | `Alt-1`..`Alt-9` | Focus job N |
 | `[` / `]` | Previous / next grid page |

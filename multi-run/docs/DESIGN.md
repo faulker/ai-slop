@@ -815,16 +815,20 @@ A malformed escape sequence must never blank a tile or kill the app.
 `ui/layout.rs`, pure functions, no ratatui IO:
 
 ```rust
-pub const MIN_TILE_W: u16 = 24;   // 22 inner + 2 border
-pub const MIN_TILE_H: u16 = 7;    //  5 inner + 2 border
+pub const MIN_TILE_W: u16 = 24;        // 22 inner + 2 border
+pub const MIN_TILE_H: u16 = 7;         //  5 inner + 2 border
+pub const PREFERRED_TILE_H: u16 = 12;  // 10 inner + 2 border
 
-/// Choose a column count that keeps tiles close to a 2:1 cell aspect,
-/// which reads as roughly square on screen.
+/// Horizontal by default: the fewest columns (so the most stacking) that
+/// still give every tile PREFERRED_TILE_H rows. One full-width row per job
+/// on a tall terminal, vertical columns side by side on a short one, and a
+/// grid in between. Falls back to MIN_TILE_H, then to the 2:1 aspect ideal
+/// when nothing fits and the caller is about to paginate anyway.
 pub fn grid_dims(n: usize, area: Rect) -> (u16, u16) {
-    let cols = ((n as f32 * area.width as f32) / (2.0 * area.height as f32)).sqrt().ceil();
-    let cols = (cols as u16).clamp(1, n as u16);
-    let rows = (n as u16).div_ceil(cols);
-    (cols, rows)
+    let cols = fewest_cols(n, area, PREFERRED_TILE_H)
+        .or_else(|| fewest_cols(n, area, MIN_TILE_H))
+        .unwrap_or_else(|| ideal_cols(n, area));
+    (cols, (n as u16).div_ceil(cols))
 }
 
 pub struct Geometry {
@@ -838,11 +842,20 @@ pub struct Geometry {
 }
 
 pub fn compute(n: usize, area: Rect, view: ViewMode, page: usize) -> Geometry;
+
+/// The session list / detail split, shared by rendering and the resize
+/// sweep so both agree on how big the detail pane is.
+pub fn list_detail_split(area: Rect) -> (Rect, Rect);
 ```
 
 `compute` reduces `cols`/`rows` until every tile meets the minimum, and whatever count then fits
 becomes `per_page`. `per_page` is clamped to at least 1, so a hopelessly small terminal still shows
 one tile rather than dividing by zero.
+
+`ViewMode::ListDetail` produces no tile rects at all: the single visible job owns the whole detail
+pane. The resize sweep in `main.rs` sizes that job against `list_detail_split`'s detail rect rather
+than iterating `tiles`, and moving the selection (or switching views) arms the resize debounce, so
+the pane the user is looking at always wraps its output to the space it is drawn in.
 
 ### More sessions than fit
 
@@ -905,7 +918,8 @@ half-page, `q` quits, confirmations are `y`/`n`).
 | `l` | Grid: focus the tile to the right. List: move focus to the detail pane |
 | `Tab` | Grid: focus next job. List: move focus to the detail pane |
 | `Shift-Tab` | Grid: focus previous job. List: move focus to the session list |
-| `Up` / `Down` / `Left` / `Right` | Scroll the focused job's output one line |
+| `Up` / `Down` | List view with the session list focused: previous / next job. Otherwise scroll the focused job's output one line |
+| `Left` / `Right` | List view with the session list focused: same as `h` / `l`. Otherwise scroll the focused job's output one line |
 | `g` `g` | Focus the first job |
 | `G` | Focus the last job |
 | `Alt-1` .. `Alt-9` | Focus job N directly |
@@ -968,8 +982,9 @@ question is "keep or kill". Arrow keys and Enter work the same way on both dialo
 is usable without memorizing the letter shortcuts.
 
 `keymap.rs` implements this as one pure function,
-`fn map(view: ViewMode, modal: &Modal, key: KeyEvent) -> Option<Action>`, with modal maps checked
-first. That makes the entire table unit-testable with no terminal and no tmux.
+`fn map(view: ViewMode, pane: Pane, modal: &Modal, key: KeyEvent) -> Option<Action>`, with modal
+maps checked first. `pane` is what makes the arrows mean "move the highlight" in the session list
+and "scroll" everywhere else. That makes the entire table unit-testable with no terminal and no tmux.
 
 ---
 

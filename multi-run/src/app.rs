@@ -28,11 +28,6 @@ const TOAST_TTL: Duration = Duration::from_secs(5);
 /// Lines the mouse wheel moves per notch.
 const MOUSE_SCROLL_LINES: u16 = 3;
 
-/// Width of the list pane in list/detail view. Must match `ui::mod`'s
-/// `LIST_WIDTH`, which owns the drawing; this copy exists so hit-testing does
-/// not pull a rendering constant into state handling.
-const LIST_PANE_WIDTH: u16 = 28;
-
 /// Does `rect` contain the cell at `(col, row)`?
 fn contains(rect: &Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
@@ -234,7 +229,8 @@ impl App {
             ViewMode::ListDetail => {
                 // The list pane is bordered, so its first row is one below the
                 // body's top edge, and its rows start one column in.
-                if col >= LIST_PANE_WIDTH || row <= self.body.y {
+                let (list, _) = layout::list_detail_split(self.body);
+                if col >= list.x + list.width || row <= self.body.y {
                     return None;
                 }
                 let idx = (row - self.body.y - 1) as usize;
@@ -358,7 +354,22 @@ impl App {
 
     /// Apply one action, returning any side effect for `main.rs` to run.
     /// This is the only function that mutates `App` in response to input.
+    ///
+    /// Wraps `apply_action` so that anything which changes *which* tmux pane
+    /// is on screen, or how big it is, arms the resize debounce. Moving the
+    /// selection in list/detail view hands the whole detail pane to a
+    /// different session, and that session has to be told its new size or it
+    /// keeps rendering at whatever size it last had.
     pub fn apply(&mut self, action: Action) -> Option<Effect> {
+        let before = (self.view, self.focus.job, self.page);
+        let effect = self.apply_action(action);
+        if before != (self.view, self.focus.job, self.page) {
+            self.pending_resize = Some(Instant::now());
+        }
+        effect
+    }
+
+    fn apply_action(&mut self, action: Action) -> Option<Effect> {
         self.redraw = true;
         let n = self.group.jobs.len();
 

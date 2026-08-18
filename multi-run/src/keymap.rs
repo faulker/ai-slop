@@ -41,7 +41,7 @@
 //!   `app.rs` reinterprets `FocusLeft`/`FocusRight` as a pane switch in
 //!   list view.
 
-use crate::ui::layout::ViewMode;
+use crate::ui::layout::{Pane, ViewMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 /// Scroll amount, in lines, for a half-page scroll (`Ctrl-u`/`Ctrl-d`). This
@@ -130,18 +130,23 @@ pub enum ModalState {
     ErrorLog,
 }
 
-/// Map one key event to at most one `Action`, given the current view mode
-/// and modal state. Pure: no IO, no state mutation, no drawing. Modal maps
-/// are checked first, per DESIGN.md section 7.
-pub fn map(view: ViewMode, modal: &ModalState, key: KeyEvent) -> Option<Action> {
+/// Map one key event to at most one `Action`, given the current view mode,
+/// which pane owns the keyboard, and the modal state. Pure: no IO, no state
+/// mutation, no drawing. Modal maps are checked first, per DESIGN.md section
+/// 7.
+///
+/// `pane` only matters in `ViewMode::ListDetail`, where the arrow keys mean
+/// different things on either side: they walk the session list when it has
+/// focus, and scroll output when the detail pane does. Grid view ignores it.
+pub fn map(view: ViewMode, pane: Pane, modal: &ModalState, key: KeyEvent) -> Option<Action> {
     // Only key-down (or repeat, which Unix terminals normally report as a
     // second Press) should produce an action; a Release must not.
     if key.kind == KeyEventKind::Release {
         return None;
     }
     match modal {
-        ModalState::None => map_normal(view, key),
-        ModalState::Toast => map_normal(view, key),
+        ModalState::None => map_normal(view, pane, key),
+        ModalState::Toast => map_normal(view, pane, key),
         ModalState::Help => map_help(key),
         ModalState::Compose {
             line_empty,
@@ -169,7 +174,7 @@ fn is_ctrl_char(key: &KeyEvent, c: char) -> bool {
 /// Main grid/list-detail table: global keys, navigation, and session
 /// actions from DESIGN.md section 7. Also used for `ModalState::Toast`,
 /// which does not take the keyboard.
-fn map_normal(view: ViewMode, key: KeyEvent) -> Option<Action> {
+fn map_normal(view: ViewMode, pane: Pane, key: KeyEvent) -> Option<Action> {
     use KeyCode::*;
 
     // Global.
@@ -248,19 +253,40 @@ fn map_normal(view: ViewMode, key: KeyEvent) -> Option<Action> {
         return Some(Action::NextPage);
     }
 
-    // Scroll the focused job's output. Arrows are line-at-a-time in both
-    // views; Ctrl page keys remain list/detail shortcuts for larger jumps.
+    // Arrows. With the session list focused they walk the list and cross to
+    // the detail pane, mirroring `j`/`k`/`h`/`l`: a highlighted list that
+    // scrolled someone else's output instead of moving the highlight is the
+    // one thing every user tries first. Everywhere else they scroll the
+    // focused job's output, line at a time; the Ctrl page keys below remain
+    // list/detail shortcuts for larger jumps.
+    let list_focused = view == ViewMode::ListDetail && pane == Pane::List;
     if key.code == Up {
-        return Some(Action::ScrollUp(1));
+        return Some(if list_focused {
+            Action::FocusPrev
+        } else {
+            Action::ScrollUp(1)
+        });
     }
     if key.code == Down {
-        return Some(Action::ScrollDown(1));
+        return Some(if list_focused {
+            Action::FocusNext
+        } else {
+            Action::ScrollDown(1)
+        });
     }
     if key.code == Left {
-        return Some(Action::ScrollUp(1));
+        return Some(if list_focused {
+            Action::FocusLeft
+        } else {
+            Action::ScrollUp(1)
+        });
     }
     if key.code == Right {
-        return Some(Action::ScrollDown(1));
+        return Some(if list_focused {
+            Action::FocusRight
+        } else {
+            Action::ScrollDown(1)
+        });
     }
     if view == ViewMode::ListDetail {
         if is_ctrl_char(&key, 'u') {
@@ -399,6 +425,14 @@ fn map_error_log(key: KeyEvent) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Most of these tests predate the pane-aware arrow keys and care only
+    /// about view + modal, so they call a three-argument `map` that shadows
+    /// the real one with the detail pane focused. Tests that do care pass a
+    /// pane explicitly through `super::map`.
+    fn map(view: ViewMode, modal: &ModalState, key: KeyEvent) -> Option<Action> {
+        super::map(view, Pane::Detail, modal, key)
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -545,7 +579,46 @@ mod tests {
     }
 
     #[test]
-    fn arrow_keys_scroll_in_both_views() {
+    fn arrow_keys_walk_the_session_list_when_it_has_focus() {
+        // The bug this pins: the Sessions panel highlighted a row but the
+        // arrows scrolled the detail output instead of moving the highlight.
+        use super::map;
+        assert_eq!(
+            map(ViewMode::ListDetail, Pane::List, &NONE, key(KeyCode::Up)),
+            Some(Action::FocusPrev)
+        );
+        assert_eq!(
+            map(ViewMode::ListDetail, Pane::List, &NONE, key(KeyCode::Down)),
+            Some(Action::FocusNext)
+        );
+        // Left/right cross panes, exactly like `h`/`l`.
+        assert_eq!(
+            map(ViewMode::ListDetail, Pane::List, &NONE, key(KeyCode::Left)),
+            Some(Action::FocusLeft)
+        );
+        assert_eq!(
+            map(ViewMode::ListDetail, Pane::List, &NONE, key(KeyCode::Right)),
+            Some(Action::FocusRight)
+        );
+    }
+
+    #[test]
+    fn arrow_keys_still_scroll_in_grid_view_whatever_the_pane_says() {
+        use super::map;
+        for pane in [Pane::List, Pane::Detail] {
+            assert_eq!(
+                map(ViewMode::Grid, pane, &NONE, key(KeyCode::Up)),
+                Some(Action::ScrollUp(1))
+            );
+            assert_eq!(
+                map(ViewMode::Grid, pane, &NONE, key(KeyCode::Down)),
+                Some(Action::ScrollDown(1))
+            );
+        }
+    }
+
+    #[test]
+    fn arrow_keys_scroll_with_the_detail_pane_focused() {
         for view in [ViewMode::Grid, ViewMode::ListDetail] {
             assert_eq!(
                 map(view, &NONE, key(KeyCode::Up)),

@@ -47,10 +47,6 @@ pub mod tile;
 use layout::{Focus, Pane, ViewMode};
 use overlay::Overlay;
 
-/// Width of the session list pane in `ViewMode::ListDetail`, including its
-/// border.
-const LIST_WIDTH: u16 = 28;
-
 /// Columns the status bar's left half needs before it is worth also drawing
 /// the key hints on the right.
 const MIN_STATUS_LEFT: u16 = 24;
@@ -116,12 +112,14 @@ fn draw_list_detail(buf: &mut Buffer, state: &DrawState, area: Rect) {
         return;
     }
 
-    let cols = Layout::horizontal([Constraint::Length(LIST_WIDTH), Constraint::Min(0)]).split(area);
-    draw_session_list(buf, state, cols[0]);
+    // The same split `main.rs` resizes the focused tmux window to, so the
+    // detail pane draws output that was captured at exactly this size.
+    let (list, detail) = layout::list_detail_split(area);
+    draw_session_list(buf, state, list);
 
     if let Some(job) = state.group.jobs.get(state.focus.job) {
         let focused = state.focus.pane == Pane::Detail;
-        tile::render(job, cols[1], buf, focused);
+        tile::render(job, detail, buf, focused);
     }
 }
 

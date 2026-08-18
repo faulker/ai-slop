@@ -163,7 +163,7 @@ fn render_help(area: Rect, buf: &mut Buffer) {
         Line::from("Navigation").style(heading),
         Line::from("  j/k, h/l   move focus").style(body),
         Line::from("  Tab / S-Tab switch panel").style(body),
-        Line::from("  arrows     scroll selected panel").style(body),
+        Line::from("  arrows     move in session list, else scroll").style(body),
         Line::from("  g / G      first / last job").style(body),
         Line::from("  Alt-1..9   focus job N").style(body),
         Line::from("  [ / ]      previous / next page").style(body),

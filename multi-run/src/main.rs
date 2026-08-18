@@ -898,7 +898,7 @@ fn handle_message(
 ) -> Result<Option<String>> {
     match msg {
         ToMain::Key(key) => {
-            if let Some(action) = keymap::map(app.view, &app.modal_state(), key)
+            if let Some(action) = keymap::map(app.view, app.focus.pane, &app.modal_state(), key)
                 && let Some(effect) = app.apply(action)
             {
                 return run_effect(app, effect, to_poller, cwd);
@@ -1069,30 +1069,142 @@ fn tile_specs(app: &App) -> Vec<TileSpec> {
 }
 
 /// Tiles whose desired inner size differs from what tmux was last told.
+///
+/// List/detail view has no grid rects at all: the one visible job owns the
+/// whole detail pane, so it is sized against that rather than left at the
+/// grid tile size it happened to have when the view was switched. Without
+/// this the pane keeps wrapping its output to a small tile inside a
+/// full-height panel.
 fn resize_batch(app: &mut App) -> Vec<(String, u16, u16)> {
-    let geo = &app.geometry;
-    let start = ui::layout::page_start(app.page, geo.per_page);
-    let mut batch = Vec::new();
-
-    for (i, rect) in geo.tiles.iter().enumerate() {
-        let Some(job) = app.group.jobs.get_mut(start + i) else {
-            continue;
-        };
-        let want = (
-            rect.width.saturating_sub(2).max(1),
-            rect.height.saturating_sub(2).max(1),
-        );
-        if job.tile_size != want {
-            job.tile_size = want;
-            batch.push((job.tmux_name.clone(), want.0, want.1));
+    match app.view {
+        ViewMode::Grid => {
+            let start = ui::layout::page_start(app.page, app.geometry.per_page);
+            let rects: Vec<_> = app.geometry.tiles.clone();
+            let mut batch = Vec::new();
+            for (i, rect) in rects.iter().enumerate() {
+                let Some(job) = app.group.jobs.get_mut(start + i) else {
+                    continue;
+                };
+                if let Some(entry) = want_resize(job, *rect) {
+                    batch.push(entry);
+                }
+            }
+            batch
+        }
+        ViewMode::ListDetail => {
+            let (_, detail) = ui::layout::list_detail_split(app.body);
+            let focus = app.focus.job;
+            app.group
+                .jobs
+                .get_mut(focus)
+                .and_then(|job| want_resize(job, detail))
+                .into_iter()
+                .collect()
         }
     }
-    batch
+}
+
+/// Record `rect`'s inner size on `job` and return the resize tmux needs, or
+/// `None` when tmux was already told this size.
+fn want_resize(job: &mut Job, rect: Rect) -> Option<(String, u16, u16)> {
+    let want = (
+        rect.width.saturating_sub(2).max(1),
+        rect.height.saturating_sub(2).max(1),
+    );
+    if job.tile_size == want {
+        return None;
+    }
+    job.tile_size = want;
+    Some((job.tmux_name.clone(), want.0, want.1))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::cli::GroupId;
+    use crate::preflight::Tier;
+
+    /// An app holding `n` running jobs on a 120x40 body, laid out for `view`.
+    fn app_with(n: u16, view: ViewMode) -> App {
+        let group = Group {
+            id: GroupId::new("k3f9"),
+            label: None,
+            cwd: PathBuf::from("/tmp"),
+            jobs: (1..=n)
+                .map(|i| {
+                    Job::new(
+                        crate::cli::JobId {
+                            group: GroupId::new("k3f9"),
+                            index: i,
+                        },
+                        format!("cmd{i}"),
+                        PathBuf::from("/tmp"),
+                        0,
+                    )
+                })
+                .collect(),
+            next_index: n + 1,
+        };
+        let mut app = App::new(group, view, Tier::Full);
+        app.on_resize(Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        });
+        app
+    }
+
+    #[test]
+    fn list_detail_resizes_the_focused_job_to_the_whole_detail_pane() {
+        // The bug this pins: list/detail has no grid rects, so the sweep
+        // resized nothing and the one visible session kept rendering at the
+        // small grid tile size inside a full-height panel.
+        let mut app = app_with(3, ViewMode::ListDetail);
+        let batch = resize_batch(&mut app);
+        assert_eq!(batch.len(), 1, "only the visible job needs a size");
+
+        let (_, detail) = ui::layout::list_detail_split(app.body);
+        let want = (detail.width - 2, detail.height - 2);
+        assert_eq!(batch[0].1, want.0);
+        assert_eq!(batch[0].2, want.1);
+        assert_eq!(batch[0].0, app.group.jobs[0].tmux_name);
+
+        // Bigger than the grid tile the same job had, which is the point:
+        // the detail pane owns the full body height.
+        let mut grid = app_with(3, ViewMode::Grid);
+        let grid_batch = resize_batch(&mut grid);
+        assert!(
+            grid_batch.iter().all(|(_, _, h)| *h < want.1),
+            "detail pane should be taller than every grid tile, got {grid_batch:?} vs {want:?}"
+        );
+    }
+
+    #[test]
+    fn list_detail_resize_follows_the_selection() {
+        let mut app = app_with(3, ViewMode::ListDetail);
+        let first = resize_batch(&mut app);
+        assert_eq!(first.len(), 1);
+        // Nothing changed, so nothing to tell tmux.
+        assert!(resize_batch(&mut app).is_empty());
+
+        app.focus.job = 2;
+        let next = resize_batch(&mut app);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].0, app.group.jobs[2].tmux_name);
+    }
+
+    #[test]
+    fn moving_the_selection_arms_the_resize_debounce() {
+        let mut app = app_with(3, ViewMode::ListDetail);
+        app.pending_resize = None;
+        app.apply(keymap::Action::FocusNext);
+        assert!(
+            app.pending_resize.is_some(),
+            "a new selection owns the detail pane and must be resized"
+        );
+    }
 
     /// Collect the DEC private modes a byte stream turns on (`CSI ? Ps h`)
     /// or off (`CSI ? Ps l`). crossterm emits several per command and the
