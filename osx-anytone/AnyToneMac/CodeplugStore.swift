@@ -111,9 +111,8 @@ final class CodeplugStore: ObservableObject {
     @Published private(set) var qytChannels: [DumpQytChannel] = []
     @Published private(set) var qytSettings: DumpQytSettings?
     @Published private(set) var qytBands: [DumpQytBand] = []
-    /// The radio's own ASCII tag at `0x0FE0`, read-only and empty with no QYT
-    /// document open.
-    @Published private(set) var qytModelTag = ""
+    /// The LCD static message at `0x0FE0`, empty with no QYT document open.
+    @Published private(set) var qytStaticMessage = ""
 
     /// True when the work file holds changes the document doesn't have yet.
     @Published private(set) var isDirty = false
@@ -277,7 +276,7 @@ final class CodeplugStore: ObservableObject {
         qytChannels = []
         qytSettings = nil
         qytBands = []
-        qytModelTag = ""
+        qytStaticMessage = ""
         isDirty = false
         errorMessage = nil
         clearUnsaved()
@@ -307,7 +306,7 @@ final class CodeplugStore: ObservableObject {
         qytChannels = qyt?.channels ?? []
         qytSettings = qyt?.settings
         qytBands = qyt?.bands ?? []
-        qytModelTag = qyt?.modelTag ?? ""
+        qytStaticMessage = qyt?.staticMessage ?? ""
         fileURL = url
         errorMessage = nil
     }
@@ -495,11 +494,18 @@ final class CodeplugStore: ObservableObject {
     /// This is one call per Apply rather than one per keystroke on purpose: each
     /// staging round trip is a full parse, edit, serialize and re-dump in the
     /// core, and it produces one undo entry.
-    func updateQytSettings(_ s: DumpQytSettings) {
+    /// The LCD static message rides along because it lives on the same pane and
+    /// a user changing both expects one Apply, not two undo entries.
+    func updateQytSettings(_ s: DumpQytSettings, staticMessage: String) {
         guard let old = qytSettings else { return }
         let edit = qytSettingsEdit(from: old, to: s)
-        guard !edit.isEmpty else { return }
-        if stageQyt({ $0.settings = edit }, "Updated settings") {
+        let message = staticMessage == qytStaticMessage ? nil : staticMessage
+        guard !edit.isEmpty || message != nil else { return }
+        let noun = edit.isEmpty ? "Updated display message" : "Updated settings"
+        if stageQyt({
+            if !edit.isEmpty { $0.settings = edit }
+            $0.staticMessage = message
+        }, noun) {
             // The header has no slots, so only the section is marked.
             markUnsaved(.qytSettings, slots: [])
         }

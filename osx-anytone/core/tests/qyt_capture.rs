@@ -13,7 +13,10 @@
 
 use anytone_core::error::Result;
 use anytone_core::qyt::codeplug::{QytCodeplug, Tone};
-use anytone_core::qyt::device::{read_image, write_image, IMAGE_SIZE};
+use anytone_core::qyt::device::{
+    is_preserved, read_image, write_image, IMAGE_SIZE, PRESERVED_END, PRESERVED_START,
+    WRITE_BLOCKS,
+};
 use anytone_core::qyt::protocol::handshake;
 use anytone_core::transport::Transport;
 
@@ -126,8 +129,32 @@ fn read_session_host_stream_is_byte_identical_to_the_vendor_capture() {
     );
 }
 
+/// Split a captured host stream into its write frames, keyed by the image
+/// address each frame's header carries.
+///
+/// Layout after the 8-byte handshake and the 5-byte prologue is a run of
+/// 21-byte frames: `STX`, `CMD_WRITE`, address high, address low, length, then
+/// 16 data bytes.
+fn write_frames(stream: &[u8]) -> Vec<(usize, Vec<u8>)> {
+    const PREFIX: usize = 8 + 5;
+    const FRAME: usize = 5 + 16;
+    assert!(stream.len() >= PREFIX);
+    assert_eq!(
+        (stream.len() - PREFIX) % FRAME,
+        0,
+        "stream tail is not a whole number of write frames"
+    );
+    stream[PREFIX..]
+        .chunks(FRAME)
+        .map(|f| {
+            assert_eq!(f[4] as usize, 16, "unexpected write block length");
+            (((f[2] as usize) << 8) | f[3] as usize, f[5..].to_vec())
+        })
+        .collect()
+}
+
 #[test]
-fn write_session_host_stream_matches_the_vendor_capture_outside_the_garbage_window() {
+fn write_session_host_stream_matches_the_vendor_capture_outside_the_preserved_window() {
     let (Some(image), Some(replies), Some(expected)) = (
         image_from_read_capture(),
         capture("write-radio_read"),
@@ -141,58 +168,51 @@ fn write_session_host_stream_matches_the_vendor_capture_outside_the_garbage_wind
     let mut acks = 0usize;
     write_image(&mut t, &image, &mut |_, _| acks += 1).unwrap();
 
-    assert_eq!(acks, 784, "expected 784 acknowledged write blocks");
+    assert_eq!(acks, WRITE_BLOCKS);
     assert_eq!(
         expected.len(),
         16477,
         "capture write-radio_write changed size unexpectedly"
     );
-    assert_eq!(
-        t.written.len(),
-        expected.len(),
-        "host stream is {} bytes, vendor sent {}",
-        t.written.len(),
-        expected.len()
-    );
+    // The handshake and the prologue are still byte-identical; only the frame
+    // run below is allowed to differ.
+    assert_eq!(t.written[..13], expected[..13]);
 
-    // Map every differing stream byte back to the image address it carries.
-    // Stream layout after the 8-byte handshake and the 5-byte prologue is a run
-    // of 21-byte frames: 5 header bytes then 16 data bytes.
-    const PREFIX: usize = 8 + 5;
-    const FRAME: usize = 5 + 16;
-    let mut differing_addrs = Vec::new();
-    for (i, (&ours, &theirs)) in t.written.iter().zip(expected.iter()).enumerate() {
-        if ours == theirs {
-            continue;
-        }
-        assert!(i >= PREFIX, "handshake or prologue differs at offset {i}");
-        let frame = (i - PREFIX) / FRAME;
-        let within = (i - PREFIX) % FRAME;
-        assert!(
-            within >= 5,
-            "a frame header differs at offset {i} (frame {frame}, byte {within})"
+    let ours = write_frames(&t.written);
+    let theirs = write_frames(&expected);
+    assert_eq!(theirs.len(), 784, "the vendor sends every block");
+
+    // Every frame we do send is the vendor's frame, byte for byte, at the same
+    // address and in the same order.
+    let kept: Vec<&(usize, Vec<u8>)> = theirs
+        .iter()
+        .filter(|(addr, _)| !is_preserved(*addr))
+        .collect();
+    assert_eq!(ours.len(), kept.len());
+    for (ours, theirs) in ours.iter().zip(kept.iter()) {
+        assert_eq!(ours.0, theirs.0, "frame address diverges from the vendor");
+        assert_eq!(
+            ours.1, theirs.1,
+            "frame data at 0x{:04X} diverges from the vendor",
+            ours.0
         );
-        differing_addrs.push(frame * 16 + (within - 5));
     }
 
-    // The only place we deliberately diverge: the vendor CPS uploads 950 bytes
-    // of uninitialised buffer at 0x2000-0x23EF into a region the radio reads
-    // back as 0xFF. We send our image's own bytes there instead.
-    assert!(
-        !differing_addrs.is_empty(),
-        "expected to differ inside the 0x2000-0x23EF garbage window"
-    );
-    let lo = *differing_addrs.iter().min().unwrap();
-    let hi = *differing_addrs.iter().max().unwrap();
-    assert!(
-        lo >= 0x2000 && hi <= 0x23EF,
-        "differences escape the garbage window: 0x{lo:04X}..=0x{hi:04X}"
-    );
-    // Everything we send in that window is the erased 0xFF the radio reports.
-    assert!(
-        differing_addrs.iter().all(|&a| image[a] == 0xFF),
-        "the garbage window should differ only where our image holds 0xFF"
-    );
+    // The only divergence: the 63 blocks of 0x2000-0x23EF we never send. The
+    // vendor uploads an uninitialised buffer there; we leave the radio's own
+    // bytes alone. See PRESERVED_START in core/src/qyt/device.rs.
+    let skipped: Vec<usize> = theirs
+        .iter()
+        .map(|(addr, _)| *addr)
+        .filter(|addr| !ours.iter().any(|(a, _)| a == addr))
+        .collect();
+    assert_eq!(skipped.len(), 63);
+    assert_eq!(*skipped.first().unwrap(), PRESERVED_START);
+    assert_eq!(*skipped.last().unwrap(), PRESERVED_END - 16);
+    assert!(skipped.iter().all(|&addr| is_preserved(addr)));
+    // And the image we handed over really is the erased one that caused this
+    // rule to exist, so the test would fail if the skip were removed.
+    assert!(image[PRESERVED_START..PRESERVED_END].iter().all(|&b| b == 0xFF));
 }
 
 #[test]
@@ -212,7 +232,7 @@ fn read_capture_parses_to_an_image_with_the_expected_landmarks() {
         ]
     );
 
-    // The model tag the file-format detector will key off.
+    // The LCD static message, as it ships from the factory.
     assert_eq!(&image[0x0FE0..0x0FF0], b"Model:KT-5000   ");
 
     // Unused channel-name space and the read-only tail are erased.
@@ -246,7 +266,7 @@ fn the_real_capture_parses_into_the_expected_codeplug() {
     // 159 programmed slots out of 200, the highest at index 165.
     assert_eq!(cp.channels().count(), 159);
     assert_eq!(cp.channels().map(|c| c.index).max(), Some(165));
-    assert_eq!(cp.model_tag(), "Model:KT-5000");
+    assert_eq!(cp.static_message(), "Model:KT-5000");
 
     let ch0 = cp.channels().find(|c| c.index == 0).unwrap();
     assert_eq!(ch0.name, "FRS-01");

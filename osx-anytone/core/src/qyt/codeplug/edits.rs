@@ -48,6 +48,9 @@ pub struct QytEditSpec {
     settings: Option<SettingsFields>,
     #[serde(default)]
     bands: Vec<BandEdit>,
+    /// The ASCII line the radio shows on its LCD. Absent leaves it alone.
+    #[serde(default)]
+    static_message: Option<String>,
 }
 
 /// Relocate the channel at `from` to the free slot `to`.
@@ -142,6 +145,9 @@ pub fn apply_edits(data: &[u8], edits_json: &str) -> Result<Vec<u8>, String> {
     for e in &spec.bands {
         apply_band_fields(&mut cp, e.index, &e.fields)?;
     }
+    if let Some(msg) = &spec.static_message {
+        cp.set_static_message(msg).map_err(|e| e.to_string())?;
+    }
 
     // --- 3. Moves, then removals, then adds. ---
     for m in &spec.move_channels {
@@ -187,6 +193,17 @@ pub fn apply_edits(data: &[u8], edits_json: &str) -> Result<Vec<u8>, String> {
     }
     if let Some(f) = &spec.settings {
         verify_settings(&check, f)?;
+    }
+    if let Some(msg) = &spec.static_message {
+        // The field is space-padded, and reading it back trims that padding, so
+        // compare against the trimmed form the radio will actually show.
+        let want = msg.trim_end_matches(' ');
+        if check.static_message() != want {
+            return Err(format!(
+                "static message verification failed: wrote {want:?}, read back {:?}",
+                check.static_message()
+            ));
+        }
     }
     for e in &spec.bands {
         if let Some(hz) = e.fields.frequency_hz {
@@ -412,6 +429,31 @@ mod tests {
     fn edit(json: &str) -> Result<QytCodeplug, String> {
         let out = apply_edits(&synthetic_qyt_image(), json)?;
         QytCodeplug::parse(&out).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_static_message_edit_changes_the_lcd_line() {
+        let cp = edit(r#"{"static_message": "N7FYZ MOBILE"}"#).unwrap();
+        assert_eq!(cp.static_message(), "N7FYZ MOBILE");
+    }
+
+    #[test]
+    fn a_static_message_edit_is_rejected_when_it_does_not_fit() {
+        let err = edit(r#"{"static_message": "this line is far too long"}"#).unwrap_err();
+        assert!(err.contains("at most 13"), "{err}");
+    }
+
+    #[test]
+    fn a_static_message_edit_is_rejected_past_the_lcd_width() {
+        // 14 characters fit the 16-byte field but not the 13-column display.
+        let err = edit(r#"{"static_message": "0123456789ABC!"}"#).unwrap_err();
+        assert!(err.contains("at most 13"), "{err}");
+        assert_eq!(
+            edit(r#"{"static_message": "0123456789ABC"}"#)
+                .unwrap()
+                .static_message(),
+            "0123456789ABC"
+        );
     }
 
     #[test]

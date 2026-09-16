@@ -10,27 +10,10 @@ use crate::error::Result;
 use crate::model::Model;
 use std::collections::HashSet;
 
-/// Known (VID, PID, model) triples for USB bridges we can attribute on sight.
-///
-/// The two AnyTone entries are the AT-D878UVII Plus GD32 and STM32 bridge
-/// variants, respectively.
-///
-/// There is deliberately no QYT KT-5000 entry, and there never will be.
-///
-/// Checked against the hardware on 2026-08-06: the KT-5000's programming cable
-/// enumerates as `067b:2303`, a stock Prolific PL2303. That chip is in
-/// thousands of unrelated adapters, so attributing it here would tell every
-/// PL2303 owner their USB-to-RS232 cable is a radio, and would let a codeplug
-/// be aimed at whatever else happened to be plugged in. The radio simply cannot
-/// be identified from its USB descriptors.
-///
-/// A KT-5000 therefore appears as an unattributed port and is reached by the
-/// caller naming the model explicitly. That is the correct design for this
-/// radio, not a placeholder waiting on a capture.
-pub const KNOWN_USB_IDS: &[(u16, u16, Model)] = &[
-    (0x28e9, 0x018a, Model::AnyToneD878UV2),
-    (0x2e3c, 0x5740, Model::AnyToneD878UV2),
-];
+// The USB identity table lives in `usb_ids` so Android can reach it without
+// pulling in `serialport`. Re-exported here because this was its original home
+// and callers (the C ABI, tests) still name it through this module.
+pub use crate::usb_ids::{is_known_radio, model_for_usb_id, KNOWN_USB_IDS};
 
 /// A discovered serial port and which radio, if any, its USB identity names.
 #[derive(Debug, Clone)]
@@ -74,19 +57,6 @@ impl PortInfo {
             likely_radio: model.is_some(),
         }
     }
-}
-
-/// The model this VID/PID pair belongs to, or `None` if we don't know it.
-pub fn model_for_usb_id(vid: u16, pid: u16) -> Option<Model> {
-    KNOWN_USB_IDS
-        .iter()
-        .find(|(v, p, _)| *v == vid && *p == pid)
-        .map(|(_, _, m)| *m)
-}
-
-/// Return true if this VID/PID pair is a known radio USB bridge.
-pub fn is_known_radio(vid: u16, pid: u16) -> bool {
-    model_for_usb_id(vid, pid).is_some()
 }
 
 /// macOS exposes every serial device twice: once as a callout device

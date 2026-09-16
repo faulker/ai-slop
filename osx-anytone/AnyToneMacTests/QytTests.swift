@@ -63,7 +63,7 @@ final class QytDumpTests: XCTestCase {
            "scramble": false, "bandwidth": "Wide", "power": "High",
            "step_hz": null}
         ],
-        "model_tag": "Model:KT-5000"
+        "static_message": "Model:KT-5000"
       }
     }
     """
@@ -130,7 +130,7 @@ final class QytDumpTests: XCTestCase {
         XCTAssertEqual(qyt.bands[0].frequencyHz, 462_562_500)
         XCTAssertNil(qyt.bands[1].frequencyHz)
         XCTAssertFalse(qyt.bands[1].programmed)
-        XCTAssertEqual(qyt.modelTag, "Model:KT-5000")
+        XCTAssertEqual(qyt.staticMessage, "Model:KT-5000")
     }
 
     /// The envelope names the QYT and carries its capabilities, including the
@@ -253,6 +253,33 @@ final class QytDumpTests: XCTestCase {
         XCTAssertNotNil(qyt["add_channels"])
         XCTAssertFalse(spec.isEmpty)
         XCTAssertTrue(QytEditSpec().isEmpty)
+    }
+
+    /// The LCD line travels as a bare `static_message` string beside the
+    /// settings object, and is left out entirely when it was not touched.
+    func testStaticMessageEditUsesTheCoresKey() throws {
+        var spec = QytEditSpec()
+        spec.staticMessage = "N7FYZ MOBILE"
+        let data = try JSONEncoder().encode(QytEditEnvelope(qyt: spec))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let qyt = try XCTUnwrap(object["qyt"] as? [String: Any])
+
+        XCTAssertEqual(qyt["static_message"] as? String, "N7FYZ MOBILE")
+        XCTAssertFalse(spec.isEmpty, "a message-only batch still has something to apply")
+
+        let untouched = try JSONEncoder().encode(QytEditEnvelope(qyt: QytEditSpec()))
+        let bare = try XCTUnwrap(JSONSerialization.jsonObject(with: untouched) as? [String: Any])
+        let bareQyt = try XCTUnwrap(bare["qyt"] as? [String: Any])
+        XCTAssertNil(bareQyt["static_message"])
+    }
+
+    /// The field is 16 bytes of printable ASCII on the radio but the LCD only
+    /// draws 13, so the pane filters as you type rather than failing at Apply.
+    func testStaticMessageFieldClampsToWhatTheRadioCanStore() {
+        XCTAssertEqual(QytSettingsPane.clamp("N7FYZ"), "N7FYZ")
+        XCTAssertEqual(QytSettingsPane.clamp("0123456789ABCDEFGHI"), "0123456789ABC")
+        XCTAssertEqual(QytSettingsPane.clamp("caf\u{e9} \u{1F4FB}"), "caf ")
+        XCTAssertEqual(QytSettingsPane.clamp(""), "")
     }
 
     /// Settings go out as one object and bands as an array keyed by index, which
@@ -425,15 +452,19 @@ final class QytChannelHelperTests: XCTestCase {
         new.shift = "Minus"
         let edit = qytBandEdit(from: old, to: new)
 
-        XCTAssertEqual(edit.index, 3)
+        XCTAssertEqual(edit.index, 1, "the edit is addressed to the band it came from")
         XCTAssertEqual(edit.frequencyHz, 147_320_000)
         XCTAssertEqual(edit.power, "Low")
         XCTAssertNil(edit.bandwidth)
         XCTAssertNil(edit.stepHz)
     }
 
-    func testBandNamesAreTheRadiosLetters() {
-        XCTAssertEqual((0..<4).map(qytBandName), ["A", "B", "C", "D"])
+    /// The KT-5000 has two VFOs, A and B. The image carries two more slots in
+    /// the same shape, but the radio has no letter for them, so they fall back
+    /// to their index rather than inventing a C and a D.
+    func testBandNamesAreTheRadiosTwoVfoLetters() {
+        XCTAssertEqual((0..<2).map(qytBandName), ["A", "B"])
+        XCTAssertEqual(qytBandName(2), "2")
         XCTAssertEqual(qytBandName(9), "9")
     }
 }
@@ -466,7 +497,7 @@ final class QytStoreTests: XCTestCase {
                                           volume: 0, backlightTimer: 0, beep: false,
                                           scanRev: "CO", rememberPower: false),
                 bands: [],
-                modelTag: "Model:KT-5000"
+                staticMessage: "Model:KT-5000"
             )
         )
     }
@@ -817,7 +848,7 @@ final class QytSaveModelTests: XCTestCase {
         var draft = try XCTUnwrap(store.qytSettings)
         draft.squelch = 4
         draft.tot = 3
-        store.updateQytSettings(draft)
+        store.updateQytSettings(draft, staticMessage: store.qytStaticMessage)
 
         XCTAssertNil(store.errorMessage)
         XCTAssertTrue(store.isDirty)
@@ -848,7 +879,7 @@ final class QytSaveModelTests: XCTestCase {
         let original = try XCTUnwrap(store.qytSettings)
         var draft = original
         draft.squelch = 7
-        store.updateQytSettings(draft)
+        store.updateQytSettings(draft, staticMessage: store.qytStaticMessage)
         draft = try XCTUnwrap(store.qytSettings)
         XCTAssertEqual(draft.squelch, 7)
 
@@ -862,7 +893,7 @@ final class QytSaveModelTests: XCTestCase {
 
     /// The safety property behind a deliberately narrow settings pane: editing a
     /// modelled field leaves every unmodelled byte from `0x0E36` to `0x0FFF`
-    /// exactly as the radio wrote it, VFO slots and model tag included.
+    /// exactly as the radio wrote it, VFO slots and static message included.
     func testUnmodelledSettingsBytesSurviveAnEdit() throws {
         let original = try Data(contentsOf: codeplug)
         let store = CodeplugStore()
@@ -875,7 +906,7 @@ final class QytSaveModelTests: XCTestCase {
         draft.beep = true
         draft.scanRev = "SE"
         draft.rememberPower = true
-        store.updateQytSettings(draft)
+        store.updateQytSettings(draft, staticMessage: store.qytStaticMessage)
         store.save()
 
         XCTAssertNil(store.errorMessage)
@@ -885,6 +916,27 @@ final class QytSaveModelTests: XCTestCase {
                        "the unmodelled settings region must be byte-identical")
         XCTAssertNotEqual(saved[0x0E00..<0x0E36], original[0x0E00..<0x0E36],
                           "and the modelled header really did change")
+    }
+
+    /// The display message reaches the image as 16 space-padded bytes at
+    /// `0x0FE0`, and nothing else in the file moves with it.
+    func testStaticMessageEditWritesOnlyItsOwnSixteenBytes() throws {
+        let original = try Data(contentsOf: codeplug)
+        let store = CodeplugStore()
+        store.open(url: codeplug)
+
+        let settings = try XCTUnwrap(store.qytSettings)
+        store.updateQytSettings(settings, staticMessage: "N7FYZ MOBILE")
+        store.save()
+
+        XCTAssertNil(store.errorMessage)
+        let saved = try Data(contentsOf: codeplug)
+        let field = 0x0FE0..<0x0FF0
+        XCTAssertEqual(String(decoding: saved[field], as: UTF8.self), "N7FYZ MOBILE    ")
+        XCTAssertEqual(saved[..<field.lowerBound], original[..<field.lowerBound])
+        XCTAssertEqual(saved[field.upperBound...], original[field.upperBound...])
+        XCTAssertEqual(store.qytStaticMessage, "N7FYZ MOBILE",
+                       "and the reloaded document shows the trimmed line back")
     }
 
     /// A VFO frequency is stored one decimal digit per byte, not as the packed

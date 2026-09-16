@@ -269,12 +269,13 @@ struct QytDump: Codable {
     let channels: [DumpQytChannel]
     let settings: DumpQytSettings
     let bands: [DumpQytBand]
-    /// The radio's own ASCII tag at `0x0FE0`, read-only.
-    let modelTag: String
+    /// The ASCII line at `0x0FE0` that the radio shows on its LCD. Ships as
+    /// `Model:KT-5000`, which is why it reads like an identity field.
+    let staticMessage: String
 
     enum CodingKeys: String, CodingKey {
         case channels, settings, bands
-        case modelTag = "model_tag"
+        case staticMessage = "static_message"
     }
 }
 
@@ -394,11 +395,15 @@ struct QytEditSpec: Encodable {
     /// here rather than an array, since there is one header.
     var settings: QytSettingsEdit?
     var bands: [QytBandEdit] = []
+    /// The LCD static message. Nil leaves it alone; the core space-pads it out
+    /// to the field's 16 bytes.
+    var staticMessage: String?
 
     /// True when there is nothing to apply.
     var isEmpty: Bool {
         channels.isEmpty && addChannels.isEmpty && removeChannels.isEmpty
             && moveChannels.isEmpty && settings == nil && bands.isEmpty
+            && staticMessage == nil
     }
 
     enum CodingKeys: String, CodingKey {
@@ -406,6 +411,7 @@ struct QytEditSpec: Encodable {
         case addChannels = "add_channels"
         case removeChannels = "remove_channels"
         case moveChannels = "move_channels"
+        case staticMessage = "static_message"
     }
 }
 

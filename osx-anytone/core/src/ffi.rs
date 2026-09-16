@@ -35,9 +35,6 @@ use crate::model::{Capabilities, Model};
 use crate::ports::list_ports;
 use crate::transport::{SerialTransport, Transport};
 
-/// Serial baud rate; largely ignored by the CDC-ACM driver but set anyway.
-const BAUD: u32 = 115_200;
-
 /// Per-read timeout for the serial link.
 const TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -145,8 +142,12 @@ unsafe fn ffi_status(err_out: *mut *mut c_char, body: impl FnOnce() -> Result<()
 }
 
 /// Open the serial port as a bare transport for a [`RadioDriver`] to drive.
-fn open_transport(port: &str) -> Result<SerialTransport, String> {
-    SerialTransport::open(port, BAUD, TIMEOUT).map_err(|e| format!("failed to open {port}: {e}"))
+///
+/// The line rate comes from the model, because it is a property of the radio.
+/// See [`Model::baud`] for why that matters more than it looks like it should.
+fn open_transport(port: &str, model: Model) -> Result<SerialTransport, String> {
+    SerialTransport::open(port, model.baud(), TIMEOUT)
+        .map_err(|e| format!("failed to open {port}: {e}"))
 }
 
 /// Resolve a model id argument that may be null.
@@ -370,7 +371,7 @@ pub unsafe extern "C" fn anytone_identify(
 /// string the radio reported.
 fn identify_with(port: &str, model: Model) -> Result<String, String> {
     let driver = driver_for(model);
-    let mut transport = open_transport(port)?;
+    let mut transport = open_transport(port, model)?;
     let mut t: &mut dyn Transport = &mut transport;
     driver.identify(&mut t).map_err(|e| e.to_string())
 }
@@ -398,7 +399,7 @@ pub unsafe extern "C" fn anytone_backup(
         let out_path = arg_str(out_path, "out_path")?;
         let model = resolve_model(model, port)?;
         let driver = driver_for(model);
-        let mut transport = open_transport(port)?;
+        let mut transport = open_transport(port, model)?;
         let mut t: &mut dyn Transport = &mut transport;
         let mut cb = progress_closure(progress, user);
         let data = driver
@@ -447,7 +448,7 @@ pub unsafe extern "C" fn anytone_restore(
                     .to_string(),
             );
         }
-        let mut transport = open_transport(port)?;
+        let mut transport = open_transport(port, model)?;
         let mut t: &mut dyn Transport = &mut transport;
         let mut cb = progress_closure(progress, user);
         // The model came from the file above; the guard confirms the radio on

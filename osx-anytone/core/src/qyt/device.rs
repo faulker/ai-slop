@@ -34,8 +34,38 @@ pub const WRITE_LIMIT: u16 = 0x3100;
 /// [`read_image`].
 pub const READ_BLOCKS: usize = IMAGE_SIZE / READ_LEN as usize + 1;
 
+/// First address of the region the write path preserves, on top of everything
+/// at or above [`WRITE_LIMIT`].
+///
+/// `0x2000`-`0x23EF` is real, persistent memory that nothing in this codebase
+/// models: high-entropy 32-byte blocks followed by small per-band tables, most
+/// likely calibration. Because no edit can ever produce a meaningful value
+/// there, the only two things a write can do to it are preserve it (when the
+/// image came from a read of this same radio) or destroy it (when it came from
+/// anywhere else). On 2026-09-09 an image whose bytes there were `0xFF` blanked
+/// all of it on a real radio. Skipping the range makes that outcome impossible.
+///
+/// Restoring the region from a backup is still possible, deliberately through
+/// the explicit-address path instead: `anytone-cli rescue write --address 0x2000`.
+pub const PRESERVED_START: usize = 0x2000;
+
+/// First address past the preserved region. Block-aligned, so the write loop
+/// skips whole blocks; `preserved_range_is_block_aligned` pins that.
+pub const PRESERVED_END: usize = 0x23F0;
+
 /// Number of write commands a full image write issues.
-pub const WRITE_BLOCKS: usize = WRITE_LIMIT as usize / WRITE_LEN as usize;
+///
+/// 784 minus the 63 blocks inside [`PRESERVED_START`]..[`PRESERVED_END`]. The
+/// vendor CPS sends all 784; this is the one place our host stream is shorter
+/// than the capture, and `core/tests/qyt_capture.rs` pins that the difference
+/// is exactly those blocks.
+pub const WRITE_BLOCKS: usize =
+    (WRITE_LIMIT as usize - (PRESERVED_END - PRESERVED_START)) / WRITE_LEN as usize;
+
+/// Whether `addr` falls in the region a full-image write leaves alone.
+pub const fn is_preserved(addr: usize) -> bool {
+    addr >= PRESERVED_START && addr < PRESERVED_END
+}
 
 /// Read the radio's full `0x3200`-byte image. `progress` is called after each
 /// block with `(blocks_done, total_blocks)`.
@@ -78,13 +108,16 @@ pub fn read_image(
 /// so that callers always hand over the same shape they got from
 /// [`read_image`].
 ///
-/// One deliberate divergence from the vendor CPS: at `0x2000`-`0x23EF` (950
-/// bytes) the CPS uploads what is plainly an uninitialised buffer, into a
-/// region the radio reads back as `0xFF` regardless. We send our own image's
-/// bytes there instead, which for any image originating from [`read_image`]
-/// means `0xFF`. This is the only range where our host stream differs from the
+/// One deliberate divergence from the vendor CPS: `0x2000`-`0x23EF` is skipped
+/// entirely and keeps whatever the radio already holds. See [`PRESERVED_START`]
+/// for why. This is the only range where our host stream differs from the
 /// capture, and `core/tests/qyt_capture.rs` asserts the difference is confined
 /// to exactly it.
+///
+/// Everything else in `data` is sent verbatim, so the caller owns every byte
+/// below `0x2000` and from `0x23F0` to [`WRITE_LIMIT`]. Unlike the AnyTone
+/// there is no read-modify-write here: the image must already be a faithful
+/// starting point, which in practice means a read of the radio being written.
 pub fn write_image(
     t: &mut dyn Transport,
     data: &[u8],
@@ -102,6 +135,9 @@ pub fn write_image(
     let step = WRITE_LEN as usize;
     let mut done = 0usize;
     for addr in (0..WRITE_LIMIT as usize).step_by(step) {
+        if is_preserved(addr) {
+            continue;
+        }
         write_block(t, addr as u16, &data[addr..addr + step])?;
         done += 1;
         progress(done, WRITE_BLOCKS);
@@ -128,7 +164,17 @@ mod tests {
     #[test]
     fn block_counts_match_the_vendor_capture() {
         assert_eq!(READ_BLOCKS, 201);
-        assert_eq!(WRITE_BLOCKS, 784);
+        // The vendor sends 784; we skip the 63 blocks of the preserved window.
+        assert_eq!(WRITE_BLOCKS, 784 - 63);
+    }
+
+    #[test]
+    fn preserved_range_is_block_aligned() {
+        assert_eq!(PRESERVED_START % WRITE_LEN as usize, 0);
+        assert_eq!(PRESERVED_END % WRITE_LEN as usize, 0);
+        assert!(PRESERVED_END <= WRITE_LIMIT as usize);
+        assert!(is_preserved(0x2000) && is_preserved(0x23E0));
+        assert!(!is_preserved(0x1FF0) && !is_preserved(0x23F0));
     }
 
     #[test]
@@ -168,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn write_image_issues_784_writes_at_a_0x10_stride() {
+    fn write_image_issues_a_0x10_stride_over_everything_but_the_preserved_window() {
         let mut m = QytMock::new();
         let data = vec![0x42u8; IMAGE_SIZE];
         write_image(&mut m, &data, &mut |_, _| {}).unwrap();
@@ -176,7 +222,10 @@ mod tests {
         assert_eq!(m.writes.len(), WRITE_BLOCKS);
         assert!(m.writes.iter().all(|&(_, len)| len == WRITE_LEN as usize));
         let addrs: Vec<u16> = m.writes.iter().map(|&(a, _)| a).collect();
-        let expected: Vec<u16> = (0..WRITE_LIMIT).step_by(WRITE_LEN as usize).collect();
+        let expected: Vec<u16> = (0..WRITE_LIMIT)
+            .step_by(WRITE_LEN as usize)
+            .filter(|&a| !is_preserved(a as usize))
+            .collect();
         assert_eq!(addrs, expected);
         assert_eq!(*addrs.last().unwrap(), 0x30F0);
 
@@ -194,7 +243,33 @@ mod tests {
 
         assert!(m.writes.iter().all(|&(addr, _)| addr < WRITE_LIMIT));
         assert_eq!(&m.memory()[0x3100..0x3200], &[0xAAu8; 0x100]);
-        assert!(m.memory()[..0x3100].iter().all(|&b| b == 0x00));
+        assert!(m.memory()[..PRESERVED_START].iter().all(|&b| b == 0x00));
+        assert!(m.memory()[PRESERVED_END..0x3100].iter().all(|&b| b == 0x00));
+    }
+
+    /// The regression this whole window exists for: an image carrying `0xFF`
+    /// there must not be able to erase what the radio holds.
+    #[test]
+    fn qyt_write_leaves_the_calibration_window_exactly_as_the_radio_had_it() {
+        let mut m = QytMock::new();
+        let calibration: Vec<u8> = (PRESERVED_START..PRESERVED_END)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        m.seed(PRESERVED_START, &calibration);
+
+        // A stale image: erased where the radio holds calibration, which is what
+        // any backup taken before that region was populated looks like.
+        let mut data = vec![0x00u8; IMAGE_SIZE];
+        for b in &mut data[PRESERVED_START..PRESERVED_END] {
+            *b = 0xFF;
+        }
+        write_image(&mut m, &data, &mut |_, _| {}).unwrap();
+
+        assert!(m
+            .writes
+            .iter()
+            .all(|&(addr, _)| !is_preserved(addr as usize)));
+        assert_eq!(&m.memory()[PRESERVED_START..PRESERVED_END], &calibration[..]);
     }
 
     #[test]
@@ -209,9 +284,13 @@ mod tests {
     fn qyt_write_then_read_roundtrips_an_image() {
         let mut m = QytMock::new();
         let mut data: Vec<u8> = (0..IMAGE_SIZE).map(|i| (i % 241) as u8).collect();
-        // The tail is never written, so an honest round trip has to expect back
-        // whatever the radio already holds there.
+        // The tail and the preserved window are never written, so an honest
+        // round trip has to expect back whatever the radio already holds there,
+        // which on a fresh mock is the erased 0xFF.
         for b in &mut data[WRITE_LIMIT as usize..] {
+            *b = 0xFF;
+        }
+        for b in &mut data[PRESERVED_START..PRESERVED_END] {
             *b = 0xFF;
         }
 

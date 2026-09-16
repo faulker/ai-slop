@@ -1,4 +1,4 @@
-//! Byte transport abstraction over the radio's USB CDC-ACM serial link.
+//! Byte transport abstraction over the radio's USB serial link.
 //!
 //! The [`Transport`] trait is the minimal surface a protocol layer needs: a way
 //! to push a request out and to pull an exact number of response bytes back
@@ -6,10 +6,14 @@
 //! radios the tests drive live beside their protocols, e.g.
 //! [`crate::anytone::mock::MockTransport`].
 
+#[cfg(feature = "desktop")]
 use std::io::{Read, Write};
+#[cfg(feature = "desktop")]
 use std::time::Duration;
 
-use crate::error::{Error, Result};
+#[cfg(feature = "desktop")]
+use crate::error::Error;
+use crate::error::Result;
 
 /// The minimal I/O surface the protocol layer drives.
 pub trait Transport {
@@ -35,11 +39,16 @@ impl<T: Transport + ?Sized> Transport for &mut T {
     }
 }
 
-/// Real macOS serial transport backed by the `serialport` crate.
+/// Real desktop serial transport backed by the `serialport` crate.
+///
+/// Desktop-only. Android supplies its own transport from Kotlin through the
+/// UniFFI surface in [`crate::api`], because `serialport` needs libudev.
+#[cfg(feature = "desktop")]
 pub struct SerialTransport {
     port: Box<dyn serialport::SerialPort>,
 }
 
+#[cfg(feature = "desktop")]
 impl SerialTransport {
     /// Open the serial port at `path` (e.g. `/dev/cu.usbmodem1234`) with 8-N-1
     /// framing and the given per-read timeout. Baud is largely ignored by the
@@ -54,8 +63,24 @@ impl SerialTransport {
             .open()?;
         Ok(Self { port })
     }
+
+    /// Read whatever has already arrived, up to `buf.len()` bytes, returning 0
+    /// when the read timeout expires instead of failing.
+    ///
+    /// [`Transport::read_exact`] is the wrong shape for listening to a radio
+    /// that is talking on its own schedule rather than answering a command:
+    /// a boot banner has no length known in advance, and silence is data too.
+    /// The KT-5000 rescue watcher is the only caller.
+    pub fn read_some(&mut self, buf: &mut [u8]) -> Result<usize> {
+        match self.port.read(buf) {
+            Ok(n) => Ok(n),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(0),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
 }
 
+#[cfg(feature = "desktop")]
 impl Transport for SerialTransport {
     /// Push the whole buffer out and flush the OS write buffer.
     fn write_all(&mut self, buf: &[u8]) -> Result<()> {

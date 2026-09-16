@@ -1,32 +1,43 @@
 # osx-anytone
 
-> # ⚠️ THE WRITE PATH IS FIXED IN CODE BUT NOT YET HARDWARE-VERIFIED ⚠️
+> # ✅ BOTH WRITE PATHS ARE HARDWARE-VERIFIED
 >
-> The radio erases flash in **32 KB sectors**: any write into a sector erases the
-> whole sector. An earlier version rewrote only the blocks it models, destroying
-> ~43 KB of everything else (scan lists, tones, roaming, undocumented regions) on
-> every write and leaving the **official CPS unable to read the radio**
-> (`GetOptionFromCommData_Error`).
+> **AnyTone AT-D878UVII Plus: verified.** Confirmed by the operator on
+> 2026-09-04, across repeated real writes to a physical radio.
 >
-> `write_codeplug` now does **sector read-modify-write**: it reads every 32 KB
-> sector it will touch, overlays only the modelled blocks, and writes the sector
-> back, preserving everything else. This is covered by tests against a mock that
-> reproduces the sector erase — but it has **not yet been confirmed on real
-> hardware with a vendor CPS read**. Until it is, treat `restore` / "Write to
-> Radio" as unproven: back up with the vendor CPS first and be ready to reflash.
-> See [`docs/diagnosing-cps-breakage.md`](docs/diagnosing-cps-breakage.md).
+> This was the project's longest-standing risk, so it is worth recording what it
+> was. The radio erases flash in **32 KB sectors**: any write into a sector
+> erases the whole sector. An earlier version rewrote only the blocks it models,
+> destroying ~43 KB of everything else (scan lists, tones, roaming, undocumented
+> regions) on every write and leaving the **official CPS unable to read the
+> radio** (`GetOptionFromCommData_Error`). `write_codeplug` now does **sector
+> read-modify-write**: it reads every 32 KB sector it will touch, overlays only
+> the modelled blocks, and writes the sector back, preserving everything else.
+> That fix is what has now been confirmed in use. See
+> [`docs/diagnosing-cps-breakage.md`](docs/diagnosing-cps-breakage.md) for the
+> full history, which is still the best guide if a write ever does go wrong.
+>
+> **QYT KT-5000: verified.** On 2026-08-06 a full read, a one-channel edit, a
+> full write, and a post-reboot read-back were run against a real KT-5000. The
+> read-back differed from the pre-write backup by exactly the 6 bytes of the
+> intended edit, matched the transmitted image byte for byte across the whole
+> writable range, left `0x3100`-`0x31FF` untouched, and preserved
+> `0x2000`-`0x23EF` exactly.
+>
+> Since 2026-09-09 that last part no longer depends on the image: `0x2000`-`0x23EF`
+> is **excluded from the write map** the way `0x3100`-`0x31FF` already was, so a
+> codeplug that was never read off the radio in front of you cannot blank it. One
+> did, from the Android app, and erased 950 bytes of calibration-looking data.
+> Restoring that range is now an explicit `anytone-cli rescue write --address 0x2000`.
 >
 > **`backup`, `dump`, `dump-range` and `edit` are read-only and safe.**
 >
-> **QYT KT-5000: the write path IS hardware-verified.** On 2026-08-06 a full
-> read, a one-channel edit, a full write, and a post-reboot read-back were run
-> against a real KT-5000. The read-back differed from the pre-write backup by
-> exactly the 6 bytes of the intended edit, matched the transmitted image byte
-> for byte across the whole writable range, left `0x3100`-`0x31FF` untouched, and
-> preserved `0x2000`-`0x23EF` exactly.
+> Take a backup before writing anyway. The KT-5000 reboots after every transfer,
+> so you must reconnect before reading back to verify.
 >
-> Back up first anyway, and note the radio reboots after every transfer, so you
-> must reconnect before reading back to verify.
+> The AnyTone's radio-settings region (`0x02500000`-`0x025014FF`) remains
+> **read-only and is never written**, and that has not changed: writing it once
+> locked a radio behind an unknown power-on password with Chinese menus.
 >
 > # ⚠️ USE AT YOUR OWN RISK ⚠️
 >
@@ -62,7 +73,7 @@ CPS.
 | Radio | Image size | Auto-detects | Notes |
 |---|---|---|---|
 | AnyTone AT-D878UVII Plus | 1,789,328 B | yes | DMR + analog. Channels, zones, scan lists, contacts, RX group lists, radio IDs, APRS. |
-| QYT KT-5000 | 12,800 B | **no, see below** | Analog only. 200 channels, plus a settings pane for the confirmed header (squelch, beep, scan resume, and a few more). Channel editing covers name, RX/TX, both tones, and scan skip. |
+| QYT KT-5000 | 12,800 B | **no, see below** | Analog only. 200 channels, plus a settings pane for the confirmed header (squelch, beep, scan resume, and a few more) and the LCD display message. Channel editing covers name, RX/TX, both tones, and scan skip. |
 
 The app picks the model for a `.bin` automatically: primarily by file size, which
 differs between the two by orders of magnitude, corroborated for the QYT by the ASCII
@@ -94,6 +105,12 @@ modelled on purpose (the reference driver everyone else uses has a known-wrong m
 this model, so unlabelled bytes are preserved rather than guessed). Beep and scan
 resume are in the pane because a CPS one-field-diff pass confirmed them; scan resume
 even sits one byte earlier than that reference map claimed.
+
+The pane's **Display message** field is the line the radio shows on its own screen,
+the 16 ASCII bytes at `0x0FE0`. A stock radio reads `Model:KT-5000` there because
+that is what the factory writes into it, not because it is fixed; type over it to put
+a callsign or anything else up to 13 printable ASCII characters on the display. The
+change is staged like any other edit, so it reaches the radio on the next write.
 
 The same caution applies to a channel's packed flag bytes. **Scan skip is editable** —
 its bit was confirmed against a real radio, and the channel editor's Scan section writes
@@ -131,14 +148,23 @@ brick the radio.
 
 ## Layout
 
-- `core/` — `anytone-core` library: serial transport (real + mock), the
+- `core/` — `anytone-core` library: byte transport (real + mock), the
   byte-level programming protocol, high-level backup/restore, port enumeration,
   the codeplug model (channels, zones, scan lists, DMR contacts/talk groups, RX
   group lists, radio IDs, plus read-only APRS + zone A/B) with lossless
   parse → edit → re-serialize and JSON batch editing
-  (`src/codeplug/edits.rs`), and the C FFI for the GUI (`src/ffi.rs`, header in
-  `core/include/anytone_core.h`).
-- `cli/` — `anytone-cli` binary: `ports`, `info`, `backup`, `restore`, `dump-range`, `dump`,
+  (`src/anytone/codeplug/edits.rs`), and two host-facing surfaces over the same
+  layers: the C FFI for the macOS app (`src/ffi.rs`, header in
+  `core/include/anytone_core.h`) and the UniFFI surface for the Android app
+  (`src/api.rs`).
+
+  Both are behind features. `desktop` (the default) brings in `serialport` and
+  with it `SerialTransport`, port enumeration, and the C ABI. `uniffi-api`
+  brings in `src/api.rs`, where the transport is supplied by the host language
+  instead, because `serialport` needs libudev and Android does not have it.
+  The USB identity table lives in `src/usb_ids.rs`, outside both, so the two
+  platforms attribute radios from one table.
+- `cli/` — `anytone-cli` binary: `ports`, `info`, `backup`, `restore`, `dump-range`, `rescue`, `dump`,
   `edit`.
 - `AnyToneMac/` — SwiftUI macOS app (Device backup/restore + offline codeplug
   editor with add/remove/edit for every entity family), linked against the
@@ -146,6 +172,12 @@ brick the radio.
   built by `build.sh`.
 - `AnyToneMacTests/` — Swift tests for the app layer (formatting, edit-spec
   encoding, and the save/recovery model).
+- `android/` — Jetpack Compose Android app over the same core, reaching the
+  radio through the USB host API instead of a serial port. Has its own
+  [`README.md`](android/README.md). Built by `android/build.sh`.
+- `scripts/gen-bindings.sh` — regenerates the Android app's Kotlin bindings from
+  `core/src/api.rs`. The macOS app is not generated; it keeps the hand-written
+  C header.
 - `tools/make-icon.swift` — draws the app icon with CoreGraphics and writes the
   asset catalog's PNGs. Re-run after changing it.
 - `docs/` — [`codeplug-memory-map.md`](docs/codeplug-memory-map.md) (region
@@ -156,10 +188,14 @@ brick the radio.
 ## Setup
 
 Requires a Rust toolchain (`rustup`, stable). No macOS driver/kext is needed; the
-radio enumerates as a standard CDC-ACM serial device (`/dev/cu.usbmodem*`).
+AnyTone enumerates as a standard CDC-ACM serial device (`/dev/cu.usbmodem*`) and
+the KT-5000's cable as a Prolific PL2303 (`/dev/cu.usbserial*`).
 
-For the GUI you also need Xcode (with `xcodebuild`) and
+For the macOS GUI you also need Xcode (with `xcodebuild`) and
 [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+
+For the Android app you need the Android SDK and NDK, `cargo-ndk`, and the
+Android Rust targets. See [`android/README.md`](android/README.md).
 
 ## Build & test
 
@@ -179,6 +215,17 @@ xcodebuild test -project AnyToneMac.xcodeproj -scheme AnyToneMac \
 
 # App icon (regenerate after editing the drawing code)
 swift tools/make-icon.swift
+
+# Android app. Finds its own JDK and SDK; cross-compiles the core into
+# jniLibs, then builds the APK.
+android/build.sh
+# → android/app/build/outputs/apk/debug/app-debug.apk
+
+android/build.sh test       # host JVM tests, no device or radio needed
+android/build.sh install    # build and adb install
+android/build.sh release    # release APK, unsigned
+android/build.sh bindings   # regenerate the Kotlin bindings from core/src/api.rs
+android/build.sh clean
 ```
 
 ### Release build
@@ -252,6 +299,57 @@ ambiguous.
 `dump-range` never writes; it is there to inspect regions outside the codeplug
 region map. `--address` and `--length` take decimal or `0x`-prefixed hex, and
 the length must be a multiple of the 16-byte block size.
+
+### Rescuing a KT-5000 that will not stay up
+
+`restore` needs about 18 seconds of link at this radio's 9600 baud, and a radio
+in a reset loop gives you less than that, so `restore` can never finish. The
+`rescue` family retries the handshake until the radio answers, transfers until
+the link dies, then knocks again and **picks up where it stopped**. A full write
+of a boot-looping KT-5000 took 26 windows and landed every block.
+
+```sh
+# Listen only. Sends nothing; prints a timestamped hexdump of whatever the
+# radio says. A boot loop shows up as its NXP boot banner repeating, and the
+# gap between repeats is the loop period.
+anytone-cli rescue watch --port /dev/cu.usbserial-10 --seconds 30
+
+# Knock until the radio answers, then measure how long the link keeps
+# answering. Read-only. This is the number that decides what is possible:
+# under ~20s means no full restore, ever.
+anytone-cli rescue knock --port /dev/cu.usbserial-10
+
+# Read the whole image back and say how it differs from what you sent,
+# region by region. Read-only, and the fastest way to find out whether the
+# codeplug is still a suspect at all.
+anytone-cli rescue verify kt5000-backup.bin
+
+# Read one range (read blocks are 0x40; the range may go anywhere in the
+# 16-bit space, not just the 12,800 bytes a backup covers).
+# The settings header and the VFO records, the two most likely places for a
+# byte that upsets the firmware:
+anytone-cli rescue read --address 0x0E00 --length 0x200 -o suspect.bin
+
+# Write a range back out of a known-good backup (write blocks are 0x10; the
+# range must end at or below 0x3100). Use --address 0x0000 --length 0x3100 for
+# a full restore that survives the resets.
+anytone-cli rescue write kt5000-backup.bin --address 0x0E00 --length 0x200 --force
+```
+
+**Always `verify` after a `rescue write`.** On a radio that resets mid-transfer
+the acknowledgement is not proof: the radio acks a write on receipt and commits
+it afterwards, so a reset in between silently loses a block. The cursor re-sends
+the last block of any window that ended badly, which catches most of it, and the
+read-back catches the rest.
+
+A rescue **read** may go anywhere in the 16-bit address space, not just the
+12,800 bytes a backup covers: the session prologue reads `0x3DF0` and gets an
+answer, so there is more up there than the vendor CPS transfers, and looking
+costs nothing.
+
+`watch`, `knock`, `read` and `verify` never write. `rescue write` does, and it takes the
+bytes from a full 12,800-byte image so the address in the file and the address
+in the radio are the same number.
 
 The `edit` batch object has, for each entity family, an update array
 (`channels`/`zones`/`contacts`/`group_lists`/`radio_ids`, each element an index
@@ -373,7 +471,7 @@ before and after each operation.
 - Every written block is read back and compared; a mismatch aborts the restore.
 - Always take a `backup` before your first `restore`.
 
-### Important: codeplug offsets are not yet hardware-validated
+### How the transfer works, and which details are load-bearing
 
 Backup/restore transfers the codeplug the way the vendor CPS does. **Reads** pull
 the channels/zones in full plus the DMR bitmaps and only the active DMR records.

@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(v["capabilities"]["supports_dmr"], false);
         assert_eq!(v["capabilities"]["sections"][0], "qyt_channels");
         assert_eq!(v["qyt"]["channels"][0]["name"], "FRS-01");
-        assert_eq!(v["qyt"]["model_tag"], "Model:KT-5000");
+        assert_eq!(v["qyt"]["static_message"], "Model:KT-5000");
         // The AnyTone key must not appear on a QYT document, or vice versa.
         assert!(v.get("anytone").is_none());
         assert_eq!(doc.serialize(), img);

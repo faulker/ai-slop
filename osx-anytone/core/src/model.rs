@@ -107,6 +107,28 @@ impl Model {
         }
     }
 
+    /// The line rate this radio's programming link runs at.
+    ///
+    /// A property of the radio, not of the host, so it belongs here rather than
+    /// in each host surface's own constant.
+    ///
+    /// The KT-5000 is a 9600-baud radio, which matches the CHIRP drivers for
+    /// this family. That was not obvious: the desktop asked its PL2303 for
+    /// 115200 and read and wrote the radio perfectly anyway, because the OS
+    /// driver was evidently not applying the rate it was given. Android drives
+    /// the same chip itself, applied 115200 for real, and the radio went silent
+    /// (found 2026-09-04 by a probe that handshook at both rates: only 9600
+    /// answered, with `KT-500 WP9114`).
+    ///
+    /// The AnyTone's figure is nominal. Its bridge is CDC-ACM and ignores line
+    /// coding entirely.
+    pub fn baud(self) -> u32 {
+        match self {
+            Model::AnyToneD878UV2 => 115_200,
+            Model::QytKt5000 => 9_600,
+        }
+    }
+
     /// What this model can hold, for the app's capability-driven UI.
     pub fn capabilities(self) -> Capabilities {
         match self {
@@ -135,8 +157,7 @@ impl Model {
     ///
     /// The two supported image sizes differ by two orders of magnitude, so
     /// length alone would decide it. The content probe is cheap insurance
-    /// against a future model with a colliding size, and against a truncated or
-    /// zero-filled file that happens to be the right length.
+    /// against a truncated or blank file that happens to be the right length.
     pub fn detect(data: &[u8]) -> Option<Model> {
         Model::ALL
             .iter()
@@ -144,15 +165,18 @@ impl Model {
             .find(|m| m.image_size() == data.len() && m.content_matches(data))
     }
 
-    /// Whether `data` carries this model's in-image signature. Only the QYT has
-    /// one; the AnyTone image has no model tag, so its length is all there is.
+    /// Whether `data` is a plausible image for this model.
+    ///
+    /// This used to key off the `Model:` prefix at `0x0FE0`, which was wrong:
+    /// that field is the LCD static message, so a user who renames it would
+    /// have made their own saved images undetectable. What is left for the QYT
+    /// is its length plus a rejection of a wholly unprogrammed file, since a
+    /// `0xFF`- or zero-filled image of the right size is a failed read, not a
+    /// codeplug.
     fn content_matches(self, data: &[u8]) -> bool {
         match self {
             Model::AnyToneD878UV2 => true,
-            Model::QytKt5000 => {
-                let tag = crate::qyt::codeplug::MODEL_TAG;
-                data.get(tag..tag + 6) == Some(b"Model:".as_slice())
-            }
+            Model::QytKt5000 => !data.iter().all(|&b| b == 0xFF || b == 0x00),
         }
     }
 }
@@ -221,12 +245,23 @@ mod tests {
     }
 
     #[test]
-    fn detect_model_recognizes_the_qyt_image_by_its_tag() {
+    fn detect_model_rejects_a_blank_image_of_the_qyt_length() {
+        // Right length, nothing programmed: a failed read, not a codeplug.
+        assert_eq!(
+            Model::detect(&vec![0xFFu8; Model::QytKt5000.image_size()]),
+            None
+        );
+        assert_eq!(
+            Model::detect(&vec![0x00u8; Model::QytKt5000.image_size()]),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_model_still_recognizes_a_qyt_image_with_a_renamed_static_message() {
         let mut image = vec![0xFFu8; Model::QytKt5000.image_size()];
-        // Right length, no tag: not enough.
-        assert_eq!(Model::detect(&image), None);
-        let tag = crate::qyt::codeplug::MODEL_TAG;
-        image[tag..tag + 16].copy_from_slice(b"Model:KT-5000   ");
+        let msg = crate::qyt::codeplug::STATIC_MSG;
+        image[msg..msg + 16].copy_from_slice(b"N7FYZ           ");
         assert_eq!(Model::detect(&image), Some(Model::QytKt5000));
     }
 
@@ -234,8 +269,8 @@ mod tests {
     fn the_two_models_cannot_be_confused_for_one_another() {
         let anytone = vec![0u8; Model::AnyToneD878UV2.image_size()];
         let mut qyt = vec![0xFFu8; Model::QytKt5000.image_size()];
-        let tag = crate::qyt::codeplug::MODEL_TAG;
-        qyt[tag..tag + 16].copy_from_slice(b"Model:KT-5000   ");
+        let msg = crate::qyt::codeplug::STATIC_MSG;
+        qyt[msg..msg + 16].copy_from_slice(b"Model:KT-5000   ");
 
         assert_eq!(Model::detect(&anytone), Some(Model::AnyToneD878UV2));
         assert_eq!(Model::detect(&qyt), Some(Model::QytKt5000));
@@ -269,6 +304,25 @@ mod tests {
     fn anytone_image_size_is_pinned() {
         // Guards every later refactor: this number is the app's file-compat check.
         assert_eq!(Model::AnyToneD878UV2.image_size(), 1_789_328);
+    }
+
+    /// Pinned, because the KT-5000's rate was found the hard way.
+    ///
+    /// The desktop asked for 115200 and worked anyway, so nothing in this repo
+    /// disagreed with it until Android configured the bridge for real and the
+    /// radio went silent. Only a handshake at 9600 answered. A "tidy these two
+    /// constants into one" change would put that back.
+    #[test]
+    fn the_link_rate_is_pinned_per_radio() {
+        assert_eq!(Model::QytKt5000.baud(), 9_600);
+        assert_eq!(Model::AnyToneD878UV2.baud(), 115_200);
+    }
+
+    #[test]
+    fn every_model_names_a_usable_link_rate() {
+        for m in Model::ALL {
+            assert!(m.baud() > 0, "{} has no baud", m.id());
+        }
     }
 
     #[test]

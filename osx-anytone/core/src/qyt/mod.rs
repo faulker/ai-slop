@@ -16,3 +16,4 @@ pub mod device;
 pub mod driver;
 pub mod mock;
 pub mod protocol;
+pub mod rescue;

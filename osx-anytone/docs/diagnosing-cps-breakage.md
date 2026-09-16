@@ -288,7 +288,7 @@ the CPS wrote outside our sectors was harmed.
   path computes rather than copies. True, and irrelevant — the damage was never
   in the bytes we send, it was in the bytes the erase takes with them.
 
-#### The fix (implemented 2026-07-16, not yet hardware-verified)
+#### The fix (implemented 2026-07-16, hardware-verified 2026-09-04)
 
 `Radio::write_codeplug` now does **sector read-modify-write**. For every 32 KB
 sector any modelled segment falls in, it reads the sector off the radio, overlays

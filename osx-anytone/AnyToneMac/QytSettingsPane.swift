@@ -10,8 +10,12 @@ import SwiftUI
 /// `has_settings = False` for this model because the map does not hold: their
 /// own note says setting "C display mode" overwrites VOX, and three fields in a
 /// real capture of this radio decode out of range for the lists CHIRP pairs them
-/// with. Offering VOX, scrambler or power-on message from that map would write
-/// bytes to a radio that mean something else.
+/// with. Offering VOX, scrambler or CHIRP's power-on message struct at `0x0F80`
+/// from that map would write bytes to a radio that mean something else.
+///
+/// The display message is the exception, and it does not come from that struct:
+/// it is the 16 ASCII bytes at `0x0FE0`, which ship reading `Model:KT-5000` and
+/// are the line the radio shows on its own screen.
 ///
 /// Everything from `0x0E36` up is byte-preserved and never rewritten, which is
 /// what makes a short pane safe rather than merely unfinished. Beep, scan
@@ -24,6 +28,15 @@ struct QytSettingsPane: View {
     /// call is a full parse, edit, serialize and re-dump in the core, and it
     /// makes one undo entry.
     @State private var draft: DumpQytSettings = .empty
+
+    /// The LCD static message, drafted alongside the header so both commit on
+    /// one Apply. Kept separate because it lives at `0x0FE0`, outside the
+    /// settings block this pane otherwise mirrors.
+    @State private var messageDraft = ""
+
+    /// The static message field is 16 bytes at `0x0FE0`, but the LCD only
+    /// draws the first 13, the width of the factory `Model:KT-5000`.
+    private static let messageLimit = 13
 
     var body: some View {
         Group {
@@ -38,14 +51,23 @@ struct QytSettingsPane: View {
         // an undo of an applied change shows up here instead of leaving the
         // draft holding a value the file no longer has.
         .onChange(of: store.qytSettings) { draft = $0 ?? .empty }
+        .onChange(of: store.qytStaticMessage) { messageDraft = $0 }
     }
 
     private var form: some View {
         Form {
-            Section("Radio") {
-                LabeledContent("Model tag",
-                               value: store.qytModelTag.isEmpty ? "—" : store.qytModelTag)
+            Section("Display") {
+                TextField("Display message", text: $messageDraft)
                     .monospaced()
+                    .onChange(of: messageDraft) { messageDraft = Self.clamp($0) }
+                LabeledContent("Characters left",
+                               value: String(Self.messageLimit - messageDraft.count))
+                    .foregroundStyle(.secondary)
+                Text("The line the radio shows on its own screen. It ships as "
+                    + "\"Model:KT-5000\", which is why it looks like a fixed label. "
+                    + "Printable ASCII only, up to \(Self.messageLimit) characters.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Settings") {
@@ -90,12 +112,24 @@ struct QytSettingsPane: View {
     }
 
     /// True when the draft holds something the document doesn't.
-    private var hasChanges: Bool { draft != (store.qytSettings ?? .empty) }
+    private var hasChanges: Bool {
+        draft != (store.qytSettings ?? .empty) || messageDraft != store.qytStaticMessage
+    }
 
     /// Discard the draft and take the document's values again.
-    private func reseed() { draft = store.qytSettings ?? .empty }
+    private func reseed() {
+        draft = store.qytSettings ?? .empty
+        messageDraft = store.qytStaticMessage
+    }
 
-    private func apply() { store.updateQytSettings(draft) }
+    private func apply() { store.updateQytSettings(draft, staticMessage: messageDraft) }
+
+    /// Keep the field inside what the radio can store: printable ASCII, at most
+    /// [`messageLimit`] characters. Filtering here rather than at Apply means an
+    /// unrenderable keystroke never reaches the draft in the first place.
+    static func clamp(_ text: String) -> String {
+        String(text.filter { $0.isASCII && $0 >= " " && $0 <= "~" }.prefix(messageLimit))
+    }
 
     // MARK: - Value labels
 

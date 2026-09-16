@@ -1,11 +1,13 @@
-# osx-anytone — Codeplug, a macOS Programming Tool for the AnyTone AT-D878UVII Plus and QYT KT-5000
+# osx-anytone — Codeplug, a Programming Tool for the AnyTone AT-D878UVII Plus and QYT KT-5000
 
-> **Status note.** This document was written for the AnyTone, which was the only
-> supported radio for most of the project's life. QYT KT-5000 support was added
-> later; section 3 (Architecture) has been rewritten to describe the per-model
-> structure that shipped. The phased plan in section 4 is AnyTone history and is
-> kept as written. For the KT-5000's protocol and memory layout see
-> [`docs/qyt-kt5000-memory-map.md`](docs/qyt-kt5000-memory-map.md).
+> **Status note.** This document was written for the AnyTone on macOS, which was
+> the whole project for most of its life. Two things have been added since:
+> QYT KT-5000 support, and an Android app. Section 3 (Architecture) has been
+> rewritten to describe the per-model structure and the two host surfaces that
+> shipped. The phased plan in section 4 is AnyTone-on-macOS history and is kept
+> as written. For the KT-5000's protocol and memory layout see
+> [`docs/qyt-kt5000-memory-map.md`](docs/qyt-kt5000-memory-map.md); for the
+> Android app see [`android/README.md`](android/README.md).
 
 **Codeplug** is a native macOS app to **create, download, and upload codeplugs**
 for the AnyTone AT-D878UVII Plus over the USB programming cable — replacing the
@@ -15,24 +17,27 @@ Windows-only CPS.
 > real term is codeplug / CPS = Customer Programming Software). This document uses
 > "codeplug".
 
-Status: **in progress** · Last updated: 2026-07-12
+Status: **shipping** · Last updated: 2026-09-04
 
-Progress: Phase 0 ✅ · Phase 1 ✅ (protocol + safe backup/restore, 16 tests) ·
-Phase 2 🟢 (model + offline `dump`/`edit` for channels, zones, DMR contacts /
-talk groups, RX group lists, and radio IDs — full add / remove / update, with the
-contact reverse-lookup tables rebuilt on contact changes; **offsets not yet
-validated against real D878UVII hardware**; scan lists / settings still TODO) ·
-Phase 3 ✅ code-complete & build-verified (SwiftUI GUI, named Codeplug, over a C FFI;
-`./build.sh` produces `build/Debug/AnyToneMac.app`; Device identify/backup/
-restore + offline editor with add/remove/edit panes for every entity family).
-**Not yet run end-to-end against real hardware** (see README hardware checkpoints)
-· Phase 4 ⏳.
+Progress: Phase 0 ✅ · Phase 1 ✅ (protocol + backup/restore) · Phase 2 ✅
+(model + offline `dump`/`edit` for channels, zones, scan lists, DMR contacts /
+talk groups, RX group lists, and radio IDs, full add / remove / update, with the
+contact reverse-lookup tables rebuilt on contact changes) · Phase 3 ✅ (SwiftUI
+macOS GUI over the C FFI) · Phase 4 ⏳ (CSV / `.rdt` import-export, still not
+started).
 
-Two remaining tracks: (a) **hardware validation** — needs the physical radio to
-confirm the Phase 2 offsets (channels, zones, contacts, group lists, radio IDs,
-and the contact index / ID table) match D878UVII firmware; backup/restore is safe
-now, the editor is the part awaiting validation; (b) **breadth** — scan lists,
-radio settings, and CSV/`.rdt` import-export (Phase 4).
+Since the phased plan was written, two things landed that it never anticipated:
+QYT KT-5000 support, and an Android app (see [`android/README.md`](android/README.md)).
+
+**Hardware validation is done for both radios.** The KT-5000's read and write
+paths were verified on 2026-08-06 and the AnyTone's on 2026-09-04, the latter
+across repeated real writes. That closes the track this document spent most of
+its life waiting on: the Phase 2 offsets and the sector read-modify-write fix
+are confirmed against real firmware rather than only against a mock.
+
+One remaining track: **breadth**, meaning CSV / `.rdt` import-export (Phase 4).
+AnyTone global radio settings stay deliberately out of scope; that region is
+read-only for the reason recorded in the README.
 
 ---
 
@@ -161,6 +166,46 @@ Rationale:
 - **CLI first** delivers the core user value (download/upload a codeplug file)
   and is the safest way to validate against real hardware before any GUI exists.
 - **SwiftUI GUI** via C-FFI is native and reuses the `spell-i` build approach.
+
+### Two host surfaces over one core
+
+The core has two front doors, and they are siblings rather than layers:
+
+- **`core/src/ffi.rs`** is a hand-written C ABI for the macOS Swift app. It takes
+  filesystem paths and opens the serial port itself through `SerialTransport`.
+- **`core/src/api.rs`** is a UniFFI surface for the Android app. It takes and
+  returns byte vectors, because Android reaches files through the Storage Access
+  Framework as content URIs rather than paths, and the transport is supplied by
+  Kotlin: `serialport` needs libudev, which Android does not have.
+
+Both are thin wrappers over the same `driver_for` and `Document` layers and hold
+no protocol or codeplug logic. The cost is that a new radio needs adding in two
+places; the benefit is that the shipping macOS app was not touched to add
+Android. Revisit if a third radio lands, which is also the point at which the
+per-model Swift panes should become a capabilities-driven renderer.
+
+Feature-gating keeps them apart. `desktop` (default) pulls in `serialport`,
+`SerialTransport`, `ports`, and the C ABI. `uniffi-api` pulls in `api.rs`. The
+USB identity table sits in `usb_ids.rs`, outside both, so macOS and Android
+attribute radios from one table rather than two that can drift.
+
+### What the Android app adds beyond a port
+
+Two things are genuinely new rather than translated:
+
+- **A codeplug library.** The macOS app is single-document because a laptop makes
+  a file picker cheap. On a phone that would put a Storage Access Framework round
+  trip in front of every write, which is the wrong cost on the primary use case,
+  so codeplugs live in app storage and SAF is used only to import and export.
+- **A foreground service owning each transfer.** A full transfer runs for
+  minutes, and Android will kill a backgrounded activity's work. Losing a read
+  costs time; losing a write part-way leaves a radio holding half a codeplug.
+
+Three hardware constraints shaped the USB layer rather than being discovered
+late: permission is requested before the session opens because a session is one
+uninterrupted open, the KT-5000 accepts exactly one handshake per open link and
+reboots when the port closes, and a mid-write detach is reported as possibly
+having written rather than as a clean failure.
 
 ## 4. Phased plan
 

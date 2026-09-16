@@ -9,7 +9,10 @@ pub enum Error {
     #[error("transport I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// The underlying `serialport` crate reported an error.
+    /// The underlying `serialport` crate reported an error. Desktop-only:
+    /// the Android build has no `serialport`, and its transport errors arrive
+    /// as [`Error::Io`] instead.
+    #[cfg(feature = "desktop")]
     #[error("serial port error: {0}")]
     Serial(#[from] serialport::Error),
 

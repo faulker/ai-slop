@@ -8,7 +8,7 @@
 //! | `0x0E00`-`0x0E35` | The settings header this build models |
 //! | `0x0E36`-`0x0EFF` | Settings whose real names are still unknown |
 //! | `0x0F00`-`0x0F7F` | Four VFO-shaped slots; only A and B are real VFOs |
-//! | `0x0FE0`-`0x0FEF` | ASCII `Model:KT-5000   `, read-only |
+//! | `0x0FE0`-`0x0FEF` | ASCII static message shown on the radio's LCD |
 //! | `0x1000`-`0x1C7F` | 200 channel name records, 16 bytes each |
 //! | `0x2000`-`0x31FF` | Signaling tables and factory data, byte-preserved |
 //!
@@ -37,7 +37,7 @@ pub use settings::{QytSettings, ScanRev, SETTINGS_SIZE};
 
 use serde::Serialize;
 
-use crate::bytes::read_ascii;
+use crate::bytes::{read_ascii, write_ascii};
 use crate::error::{Error, Result};
 use crate::qyt::device::IMAGE_SIZE;
 
@@ -57,11 +57,22 @@ pub const SETTINGS: usize = 0x0E00;
 /// Offset of the VFO-shaped image slots (A–D; only A/B are editable).
 pub const BANDS: usize = 0x0F00;
 
-/// Offset of the ASCII model tag, `Model:KT-5000   `.
-pub const MODEL_TAG: usize = 0x0FE0;
+/// Offset of the ASCII static message the radio shows on its LCD. Ships from
+/// the factory as `Model:KT-5000   `, which is why it reads like an identity
+/// field, but it is CHIRP's `static_msg` and is user text.
+pub const STATIC_MSG: usize = 0x0FE0;
 
-/// Length of the model tag field.
-pub const MODEL_TAG_LEN: usize = 16;
+/// Length of the static message field. Shorter messages are space-padded, the
+/// same way the factory pads `Model:KT-5000`.
+pub const STATIC_MSG_LEN: usize = 16;
+
+/// How much of the field the radio actually draws on its LCD. The field is
+/// [`STATIC_MSG_LEN`] bytes wide, but the display cuts off after 13, which is
+/// exactly the width of the factory `Model:KT-5000`.
+pub const STATIC_MSG_MAX_CHARS: usize = 13;
+
+/// Byte the static message pads with, matching the factory image.
+const STATIC_MSG_PAD: u8 = b' ';
 
 /// Address of channel record `i`.
 pub fn channel_addr(i: usize) -> usize {
@@ -101,8 +112,8 @@ pub struct QytCodeplugJson<'a> {
     pub settings: &'a QytSettings,
     /// The radio's real VFOs (A and B). Slots C/D stay in the image only.
     pub bands: &'a [Band],
-    /// The radio's own model tag, read-only.
-    pub model_tag: String,
+    /// The static message shown on the radio's LCD.
+    pub static_message: String,
 }
 
 impl QytCodeplug {
@@ -253,10 +264,35 @@ impl QytCodeplug {
         self.bands.get_mut(index)
     }
 
-    /// The radio's model tag at `0x0FE0`, trimmed. Read-only: it identifies the
-    /// image and is never rewritten.
-    pub fn model_tag(&self) -> String {
-        read_ascii(&self.raw[MODEL_TAG..MODEL_TAG + MODEL_TAG_LEN], 0xFF)
+    /// The static message at `0x0FE0`, trailing padding trimmed.
+    pub fn static_message(&self) -> String {
+        read_ascii(&self.raw[STATIC_MSG..STATIC_MSG + STATIC_MSG_LEN], 0xFF)
+    }
+
+    /// Set the static message the radio shows on its LCD.
+    ///
+    /// Rejects anything the display cannot render rather than writing bytes the
+    /// firmware would draw as garbage: printable ASCII only, at most
+    /// [`STATIC_MSG_MAX_CHARS`] characters. An empty message blanks the field
+    /// to spaces, which is what the factory pad byte already is.
+    pub fn set_static_message(&mut self, msg: &str) -> Result<()> {
+        if msg.chars().count() > STATIC_MSG_MAX_CHARS {
+            return Err(Error::Parse(format!(
+                "static message is {} characters, at most {STATIC_MSG_MAX_CHARS} fit",
+                msg.chars().count()
+            )));
+        }
+        if let Some(bad) = msg.chars().find(|c| !matches!(c, ' '..='~')) {
+            return Err(Error::Parse(format!(
+                "static message character {bad:?} is not printable ASCII"
+            )));
+        }
+        write_ascii(
+            &mut self.raw[STATIC_MSG..STATIC_MSG + STATIC_MSG_LEN],
+            msg,
+            STATIC_MSG_PAD,
+        );
+        Ok(())
     }
 
     /// Build the serializable projection.
@@ -265,7 +301,7 @@ impl QytCodeplug {
             channels: self.channels().collect(),
             settings: &self.settings,
             bands: self.vfos(),
-            model_tag: self.model_tag(),
+            static_message: self.static_message(),
         }
     }
 }
@@ -332,7 +368,7 @@ pub(crate) mod test_support {
             0x00, 0x00, 0x00, 0x24,
         ]);
 
-        img[MODEL_TAG..MODEL_TAG + MODEL_TAG_LEN].copy_from_slice(b"Model:KT-5000   ");
+        img[STATIC_MSG..STATIC_MSG + STATIC_MSG_LEN].copy_from_slice(b"Model:KT-5000   ");
         img
     }
 }
@@ -428,7 +464,80 @@ mod tests {
         let names: Vec<&str> = cp.channels().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["FRS-01", "FRS-02", "N7FYZ"]);
         assert_eq!(cp.channels().count(), 3);
-        assert_eq!(cp.model_tag(), "Model:KT-5000");
+        assert_eq!(cp.static_message(), "Model:KT-5000");
+    }
+
+    #[test]
+    fn setting_the_static_message_pads_to_the_factory_shape() {
+        let mut cp = QytCodeplug::parse(&synthetic_qyt_image()).unwrap();
+        cp.set_static_message("N7FYZ").unwrap();
+        assert_eq!(cp.static_message(), "N7FYZ");
+        // Space-padded to all 16 bytes, exactly how the factory writes it, so
+        // no 0xFF ever lands in a field the radio draws.
+        let out = cp.serialize();
+        assert_eq!(
+            &out[STATIC_MSG..STATIC_MSG + STATIC_MSG_LEN],
+            b"N7FYZ           "
+        );
+    }
+
+    #[test]
+    fn a_full_width_static_message_survives_a_round_trip() {
+        let mut cp = QytCodeplug::parse(&synthetic_qyt_image()).unwrap();
+        cp.set_static_message("0123456789ABC").unwrap();
+        let reparsed = QytCodeplug::parse(&cp.serialize()).unwrap();
+        assert_eq!(reparsed.static_message(), "0123456789ABC");
+        // The three bytes past the LCD's 13 columns stay factory spaces.
+        assert_eq!(
+            &cp.serialize()[STATIC_MSG..STATIC_MSG + STATIC_MSG_LEN],
+            b"0123456789ABC   "
+        );
+    }
+
+    #[test]
+    fn a_static_message_past_the_lcd_width_is_rejected() {
+        let mut cp = QytCodeplug::parse(&synthetic_qyt_image()).unwrap();
+        // Fits the 16-byte field, but the radio would only draw 13 of it.
+        assert!(cp.set_static_message("0123456789ABCD").is_err());
+        assert_eq!(cp.static_message(), "Model:KT-5000");
+    }
+
+    #[test]
+    fn an_empty_static_message_blanks_the_field() {
+        let mut cp = QytCodeplug::parse(&synthetic_qyt_image()).unwrap();
+        cp.set_static_message("").unwrap();
+        assert_eq!(cp.static_message(), "");
+        assert_eq!(
+            &cp.serialize()[STATIC_MSG..STATIC_MSG + STATIC_MSG_LEN],
+            b"                "
+        );
+    }
+
+    #[test]
+    fn the_static_message_rejects_overlong_and_unprintable_text() {
+        let mut cp = QytCodeplug::parse(&synthetic_qyt_image()).unwrap();
+        let err = cp
+            .set_static_message("0123456789ABCDEFG")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("at most 13"), "{err}");
+        let err = cp.set_static_message("hi\u{e9}").unwrap_err().to_string();
+        assert!(err.contains("printable ASCII"), "{err}");
+        // A rejected write leaves the field as it was.
+        assert_eq!(cp.static_message(), "Model:KT-5000");
+    }
+
+    #[test]
+    fn editing_the_static_message_leaves_the_rest_of_the_image_alone() {
+        let img = synthetic_qyt_image();
+        let mut cp = QytCodeplug::parse(&img).unwrap();
+        cp.set_static_message("KD7ABC 146.52").unwrap();
+        let out = cp.serialize();
+        assert_eq!(out[..STATIC_MSG], img[..STATIC_MSG]);
+        assert_eq!(
+            out[STATIC_MSG + STATIC_MSG_LEN..],
+            img[STATIC_MSG + STATIC_MSG_LEN..]
+        );
     }
 
     #[test]
@@ -583,10 +692,10 @@ mod tests {
     }
 
     #[test]
-    fn to_json_reports_channels_settings_bands_and_the_model_tag() {
+    fn to_json_reports_channels_settings_bands_and_the_static_message() {
         let cp = QytCodeplug::parse(&synthetic_qyt_image()).unwrap();
         let v = serde_json::to_value(cp.to_json()).unwrap();
-        assert_eq!(v["model_tag"], "Model:KT-5000");
+        assert_eq!(v["static_message"], "Model:KT-5000");
         assert_eq!(v["settings"]["squelch"], 6);
         assert_eq!(v["settings"]["tot_seconds"], 60);
         assert_eq!(v["bands"].as_array().unwrap().len(), 2);
