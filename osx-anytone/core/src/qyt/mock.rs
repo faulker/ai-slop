@@ -73,6 +73,11 @@ pub struct QytMock {
     pub truncate_read_reply: bool,
     /// When true, writes are answered with `0x15` instead of an ACK.
     pub nak_writes: bool,
+    /// When true, the second write of a session is acked but not stored, which
+    /// is what the real radio does (measured 2026-09-09 and 2026-10-16).
+    pub drop_second_write: bool,
+    /// Write commands received since the last [`QytMock::reboot`].
+    session_writes: usize,
 }
 
 impl Default for QytMock {
@@ -103,6 +108,8 @@ impl QytMock {
             corrupt_read_len: false,
             truncate_read_reply: false,
             nak_writes: false,
+            drop_second_write: false,
+            session_writes: 0,
         }
     }
 
@@ -114,6 +121,7 @@ impl QytMock {
     /// exactly as a caller must close and reopen the port.
     pub fn reboot(&mut self) {
         self.handshaken = false;
+        self.session_writes = 0;
         self.out.clear();
         self.pending_in.clear();
     }
@@ -191,8 +199,11 @@ impl QytMock {
                                     "write out of range: 0x{addr:04X}+{len}"
                                 )));
                             }
+                            self.session_writes += 1;
                             if self.nak_writes {
                                 self.out.push_back(0x15);
+                            } else if self.drop_second_write && self.session_writes == 2 {
+                                self.out.push_back(STX);
                             } else {
                                 self.memory[start..start + len].copy_from_slice(&data);
                                 self.out.push_back(STX);

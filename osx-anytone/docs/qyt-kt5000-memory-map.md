@@ -295,9 +295,17 @@ backups stay faithful and diffable, and exclude it from the write map.
 `qyt_write_never_touches_0x3100_or_above` asserts this.
 
 **`0x2000`-`0x23EF` is never written at all.** Since 2026-09-09 the write path skips
-those 63 blocks, so they keep whatever the radio already holds. `WRITE_BLOCKS` is 721,
-not the vendor's 784, and that is the only place our host stream is shorter than the
-capture.
+those 63 blocks, so they keep whatever the radio already holds. Together with the
+duplicated first block below, `WRITE_BLOCKS` is 722, not the vendor's 784.
+
+**`0x0000` is sent twice.** Since 2026-10-16 a full write opens with a duplicate of the
+first block. The radio acks the second write of a session but does not keep it (see
+"The second write of a session is dropped"). Without the duplicate that was always
+`0x0010`, channel 1's record, so every write left channel 1 with its old Rx/Tx
+frequencies and every post-write verify reported 8 bytes at `0x0010`. Re-sending
+identical bytes is idempotent, so the duplicate absorbs the drop. Pinned by
+`a_dropped_second_write_lands_on_the_duplicate_not_on_real_data` and the capture test.
+**Not yet confirmed on hardware.**
 
 An earlier version of this document claimed the radio read that region back as `0xFF`
 regardless of what was written, and concluded the vendor's bytes were a harmless
@@ -511,10 +519,12 @@ badly, which costs one re-sent block and nothing else. Pinned by
 under the transfer, the acknowledgement is not proof. `rescue verify` is the
 proof.
 
-### Two bytes the radio writes itself
+### A byte the radio writes itself
 
 After a byte-exact restore, two addresses still read back different, repeatedly,
-no matter how many times they are written:
+no matter how many times they are written. Only `0x0E51` turned out to be the
+firmware. `0x001E` is in block `0x0010`, the dropped second write of every session, so
+it was a lost write and is no longer ignored by verify (2026-10-16):
 
 | Address | Backup | Radio | Note |
 |---|---|---|---|
@@ -523,7 +533,7 @@ no matter how many times they are written:
 
 `0x0E51` incrementing on its own is the useful one. It says the firmware writes
 to its own configuration memory while it is running, so a diff against a backup
-will never be empty, and neither of these is evidence of a failed write.
+will never be empty, and it is not evidence of a failed write.
 
 ### `0x2000`-`0x23EF` was erased, and restoring it changed nothing
 

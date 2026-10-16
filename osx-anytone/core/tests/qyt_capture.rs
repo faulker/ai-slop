@@ -178,9 +178,15 @@ fn write_session_host_stream_matches_the_vendor_capture_outside_the_preserved_wi
     // run below is allowed to differ.
     assert_eq!(t.written[..13], expected[..13]);
 
-    let ours = write_frames(&t.written);
+    let mut ours = write_frames(&t.written);
     let theirs = write_frames(&expected);
     assert_eq!(theirs.len(), 784, "the vendor sends every block");
+
+    // First divergence: 0x0000 is sent twice, so the radio's dropped second
+    // write lands on a duplicate. See write_image in core/src/qyt/device.rs.
+    assert_eq!(ours[0], ours[1], "the first block is sent twice");
+    assert_eq!(ours[0].0, 0x0000);
+    ours.remove(0);
 
     // Every frame we do send is the vendor's frame, byte for byte, at the same
     // address and in the same order.
@@ -198,7 +204,7 @@ fn write_session_host_stream_matches_the_vendor_capture_outside_the_preserved_wi
         );
     }
 
-    // The only divergence: the 63 blocks of 0x2000-0x23EF we never send. The
+    // The other divergence: the 63 blocks of 0x2000-0x23EF we never send. The
     // vendor uploads an uninitialised buffer there; we leave the radio's own
     // bytes alone. See PRESERVED_START in core/src/qyt/device.rs.
     let skipped: Vec<usize> = theirs

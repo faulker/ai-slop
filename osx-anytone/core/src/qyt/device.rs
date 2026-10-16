@@ -55,12 +55,12 @@ pub const PRESERVED_END: usize = 0x23F0;
 
 /// Number of write commands a full image write issues.
 ///
-/// 784 minus the 63 blocks inside [`PRESERVED_START`]..[`PRESERVED_END`]. The
-/// vendor CPS sends all 784; this is the one place our host stream is shorter
-/// than the capture, and `core/tests/qyt_capture.rs` pins that the difference
-/// is exactly those blocks.
+/// 784 minus the 63 blocks inside [`PRESERVED_START`]..[`PRESERVED_END`], plus
+/// the one sacrificial block described at [`write_image`]. The vendor CPS sends
+/// exactly 784; `core/tests/qyt_capture.rs` pins that these are the only two
+/// differences from its stream.
 pub const WRITE_BLOCKS: usize =
-    (WRITE_LIMIT as usize - (PRESERVED_END - PRESERVED_START)) / WRITE_LEN as usize;
+    (WRITE_LIMIT as usize - (PRESERVED_END - PRESERVED_START)) / WRITE_LEN as usize + 1;
 
 /// Whether `addr` falls in the region a full-image write leaves alone.
 pub const fn is_preserved(addr: usize) -> bool {
@@ -108,11 +108,16 @@ pub fn read_image(
 /// so that callers always hand over the same shape they got from
 /// [`read_image`].
 ///
-/// One deliberate divergence from the vendor CPS: `0x2000`-`0x23EF` is skipped
-/// entirely and keeps whatever the radio already holds. See [`PRESERVED_START`]
-/// for why. This is the only range where our host stream differs from the
-/// capture, and `core/tests/qyt_capture.rs` asserts the difference is confined
-/// to exactly it.
+/// Two deliberate divergences from the vendor CPS, both pinned by
+/// `core/tests/qyt_capture.rs`:
+///
+/// - `0x2000`-`0x23EF` is skipped entirely and keeps whatever the radio already
+///   holds. See [`PRESERVED_START`] for why.
+/// - The first block, `0x0000`, is sent twice. The radio acks the second write
+///   of a session but does not keep it. Before this, that was always `0x0010`
+///   (channel 1's frequencies), and every verify after a write reported 8
+///   bytes there (2026-10-16). Re-sending identical bytes is idempotent, so the
+///   duplicate absorbs the drop and every real block lands.
 ///
 /// Everything else in `data` is sent verbatim, so the caller owns every byte
 /// below `0x2000` and from `0x23F0` to [`WRITE_LIMIT`]. Unlike the AnyTone
@@ -133,7 +138,9 @@ pub fn write_image(
     session_prologue(t)?;
 
     let step = WRITE_LEN as usize;
-    let mut done = 0usize;
+    write_block(t, 0, &data[..step])?;
+    let mut done = 1usize;
+    progress(done, WRITE_BLOCKS);
     for addr in (0..WRITE_LIMIT as usize).step_by(step) {
         if is_preserved(addr) {
             continue;
@@ -164,8 +171,9 @@ mod tests {
     #[test]
     fn block_counts_match_the_vendor_capture() {
         assert_eq!(READ_BLOCKS, 201);
-        // The vendor sends 784; we skip the 63 blocks of the preserved window.
-        assert_eq!(WRITE_BLOCKS, 784 - 63);
+        // The vendor sends 784; we skip the 63 blocks of the preserved window
+        // and send 0x0000 one extra time to absorb the dropped second write.
+        assert_eq!(WRITE_BLOCKS, 784 - 63 + 1);
     }
 
     #[test]
@@ -222,10 +230,13 @@ mod tests {
         assert_eq!(m.writes.len(), WRITE_BLOCKS);
         assert!(m.writes.iter().all(|&(_, len)| len == WRITE_LEN as usize));
         let addrs: Vec<u16> = m.writes.iter().map(|&(a, _)| a).collect();
-        let expected: Vec<u16> = (0..WRITE_LIMIT)
-            .step_by(WRITE_LEN as usize)
-            .filter(|&a| !is_preserved(a as usize))
-            .collect();
+        // 0x0000 twice, then the plain stride.
+        let mut expected = vec![0x0000u16];
+        expected.extend(
+            (0..WRITE_LIMIT)
+                .step_by(WRITE_LEN as usize)
+                .filter(|&a| !is_preserved(a as usize)),
+        );
         assert_eq!(addrs, expected);
         assert_eq!(*addrs.last().unwrap(), 0x30F0);
 
@@ -270,6 +281,32 @@ mod tests {
             .iter()
             .all(|&(addr, _)| !is_preserved(addr as usize)));
         assert_eq!(&m.memory()[PRESERVED_START..PRESERVED_END], &calibration[..]);
+    }
+
+    /// The 2026-10-16 regression: a radio that acks but loses the second write
+    /// of a session must still end up holding every block, channel 1 included.
+    #[test]
+    fn a_dropped_second_write_lands_on_the_duplicate_not_on_real_data() {
+        let mut m = QytMock::new();
+        m.drop_second_write = true;
+        let data: Vec<u8> = (0..IMAGE_SIZE).map(|i| (i % 241) as u8).collect();
+        write_image(&mut m, &data, &mut |_, _| {}).unwrap();
+
+        assert_eq!(m.writes[0], m.writes[1], "the dropped write is the duplicate");
+        assert_eq!(&m.memory()[..PRESERVED_START], &data[..PRESERVED_START]);
+        assert_eq!(
+            &m.memory()[PRESERVED_END..WRITE_LIMIT as usize],
+            &data[PRESERVED_END..WRITE_LIMIT as usize]
+        );
+    }
+
+    #[test]
+    fn write_image_reports_progress_for_every_block() {
+        let mut m = QytMock::new();
+        let mut seen = Vec::new();
+        write_image(&mut m, &vec![0u8; IMAGE_SIZE], &mut |d, t| seen.push((d, t))).unwrap();
+        assert_eq!(seen.len(), WRITE_BLOCKS);
+        assert_eq!(seen.last(), Some(&(WRITE_BLOCKS, WRITE_BLOCKS)));
     }
 
     #[test]

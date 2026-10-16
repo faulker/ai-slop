@@ -324,11 +324,14 @@ pub fn erased_regions(image: &[u8]) -> Vec<&'static str> {
 /// Addresses the radio's own firmware rewrites while it runs, which therefore
 /// differ on any read-back no matter what was sent.
 ///
-/// `0x0E51` increments between consecutive reads (a counter of some kind) and
-/// `0x001E` in channel 1 was seen changing on its own. Both were measured on
-/// 2026-09-09 during the restore, and reporting them as verification failures
-/// would mean every honest write looked broken.
-pub const SELF_WRITTEN: &[u16] = &[0x001E, 0x0E51];
+/// `0x0E51` increments between consecutive reads (a counter of some kind),
+/// measured on 2026-09-09 during the restore. Reporting it as a verification
+/// failure would mean every honest write looked broken.
+///
+/// `0x001E` used to be listed too. It sits in block `0x0010`, the block the
+/// radio dropped as the second write of every session, so it was a lost write
+/// rather than the firmware, and hiding it would hide that bug (2026-10-16).
+pub const SELF_WRITTEN: &[u16] = &[0x0E51];
 
 /// Diff an image that was sent to the radio against one read back afterwards,
 /// reporting only differences that mean the write did not land.
@@ -638,7 +641,6 @@ mod tests {
 
         // The radio's own counter and the tail it keeps, plus the preserved
         // window the write path skips: none of these mean a write failed.
-        back[0x001E] ^= 0xFF;
         back[0x0E51] ^= 0xFF;
         back[0x2100] ^= 0xFF;
         back[WRITE_LIMIT as usize + 4] ^= 0xFF;
@@ -650,6 +652,16 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].addr, 0x1A50);
         assert_eq!(runs[0].region, "channel names");
+    }
+
+    #[test]
+    fn verify_reports_channel_1_power_byte() {
+        let sent = vec![0x00u8; IMAGE_SIZE];
+        let mut back = sent.clone();
+        back[0x001E] = 0x01;
+        let runs = verify_diff(&sent, &back).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].addr, 0x001E);
     }
 
     #[test]
