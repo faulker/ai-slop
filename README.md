@@ -19,8 +19,6 @@ If I feel a tool is production ready or I find I'm using more then just a one of
 
 - **[orcha-ai](orcha-ai/README.md)** — TypeScript CLI that orchestrates multiple Claude Code agents from a markdown spec, parsing tasks into a DAG and running them in parallel.
 
-- **[osx-anytone](osx-anytone/README.md)** — Rust tool for reading and writing codeplug settings to Anytone digital radios via USB, with backup/restore and editing capabilities.
-
 - **[Spell-i](spell-i/README.md)** — macOS menu bar app that provides system-wide spell and grammar checking across all apps using the Accessibility API and the Harper engine via Rust FFI.
 
 - **[stash-mgr](stash-mgr/README.md)** — Rust TUI for managing git stashes with live diff previews, selective file stashing, and vim keybindings.
