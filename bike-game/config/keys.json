@@ -1,0 +1,9 @@
+{
+  "accelerate": ["KeyW", "Up"],
+  "brake": ["KeyS", "Down"],
+  "steer_left": ["KeyA", "Left"],
+  "steer_right": ["KeyD", "Right"],
+  "pipe_left": ["KeyQ"],
+  "pipe_right": ["KeyE"],
+  "laser": ["Space"]
+}
