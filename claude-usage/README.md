@@ -124,6 +124,14 @@ cargo build --release
 
 The binary will be at `target/release/claude-usage`.
 
+For a status bar or anything else that runs it long-term, install it instead so `cargo clean` can't delete it out from under you:
+
+```sh
+./install.sh   # builds, copies to ~/.local/bin/claude-usage, and signs it
+```
+
+It signs with the first code-signing identity matching `Apple Development` (override with `CLAUDE_USAGE_SIGN_IDENTITY`, a name substring or SHA-1 hash, e.g. `"Claude Usage Dev"` for the self-signed cert from option 3) so the Keychain "Always Allow" sticks across reinstalls. With an Apple-issued cert it even survives renewing the cert, since the requirement is keyed on the cert's common name, not its hash. If that identity doesn't exist it installs unsigned and warns. `CLAUDE_USAGE_INSTALL_DIR` changes the destination. Re-run it after code changes.
+
 ## Testing
 
 ```sh
