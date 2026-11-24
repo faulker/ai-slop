@@ -84,7 +84,7 @@ mkdir -p "$CACHE" "$OUT"
 
 fetch() { # url dest: download once into the cache
     [ -s "$2" ] && return 0
-    echo "  fetch $1"
+    echo "  fetch $1" >&2
     curl -fsSL --retry 3 -o "$2.part" "$1" || die "download failed: $1"
     mv "$2.part" "$2"
 }

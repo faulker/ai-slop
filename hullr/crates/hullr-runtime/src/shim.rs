@@ -514,7 +514,8 @@ impl Shim {
                 let code = child.wait().map(crate::util::exit_code).unwrap_or(127);
                 self.finish_io(readers);
                 drop(helper);
-                Outcome::Failed(if code == 0 { 127 } else { code }, e)
+                // A process we killed during setup reports a setup failure.
+                Outcome::Failed(if code == 0 || code == 137 { 127 } else { code }, e)
             }
         }
     }

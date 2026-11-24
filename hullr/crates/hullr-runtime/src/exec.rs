@@ -18,7 +18,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 pub const ENV_SPEC: &str = "_HULLR_EXEC_SPEC";
 
@@ -27,7 +27,7 @@ pub fn main(dir: &Path, pid: u32) -> i32 {
     crate::util::daemonize();
     crate::util::redirect_stdio(None);
     let sock = UnixStream::from(fd);
-    let out = Arc::new(Mutex::new(sock.try_clone().expect("dup socket")));
+    let out = Mutex::new(sock.try_clone().expect("dup socket"));
     let fail = |code: i32, msg: String| -> i32 {
         let mut w = out.lock().unwrap();
         let _ = blocking::write_frame(&mut *w, &Frame::Error(msg));
@@ -97,75 +97,127 @@ pub fn main(dir: &Path, pid: u32) -> i32 {
         return fail(c.parse().unwrap_or(126), m.to_string());
     }
 
-    // Input: frames from the client to the child's stdin / pty.
-    let stdin_w: Option<File> = if spec.tty {
-        drop(stdin_c);
-        master.as_ref().and_then(|m| m.try_clone().ok())
-    } else {
-        drop(stdin_c);
-        STDIN_W.with(|s| s.borrow_mut().take())
+    drop(stdin_c);
+    let io = ParentIo {
+        stdin: if spec.tty { master.as_ref().and_then(|m| m.try_clone().ok()) } else { STDIN_W.with(|s| s.borrow_mut().take()) },
+        outputs: match master {
+            Some(m) => vec![(m, true)],
+            None => STDOUT_R.with(|s| s.borrow_mut().drain(..).collect()),
+        },
     };
-    let master_fd = master.as_ref().map(|m| m.as_raw_fd());
-    let interactive = spec.interactive;
-    let tty = spec.tty;
-    {
-        let mut r = sock.try_clone().expect("dup socket");
-        std::thread::spawn(move || {
-            let mut stdin_w = stdin_w;
-            while let Ok(Some(f)) = blocking::read_frame(&mut r) {
-                match f {
-                    Frame::Stdin(d) if interactive => {
-                        if let Some(w) = stdin_w.as_mut() {
-                            let _ = w.write_all(&d);
-                        }
-                    }
-                    Frame::CloseStdin if !tty => stdin_w = None,
-                    Frame::Resize { cols, rows } => {
-                        if let Some(m) = master_fd {
-                            let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
-                            // SAFETY: TIOCSWINSZ on our pty master.
-                            unsafe { libc::ioctl(m, libc::TIOCSWINSZ, &ws) };
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        });
-    }
-    let mut readers = vec![];
-    let outputs: Vec<(Box<dyn Read + Send>, bool)> = match master {
-        Some(m) => vec![(Box::new(m), true)],
-        None => STDOUT_R.with(|s| s.borrow_mut().drain(..).map(|(f, o)| (Box::new(f) as Box<dyn Read + Send>, o)).collect()),
-    };
-    for (mut r, is_out) in outputs {
-        let out = out.clone();
-        readers.push(std::thread::spawn(move || {
-            let mut buf = vec![0u8; 32 * 1024];
-            loop {
-                match r.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let f = if is_out { Frame::Stdout(buf[..n].to_vec()) } else { Frame::Stderr(buf[..n].to_vec()) };
-                        let mut w = out.lock().unwrap();
-                        // A gone client must not stop the process: keep
-                        // draining output and discard it.
-                        let _ = blocking::write_frame(&mut *w, &f);
-                    }
-                }
-            }
-        }));
-    }
-    let code = crate::util::wait_pid(child);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    for r in readers {
-        while !r.is_finished() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    }
+    let code = relay(&sock, io, &spec, child);
     let mut w = out.lock().unwrap();
     let _ = blocking::write_frame(&mut *w, &Frame::Exit(code));
     let _ = w.shutdown(std::net::Shutdown::Both);
     code
+}
+
+struct ParentIo {
+    stdin: Option<File>,
+    /// (reader, is_stdout); for a tty the pty master.
+    outputs: Vec<(File, bool)>,
+}
+
+/// Single-threaded poll loop between the client socket and the child.
+/// (No threads: after setns into a pid namespace, CLONE_THREAD fails.)
+fn relay(sock: &UnixStream, mut io: ParentIo, spec: &ExecSpec, child: libc::pid_t) -> i32 {
+    let mut sock_w = sock.try_clone().expect("dup socket");
+    let master_fd = if spec.tty { io.outputs.first().map(|(f, _)| f.as_raw_fd()) } else { None };
+    let mut inbuf: Vec<u8> = vec![];
+    let mut sock_open = true;
+    let mut buf = vec![0u8; 32 * 1024];
+    let mut exit: Option<i32> = None;
+    let mut drain_deadline = None;
+    loop {
+        if exit.is_none() {
+            let mut st = 0;
+            // SAFETY: non-blocking wait for our own child.
+            if unsafe { libc::waitpid(child, &mut st, libc::WNOHANG) } == child {
+                exit = Some(if libc::WIFEXITED(st) { libc::WEXITSTATUS(st) } else { 128 + libc::WTERMSIG(st) });
+                drain_deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+            }
+        }
+        if io.outputs.is_empty() && exit.is_some() {
+            break;
+        }
+        if drain_deadline.map(|d| std::time::Instant::now() > d).unwrap_or(false) {
+            break;
+        }
+        let mut fds: Vec<libc::pollfd> =
+            io.outputs.iter().map(|(f, _)| libc::pollfd { fd: f.as_raw_fd(), events: libc::POLLIN, revents: 0 }).collect();
+        if sock_open {
+            fds.push(libc::pollfd { fd: sock.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+        }
+        // SAFETY: poll over a valid, correctly sized pollfd array.
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 100) };
+        if n <= 0 {
+            continue;
+        }
+        let mut closed = vec![];
+        for (i, p) in fds.iter().enumerate() {
+            if p.revents == 0 {
+                continue;
+            }
+            if i < io.outputs.len() {
+                let (f, is_out) = &mut io.outputs[i];
+                match f.read(&mut buf) {
+                    Ok(0) | Err(_) => closed.push(i),
+                    Ok(n) => {
+                        let fr = if *is_out { Frame::Stdout(buf[..n].to_vec()) } else { Frame::Stderr(buf[..n].to_vec()) };
+                        // A gone client must not stop the process: keep
+                        // draining output and discard it.
+                        let _ = blocking::write_frame(&mut sock_w, &fr);
+                    }
+                }
+            } else {
+                let mut r = sock;
+                match r.read(&mut buf) {
+                    Ok(0) | Err(_) => sock_open = false,
+                    Ok(n) => inbuf.extend_from_slice(&buf[..n]),
+                }
+                while let Some(f) = take_frame(&mut inbuf) {
+                    match f {
+                        Frame::Stdin(d) if spec.interactive => {
+                            if let Some(w) = io.stdin.as_mut() {
+                                let _ = w.write_all(&d);
+                            }
+                        }
+                        Frame::CloseStdin if !spec.tty => io.stdin = None,
+                        Frame::Resize { cols, rows } => {
+                            if let Some(m) = master_fd {
+                                let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+                                // SAFETY: TIOCSWINSZ on our pty master.
+                                unsafe { libc::ioctl(m, libc::TIOCSWINSZ, &ws) };
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for i in closed.into_iter().rev() {
+            io.outputs.remove(i);
+        }
+    }
+    match exit {
+        Some(c) => c,
+        None => crate::util::wait_pid(child),
+    }
+}
+
+/// Pop one complete frame off the front of `buf`.
+fn take_frame(buf: &mut Vec<u8>) -> Option<Frame> {
+    if buf.len() < 5 {
+        return None;
+    }
+    let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+    if buf.len() < 5 + len {
+        return None;
+    }
+    let mut r = &buf[..5 + len];
+    let f = blocking::read_frame(&mut r).ok().flatten();
+    buf.drain(..5 + len);
+    f
 }
 
 thread_local! {

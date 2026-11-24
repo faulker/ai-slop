@@ -232,7 +232,7 @@ pub struct RunArgs {
     /// no, always, unless-stopped, on-failure[:N]
     #[arg(long, default_value = "no")]
     pub restart: String,
-    #[arg(long, short = 'h')]
+    #[arg(long)]
     pub hostname: Option<String>,
     /// HOST:IP
     #[arg(long)]

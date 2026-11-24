@@ -692,7 +692,10 @@ impl<'a> Builder<'a> {
                 let (src_root, ignore, id_part): (PathBuf, Option<&DockerIgnore>, String) = match &from {
                     Some(f) => {
                         let img = self.stage_or_image(st, f).await?;
-                        (self.be.rootfs(&img)?, None, img.info.id.clone())
+                        // Not the image id: a rebuilt stage gets a new id
+                        // (its config has a timestamp) even when its files
+                        // are identical. `digest` already covers the content.
+                        (self.be.rootfs(&img)?, None, String::new())
                     }
                     None => (self.ctx_dir.clone(), Some(&self.ignore), String::new()),
                 };

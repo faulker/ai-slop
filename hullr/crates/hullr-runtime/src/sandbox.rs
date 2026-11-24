@@ -162,6 +162,7 @@ pub fn remove(dir: &Path) -> Result<()> {
     while sup_alive(dir) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
+    let _ = nix::mount::umount2(&dir.join("netns"), nix::mount::MntFlags::MNT_DETACH);
     match std::fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

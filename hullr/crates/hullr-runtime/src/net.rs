@@ -130,6 +130,8 @@ pub fn pasta_port_args(ports: &[PortMapping]) -> Vec<String> {
 #[cfg(target_os = "linux")]
 pub struct NetHelper {
     child: std::process::Child,
+    /// Bind-mounted netns file (root mode) to unmount afterwards.
+    ns_file: Option<PathBuf>,
 }
 
 #[cfg(target_os = "linux")]
@@ -137,6 +139,10 @@ impl Drop for NetHelper {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(f) = &self.ns_file {
+            let _ = nix::mount::umount2(f, nix::mount::MntFlags::MNT_DETACH);
+            let _ = std::fs::remove_file(f);
+        }
     }
 }
 
@@ -148,13 +154,34 @@ pub fn attach(tool: &UserNet, pid: u32, ports: &[PortMapping], api_dir: &Path) -
     match tool {
         UserNet::Pasta(bin) => {
             let mut cmd = Command::new(bin);
-            cmd.args(["--config-net", "--quiet", "--foreground", "--no-map-gw"])
-                .args(pasta_port_args(ports))
-                .arg(pid.to_string())
+            cmd.args(["--config-net", "--quiet", "--foreground"]).args(pasta_port_args(ports));
+            // As root, pasta drops to "nobody" and sandboxes itself before
+            // joining, so it cannot open /proc/<pid>/ns/*. Hand it a
+            // bind-mounted netns file and keep it at uid 0 instead.
+            let mut ns_file = None;
+            if crate::util::euid() == 0 {
+                let f = api_dir.join("netns");
+                let _ = nix::mount::umount2(&f, nix::mount::MntFlags::MNT_DETACH);
+                std::fs::write(&f, "").map_err(|e| format!("netns file: {e}"))?;
+                nix::mount::mount(
+                    Some(Path::new(&format!("/proc/{pid}/ns/net"))),
+                    &f,
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND,
+                    None::<&str>,
+                )
+                .map_err(|e| format!("bind netns: {e}"))?;
+                cmd.args(["--runas", "0", "--netns"]).arg(&f);
+                ns_file = Some(f);
+            } else {
+                cmd.arg(pid.to_string());
+            }
+            cmd
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped());
-            let mut child = cmd.spawn().map_err(|e| format!("spawn pasta: {e}"))?;
+            let mut helper = NetHelper { child: cmd.spawn().map_err(|e| format!("spawn pasta: {e}"))?, ns_file };
+            let child = &mut helper.child;
             // pasta configures the namespace before it starts forwarding;
             // wait until the tap device has an address (or pasta dies).
             for _ in 0..200 {
@@ -164,7 +191,8 @@ pub fn attach(tool: &UserNet, pid: u32, ports: &[PortMapping], api_dir: &Path) -
                         use std::io::Read;
                         let _ = e.read_to_string(&mut err);
                     }
-                    return Err(format!("pasta exited ({st}): {}", err.trim()));
+                    let err: Vec<&str> = err.lines().filter(|l| !l.contains("syslog")).collect();
+                    return Err(format!("pasta exited ({st}): {}", err.join("; ")));
                 }
                 if netns_configured(pid) {
                     break;
@@ -177,7 +205,7 @@ pub fn attach(tool: &UserNet, pid: u32, ports: &[PortMapping], api_dir: &Path) -
                     let _ = std::io::copy(&mut e, &mut std::io::sink());
                 });
             }
-            Ok(NetHelper { child })
+            Ok(helper)
         }
         UserNet::Slirp(bin) => {
             let sock = api_dir.join("slirp.sock");
@@ -207,7 +235,7 @@ pub fn attach(tool: &UserNet, pid: u32, ports: &[PortMapping], api_dir: &Path) -
                 let _ = child.kill();
                 return Err("slirp4netns did not become ready".into());
             }
-            let helper = NetHelper { child };
+            let helper = NetHelper { child, ns_file: None };
             for p in ports {
                 slirp_hostfwd(&sock, p)?;
             }

@@ -9,7 +9,7 @@ in dependency order. Packages listed in the minirootfs' installed database
 (`lib/apk/db/installed`, same record format) are treated as present and not
 printed. Dependency tokens understood: `name`, `name>=ver` (any constraint,
 the newest version is used), `so:libfoo.so.1`, `cmd:foo`, `pc:foo`, and
-`!conflict` (ignored).
+`!conflict` and file paths such as `/bin/sh` (both ignored).
 """
 
 import re
@@ -97,7 +97,9 @@ def main(argv):
         seen.add(name)
         if not no_deps:
             for dep in pkgs[name][2]:
-                if dep.startswith("!"):
+                # Conflicts are ignored; file path deps (e.g. /bin/sh) are
+                # satisfied by the minirootfs.
+                if dep.startswith("!") or dep.startswith("/"):
                     continue
                 target = resolve_token(dep)
                 if target and target not in chain:

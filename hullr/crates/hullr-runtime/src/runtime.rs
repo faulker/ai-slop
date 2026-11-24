@@ -241,7 +241,9 @@ pub fn remove(rt: &Runtime, id: &str) -> Result<()> {
     if state::shim_pid(&l).is_some() {
         return Err(Error::Conflict(format!("container {id} is running")));
     }
-    let _ = nix::mount::umount2(&l.rootfs(), nix::mount::MntFlags::MNT_DETACH);
+    for m in [l.rootfs(), l.file("netns")] {
+        let _ = nix::mount::umount2(&m, nix::mount::MntFlags::MNT_DETACH);
+    }
     cgroup::remove(id);
     remove_tree(&rt.cfg.exe, &l.dir)
 }
