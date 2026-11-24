@@ -128,14 +128,8 @@ fn setup_namespaces(cfg: &InitConfig) -> hullr_core::Result<()> {
 
 /// Runs in C. Only returns on error: (exit code, message).
 fn container_main(cfg: &InitConfig, sync: Option<RawFd>) -> (i32, String) {
-    // SAFETY: setsid/ioctl on our own stdin; TIOCSCTTY makes the pty slave
-    // our controlling terminal (it is nobody else's).
-    unsafe {
-        libc::setsid();
-        if cfg.spec.tty {
-            libc::ioctl(0, libc::TIOCSCTTY, 0);
-        }
-    }
+    // SAFETY: setsid has no memory-safety preconditions.
+    unsafe { libc::setsid() };
     // Enter a cgroup namespace rooted at our (already joined) cgroup.
     let _ = unshare(CloneFlags::CLONE_NEWCGROUP);
     let own_netns = cfg.net != NetPlan::Host;
@@ -147,6 +141,11 @@ fn container_main(cfg: &InitConfig, sync: Option<RawFd>) -> (i32, String) {
         }
         Err(e) => return (1, strip(e)),
     }
+    if cfg.spec.tty {
+        if let Err(e) = container_pty(sync) {
+            return (1, e);
+        }
+    }
     if !cfg.spec.hostname.is_empty() {
         if let Err(e) = nix::unistd::sethostname(&cfg.spec.hostname) {
             return (1, format!("sethostname: {e}"));
@@ -154,6 +153,38 @@ fn container_main(cfg: &InitConfig, sync: Option<RawFd>) -> (i32, String) {
     }
     let s = &cfg.spec;
     exec_in_container(&s.args, &s.env, &[], &s.hostname, s.tty, s.user.as_deref(), &s.cwd, true)
+}
+
+/// Allocate the container's terminal from its own devpts instance (so
+/// `tty` resolves to /dev/pts/N inside), hand the master to the shim over
+/// the sync socket, and make the slave our stdio and controlling terminal.
+fn container_pty(sync: Option<RawFd>) -> Result<(), String> {
+    let sync = sync.ok_or("tty needs the shim sync socket")?;
+    let pty = nix::pty::openpty(None, None).map_err(|e| format!("openpty in container: {e}"))?;
+    let slave_path = std::fs::read_link(format!("/proc/self/fd/{}", pty.slave.as_raw_fd())).ok();
+    if !crate::util::send_fd(sync, b"PTY\n", pty.master.as_raw_fd()) {
+        return Err(format!("send pty to shim: {}", std::io::Error::last_os_error()));
+    }
+    drop(pty.master);
+    // SAFETY: wiring the slave onto stdio; TIOCSCTTY makes it the
+    // controlling terminal of our fresh session (nobody else's).
+    unsafe {
+        for i in 0..3 {
+            libc::dup2(pty.slave.as_raw_fd(), i);
+        }
+        if libc::ioctl(0, libc::TIOCSCTTY, 0) != 0 {
+            return Err(format!("set controlling terminal: {}", std::io::Error::last_os_error()));
+        }
+    }
+    drop(pty.slave);
+    // Docker also exposes the terminal as /dev/console.
+    if let Some(p) = slave_path {
+        let c = Path::new("/dev/console");
+        if std::fs::File::create(c).is_ok() {
+            let _ = nix::mount::mount(Some(&p), c, None::<&str>, nix::mount::MsFlags::MS_BIND, None::<&str>);
+        }
+    }
+    Ok(())
 }
 
 pub fn strip(e: hullr_core::Error) -> String {

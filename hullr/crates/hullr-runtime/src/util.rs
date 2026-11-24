@@ -151,6 +151,69 @@ pub fn read_line(fd: RawFd) -> Option<String> {
     }
 }
 
+/// Send `line` plus one fd (SCM_RIGHTS) over a unix socket.
+pub fn send_fd(sock: RawFd, line: &[u8], fd: RawFd) -> bool {
+    // SAFETY: building a msghdr with one iovec over `line` and a cmsg
+    // buffer sized by CMSG_SPACE for exactly one int.
+    unsafe {
+        let mut iov = libc::iovec { iov_base: line.as_ptr() as *mut _, iov_len: line.len() };
+        let space = libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as usize;
+        let mut cbuf = vec![0u8; space];
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cbuf.as_mut_ptr().cast();
+        msg.msg_controllen = space as _;
+        let c = libc::CMSG_FIRSTHDR(&msg);
+        (*c).cmsg_level = libc::SOL_SOCKET;
+        (*c).cmsg_type = libc::SCM_RIGHTS;
+        (*c).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(c) as *mut RawFd, fd);
+        libc::sendmsg(sock, &msg, 0) == line.len() as isize
+    }
+}
+
+/// Like `read_line`, but also returns an fd passed with SCM_RIGHTS
+/// (received close-on-exec).
+pub fn read_line_fd(sock: RawFd) -> Option<(String, Option<OwnedFd>)> {
+    let mut out = Vec::new();
+    let mut got: Option<OwnedFd> = None;
+    loop {
+        let mut b = [0u8; 1];
+        // SAFETY: recvmsg into a 1-byte iovec and a cmsg buffer sized for
+        // one fd; any received fd is taken into an OwnedFd exactly once.
+        let n = unsafe {
+            let mut iov = libc::iovec { iov_base: b.as_mut_ptr().cast(), iov_len: 1 };
+            let space = libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as usize;
+            let mut cbuf = vec![0u8; space];
+            let mut msg: libc::msghdr = std::mem::zeroed();
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = cbuf.as_mut_ptr().cast();
+            msg.msg_controllen = space as _;
+            let n = libc::recvmsg(sock, &mut msg, libc::MSG_CMSG_CLOEXEC);
+            if n > 0 {
+                let c = libc::CMSG_FIRSTHDR(&msg);
+                if !c.is_null() && (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
+                    let fd = std::ptr::read_unaligned(libc::CMSG_DATA(c) as *const RawFd);
+                    got = Some(OwnedFd::from_raw_fd(fd));
+                }
+            }
+            n
+        };
+        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if n <= 0 {
+            return if out.is_empty() { None } else { Some((String::from_utf8_lossy(&out).into_owned(), got)) };
+        }
+        if b[0] == b'\n' {
+            return Some((String::from_utf8_lossy(&out).into_owned(), got));
+        }
+        out.push(b[0]);
+    }
+}
+
 /// Write all bytes to a raw fd (retrying on EINTR / short writes).
 pub fn write_all_fd(fd: RawFd, mut data: &[u8]) -> bool {
     while !data.is_empty() {

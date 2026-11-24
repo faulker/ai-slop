@@ -138,7 +138,7 @@ fn mount_sys(root: &Path, own_netns: bool) -> Result<()> {
     Ok(())
 }
 
-fn mount_dev(root: &Path, tty: bool) -> Result<()> {
+fn mount_dev(root: &Path) -> Result<()> {
     let dev = root.join("dev");
     ensure_target(&dev, true)?;
     mnt(Some("tmpfs"), &dev, Some("tmpfs"), MsFlags::MS_NOSUID | MsFlags::MS_STRICTATIME, Some("mode=755,size=65536k"))?;
@@ -179,15 +179,6 @@ fn mount_dev(root: &Path, tty: bool) -> Result<()> {
         ("core", "/proc/kcore"),
     ] {
         let _ = std::os::unix::fs::symlink(target, dev.join(link));
-    }
-    if tty {
-        // The container's terminal doubles as /dev/console, like Docker.
-        if let Ok(p) = std::fs::read_link("/proc/self/fd/0") {
-            let c = dev.join("console");
-            if ensure_target(&c, false).is_ok() {
-                let _ = bind(&p, &c, false);
-            }
-        }
     }
     Ok(())
 }
@@ -287,7 +278,7 @@ pub fn setup(cfg: &InitConfig, own_netns: bool) -> Result<Vec<String>> {
     let root: PathBuf = cfg.rootfs.clone();
     mount_proc(&root)?;
     mount_sys(&root, own_netns)?;
-    mount_dev(&root, cfg.spec.tty)?;
+    mount_dev(&root)?;
     user_mounts(cfg)?;
     etc_files(cfg)?;
     mask_paths(&root);

@@ -54,7 +54,7 @@ pub fn capabilities(_rt: &Runtime) -> Capabilities {
     }
     let user_networking = net::detect_user_net().is_some();
     if !user_networking {
-        warnings.push("pasta/slirp4netns not found: private networking falls back to host networking, ports are not published".into());
+        warnings.push("pasta/slirp4netns not found or /dev/net/tun not accessible: private networking falls back to host networking, ports are not published".into());
     }
     let cgroups = cgroup::base().is_some();
     if !cgroups {

@@ -104,7 +104,7 @@ pub fn progress_printer() -> ProgressFn {
             if tty && st.drawn > 0 {
                 let _ = write!(err, "\x1b[{}A", st.drawn);
                 for _ in 0..st.drawn {
-                    let _ = write!(err, "\x1b[2K\n");
+                    let _ = writeln!(err, "\x1b[2K");
                 }
                 let _ = write!(err, "\x1b[{}A", st.drawn);
                 st.drawn = 0;

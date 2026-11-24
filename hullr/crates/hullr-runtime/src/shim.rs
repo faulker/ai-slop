@@ -12,7 +12,7 @@
 //!   `ERR <message>`), which is what `Runtime::start` waits on.
 
 use crate::state::{self, Backoff, InitConfig, Layout, NetPlan};
-use crate::util::{install_handoff_fd, now_ms, read_line, write_all_fd};
+use crate::util::{install_handoff_fd, now_ms, read_line_fd, write_all_fd};
 use crate::{cgroup, net, RunSpec, RuntimeState, Status};
 use hullr_core::stream::{blocking, Frame};
 use hullr_core::{LogLine, LogStream, NetworkMode};
@@ -38,6 +38,24 @@ struct Input {
     stdin: Option<Arc<File>>,
     master: Option<Arc<File>>,
     winsize: Option<(u16, u16)>,
+    /// Stdin that arrived before the process had a stdin (attach races
+    /// the init's setup); flushed once the target exists.
+    pending: Vec<u8>,
+    /// CloseStdin arrived before the stdin pipe existed.
+    pending_close: bool,
+}
+
+impl Input {
+    fn set_target(&mut self, tty: bool, f: Arc<File>) {
+        if !self.pending.is_empty() {
+            let _ = (&*f).write_all(&std::mem::take(&mut self.pending));
+        }
+        if tty {
+            self.master = Some(f);
+        } else if !std::mem::take(&mut self.pending_close) {
+            self.stdin = Some(f);
+        }
+    }
 }
 
 struct Inner {
@@ -203,8 +221,12 @@ impl Hub {
                     return;
                 }
                 let target = {
-                    let i = self.input.lock().unwrap();
-                    if self.tty { i.master.clone() } else { i.stdin.clone() }
+                    let mut i = self.input.lock().unwrap();
+                    let t = if self.tty { i.master.clone() } else { i.stdin.clone() };
+                    if t.is_none() && i.pending.len() + d.len() <= 64 * 1024 {
+                        i.pending.extend_from_slice(&d);
+                    }
+                    t
                 };
                 if let Some(t) = target {
                     let _ = (&*t).write_all(&d);
@@ -212,7 +234,10 @@ impl Hub {
             }
             Frame::CloseStdin => {
                 if !self.tty {
-                    self.input.lock().unwrap().stdin = None;
+                    let mut i = self.input.lock().unwrap();
+                    if i.stdin.take().is_none() {
+                        i.pending_close = true;
+                    }
                 }
             }
             Frame::Resize { cols, rows } => {
@@ -403,7 +428,7 @@ impl Shim {
             NetworkMode::Private => match net::detect_user_net() {
                 Some(t) => (NetPlan::New, Some(t)),
                 None => {
-                    self.hub.note("hullr: warning: neither pasta nor slirp4netns found; using host networking");
+                    self.hub.note("hullr: warning: no usable pasta/slirp4netns (or no access to /dev/net/tun); using host networking");
                     (NetPlan::Host, None)
                 }
             },
@@ -460,7 +485,8 @@ impl Shim {
         let mut helper = None;
         let mut result: Result<u32, String> = Err("container init exited during setup".into());
         let mut pid = 0;
-        while let Some(line) = read_line(sfd) {
+        let mut readers = readers;
+        while let Some((line, fd)) = read_line_fd(sfd) {
             let (cmd, arg) = line.split_once(' ').unwrap_or((line.as_str(), ""));
             match cmd {
                 "NS" => {
@@ -473,13 +499,25 @@ impl Shim {
                     if let Some(t) = &tool {
                         match net::attach(t, p, &self.spec.ports, &self.layout.dir) {
                             Ok(h) => helper = Some(h),
-                            Err(e) => {
-                                result = Err(format!("network setup: {e}"));
-                                break;
-                            }
+                            // Degrade rather than refuse to start: the
+                            // container keeps its loopback-only netns.
+                            Err(e) => self.hub.note(&format!(
+                                "hullr: warning: private networking unavailable ({e}); loopback only"
+                            )),
                         }
                     }
                     write_all_fd(sfd, b"GO\n");
+                }
+                "PTY" => {
+                    let Some(fd) = fd else { continue };
+                    let master = File::from(fd);
+                    if let Ok(mut reader) = master.try_clone() {
+                        let ws = self.hub.input.lock().unwrap().winsize.unwrap_or((80, 24));
+                        set_winsize(master.as_raw_fd(), ws.0, ws.1);
+                        self.hub.input.lock().unwrap().set_target(true, Arc::new(master));
+                        let hub = self.hub.clone();
+                        readers.push(std::thread::spawn(move || pump(&mut reader, &hub, LogStream::Stdout)));
+                    }
                 }
                 "WARN" => self.hub.note(&format!("hullr: warning: {arg}")),
                 "PID" => pid = arg.parse().unwrap_or(0),
@@ -551,23 +589,12 @@ impl Shim {
             });
         }
         if self.spec.tty {
-            let ws = self.hub.input.lock().unwrap().winsize.unwrap_or((80, 24));
-            let winsize = nix::pty::Winsize { ws_row: ws.1, ws_col: ws.0, ws_xpixel: 0, ws_ypixel: 0 };
-            let pty = nix::pty::openpty(Some(&winsize), None).map_err(|e| format!("openpty: {e}"))?;
-            let slave = File::from(pty.slave);
-            set_cloexec(slave.as_raw_fd());
-            let clone = |f: &File| f.try_clone().map(Stdio::from).map_err(|e| format!("dup pty: {e}"));
-            cmd.stdin(clone(&slave)?).stdout(clone(&slave)?).stderr(clone(&slave)?);
-            let master = File::from(pty.master);
-            set_cloexec(master.as_raw_fd());
-            let mut reader = master.try_clone().map_err(|e| format!("dup pty: {e}"))?;
-            self.hub.input.lock().unwrap().master = Some(Arc::new(master));
+            // The init allocates the pty inside the container and sends us
+            // the master (`PTY` on the sync socket).
+            cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
             let child = cmd.spawn().map_err(|e| format!("spawn init: {e}"))?;
             drop(cmd);
-            drop(slave);
             drop(theirs);
-            let hub = self.hub.clone();
-            readers.push(std::thread::spawn(move || pump(&mut reader, &hub, LogStream::Stdout)));
             return Ok((child, ours, readers));
         }
         cmd.stdin(if self.spec.interactive { Stdio::piped() } else { Stdio::null() })
@@ -579,7 +606,7 @@ impl Shim {
         if let Some(si) = child.stdin.take() {
             // SAFETY: converting an owned ChildStdin into an owned File.
             let f = unsafe { File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(si)) };
-            self.hub.input.lock().unwrap().stdin = Some(Arc::new(f));
+            self.hub.input.lock().unwrap().set_target(false, Arc::new(f));
         }
         for (s, stream) in [
             (child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>), LogStream::Stdout),
@@ -592,11 +619,6 @@ impl Shim {
         }
         Ok((child, ours, readers))
     }
-}
-
-fn set_cloexec(fd: RawFd) {
-    // SAFETY: fcntl on an fd we own.
-    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
 }
 
 fn pump(r: &mut dyn Read, hub: &Hub, stream: LogStream) {

@@ -203,7 +203,7 @@ impl Api for Engine {
             .map(|r| self.to_info(r))
             .filter(|c| all || c.state == ContainerState::Running || c.state == ContainerState::Restarting)
             .collect();
-        out.sort_by(|a, b| b.created.cmp(&a.created));
+        out.sort_by_key(|c| std::cmp::Reverse(c.created));
         Ok(out)
     }
 
@@ -311,7 +311,7 @@ impl Api for Engine {
 
     async fn list_images(&self) -> Result<Vec<ImageInfo>> {
         let mut l = self.images.list()?;
-        l.sort_by(|a, b| b.created.cmp(&a.created));
+        l.sort_by_key(|c| std::cmp::Reverse(c.created));
         Ok(l)
     }
 

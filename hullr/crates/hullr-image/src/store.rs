@@ -661,7 +661,7 @@ mod tests {
         let (_d, s) = store();
         let l = import(&s, &[E::File("a", b"hello", 0o644)]);
         assert!(s.layer_ready(&l));
-        let rec = mk(&s, &[l.clone()], "myapp:1");
+        let rec = mk(&s, std::slice::from_ref(&l), "myapp:1");
         assert_eq!(rec.size, 5);
         // by tag, by id, by prefix with and without sha256:
         assert_eq!(s.resolve("myapp:1").unwrap().as_deref(), Some(rec.id.as_str()));
@@ -695,7 +695,7 @@ mod tests {
     fn tag_moves_and_remove_by_tag_keeps_image_with_other_tags() {
         let (_d, s) = store();
         let l = import(&s, &[E::File("a", b"hello", 0o644)]);
-        let rec = mk(&s, &[l.clone()], "app:1");
+        let rec = mk(&s, std::slice::from_ref(&l), "app:1");
         s.tag(&rec.id, &ImageRef::parse("app:latest").unwrap()).unwrap();
         let out = s.remove("app:1", false, NOT_IN_USE).unwrap();
         assert_eq!(out, vec!["docker.io/library/app:1"]);
@@ -713,7 +713,7 @@ mod tests {
         let (_d, s) = store();
         let base = import(&s, &[E::File("a", b"base", 0o644)]);
         let top = import(&s, &[E::File("b", b"top", 0o644)]);
-        let one = mk(&s, &[base.clone()], "one");
+        let one = mk(&s, std::slice::from_ref(&base), "one");
         let two = mk(&s, &[base.clone(), top.clone()], "two");
         s.remove("one", false, NOT_IN_USE).unwrap();
         assert!(s.layer_ready(&base));
@@ -755,8 +755,8 @@ mod tests {
         let (_d, s) = store();
         let l1 = import(&s, &[E::File("a", b"1", 0o644)]);
         let l2 = import(&s, &[E::File("b", b"2", 0o644)]);
-        let tagged = mk(&s, &[l1.clone()], "keep");
-        let dangling = mk(&s, &[l2.clone()], "");
+        let tagged = mk(&s, std::slice::from_ref(&l1), "keep");
+        let dangling = mk(&s, std::slice::from_ref(&l2), "");
         let (removed, freed) = s.prune(false, NOT_IN_USE).unwrap();
         assert_eq!(removed, vec![dangling.id.clone()]);
         assert!(freed > 0);
@@ -804,10 +804,10 @@ mod tests {
         let (_d, s) = store();
         let l1 = import(&s, &[E::File("a", b"1", 0o644)]);
         let l2 = import(&s, &[E::File("b", b"2", 0o644)]);
-        let parent = mk(&s, &[l1.clone()], "p");
+        let parent = mk(&s, std::slice::from_ref(&l1), "p");
         let hist = manifest::parse_config(&s.read_blob(&parent.id).unwrap()).unwrap().history;
         let child = s
-            .commit(Some((&parent, hist)), &[l2.clone()], ImageConfig::default(), Platform::new("linux", "amd64", None), &[])
+            .commit(Some((&parent, hist)), std::slice::from_ref(&l2), ImageConfig::default(), Platform::new("linux", "amd64", None), &[])
             .unwrap();
         assert_eq!(child.diff_ids, vec![l1, l2]);
         let parsed = manifest::parse_config(&s.read_blob(&child.id).unwrap()).unwrap();

@@ -245,6 +245,7 @@ impl Runtime {
     }
     /// Run one build step in a writable rootfs dir (no overlay), foreground,
     /// with host networking. Streams output; returns exit code.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_in_rootfs(
         &self,
         rootfs: &Path,

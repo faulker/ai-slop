@@ -322,7 +322,7 @@ async fn commit_then_push_then_pull_round_trip() {
     let diff = a.add_layer_from_tar(&tar_path).unwrap();
     let r = ImageRef::parse(&format!("127.0.0.1:{port}/test/img:v1")).unwrap();
     let cfg = ImageConfig { cmd: Some(vec!["/app/run".into()]), env: vec!["X=1".into()], ..Default::default() };
-    let img = a.commit(None, &[diff.clone()], cfg.clone(), Platform::new("linux", "amd64", None), &[r.clone()]).unwrap();
+    let img = a.commit(None, std::slice::from_ref(&diff), cfg.clone(), Platform::new("linux", "amd64", None), std::slice::from_ref(&r)).unwrap();
     assert_eq!(img.info.repo_tags, vec![r.to_string()]);
 
     let (prog, log) = recording_progress();

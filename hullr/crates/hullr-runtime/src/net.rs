@@ -95,6 +95,11 @@ pub enum UserNet {
 }
 
 pub fn detect_user_net() -> Option<UserNet> {
+    // Both tools need a tap device; without access to /dev/net/tun (mode
+    // 0600 on some hosts) they cannot work for this user.
+    if std::fs::OpenOptions::new().read(true).write(true).open("/dev/net/tun").is_err() {
+        return None;
+    }
     if std::env::var_os("HULLR_NO_PASTA").is_none() {
         if let Some(p) = find_on_path("pasta") {
             return Some(UserNet::Pasta(p));
