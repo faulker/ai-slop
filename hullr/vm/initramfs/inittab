@@ -1,0 +1,7 @@
+# busybox init table for the hullr guest. /init has already mounted
+# everything; this only supervises the two long-running processes.
+::respawn:/usr/bin/env HULLR_HOME=/var/lib/hullr /usr/bin/hullr __guest-agent
+::respawn:/usr/bin/env HULLR_HOME=/var/lib/hullr /usr/bin/hullr daemon --listen vsock:1024
+::ctrlaltdel:/sbin/poweroff
+::shutdown:/bin/sync
+::shutdown:/bin/umount -a -r

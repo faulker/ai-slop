@@ -15,7 +15,7 @@ pub mod stream;
 
 pub use api::{Api, EventStream, ProgressFn};
 pub use container::*;
-pub use error::{Error, Result};
+pub use error::{Context, Error, Result};
 pub use image::*;
 pub use platform::Platform;
 pub use reference::ImageRef;
