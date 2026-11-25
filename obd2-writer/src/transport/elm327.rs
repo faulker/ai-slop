@@ -3,6 +3,77 @@ use tracing::{debug, warn};
 use crate::error::{Error, Result};
 use crate::transport::serial::SerialConnection;
 
+/// How many times to send ATZ before giving up on a silent adapter.
+const RESET_ATTEMPTS: usize = 3;
+
+/// Base CAN ID that BMW-style modules answer on: a module with extended
+/// address `ea` replies from `0x600 + ea`. Unverified on the K51; see
+/// docs/bmw-k51/findings.md.
+pub const EXT_RESPONSE_BASE: u16 = 0x600;
+
+/// Split a diagnostic target into its CAN header and optional extended address.
+/// "7E0" is a plain 11-bit target; "6F1:60" is header 6F1 addressed to module 0x60
+/// (ISO 15765-2 extended addressing, as used by BMW D-CAN).
+pub fn parse_target(target: &str) -> Result<(String, Option<u8>)> {
+    match target.split_once(':') {
+        None => {
+            validate_can_id(target)?;
+            Ok((target.to_string(), None))
+        }
+        Some((header, ea)) => {
+            validate_can_id(header)?;
+            if header.len() != 3 {
+                return Err(Error::Config(format!(
+                    "extended addressing needs an 11-bit header: '{}'",
+                    target
+                )));
+            }
+            let ea = u8::from_str_radix(ea, 16)
+                .map_err(|_| Error::Config(format!("invalid extended address in '{}'", target)))?;
+            Ok((header.to_string(), Some(ea)))
+        }
+    }
+}
+
+/// Drop the tester-address byte that extended-addressing replies carry before
+/// the ISO-TP PCI byte, so "612 F1 02 7E 00" becomes "612 02 7E 00".
+/// A PCI byte is never 0xF_, so a matching byte here is never real payload.
+fn strip_tester_byte(line: &str, tester: u8) -> String {
+    let mut tokens = line.split_whitespace();
+    let Some(id) = tokens.next() else {
+        return line.to_string();
+    };
+    let rest: Vec<&str> = tokens.collect();
+    match rest.first() {
+        Some(first) if u8::from_str_radix(first, 16).ok() == Some(tester) => {
+            std::iter::once(id).chain(rest[1..].iter().copied()).collect::<Vec<_>>().join(" ")
+        }
+        _ => line.to_string(),
+    }
+}
+
+/// Services refused while extended addressing is on: writes, routines, resets,
+/// DTC clearing, security access, programming session and downloads. The bike
+/// stays read-only until a write path gated by `bmw::settings::check_writable` exists.
+fn is_blocked_ext_request(cmd: &str) -> bool {
+    let upper = cmd.trim().to_uppercase();
+    if upper.starts_with("AT") || upper.starts_with("ST") {
+        return false;
+    }
+    // The adapter accepts hex with or without spaces, so read it as pairs.
+    let hex: Vec<char> = upper.chars().filter(|c| !c.is_whitespace()).collect();
+    let bytes: Vec<u8> = hex
+        .chunks(2)
+        .take(2)
+        .map_while(|pair| u8::from_str_radix(&pair.iter().collect::<String>(), 16).ok())
+        .collect();
+    match bytes.as_slice() {
+        [0x10, 0x02, ..] => true,
+        [sid, ..] => matches!(sid, 0x11 | 0x14 | 0x27 | 0x2E | 0x2F | 0x31 | 0x34..=0x37 | 0x3B | 0x3D),
+        [] => false,
+    }
+}
+
 /// Validate that a string is a valid CAN hex identifier (3-8 hex chars).
 fn validate_can_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 8 {
@@ -18,6 +89,8 @@ fn validate_can_id(id: &str) -> Result<()> {
 /// Handles AT command initialization, OBD command framing, and response parsing.
 pub struct Elm327 {
     serial: SerialConnection,
+    /// Tester address (low byte of the header) while extended addressing is on.
+    ext_tester: Option<u8>,
 }
 
 /// Parsed response from the ELM327
@@ -32,11 +105,17 @@ pub struct ElmResponse {
 
 impl Elm327 {
     pub fn new(serial: SerialConnection) -> Self {
-        Self { serial }
+        Self { serial, ext_tester: None }
     }
 
     /// Send a raw string command and read the response.
     async fn send_raw(&mut self, cmd: &str) -> Result<String> {
+        if self.ext_tester.is_some() && is_blocked_ext_request(cmd) {
+            return Err(Error::Config(format!(
+                "refusing '{}': BMW modules are read-only in this version",
+                cmd.trim()
+            )));
+        }
         debug!(cmd, "TX");
         let data = format!("{}\r", cmd);
         self.serial.write_bytes(data.as_bytes()).await?;
@@ -57,8 +136,23 @@ impl Elm327 {
         // Drain any leftover data
         self.serial.drain().await?;
 
-        // Reset
-        let version = self.send_raw("ATZ").await?;
+        // Reset. A sleeping adapter can swallow the first command or two after
+        // the Bluetooth link comes up, so retry with a short pause.
+        let mut version = String::new();
+        for attempt in 1..=RESET_ATTEMPTS {
+            match self.send_raw("ATZ").await {
+                Ok(v) => {
+                    version = v;
+                    break;
+                }
+                Err(Error::Timeout) if attempt < RESET_ATTEMPTS => {
+                    warn!(attempt, "no response to ATZ, retrying");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    self.serial.drain().await?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         debug!(version = version.as_str(), "ELM327 reset");
 
         // Echo off
@@ -98,7 +192,16 @@ impl Elm327 {
     pub async fn send_obd(&mut self, hex_cmd: &str) -> Result<ElmResponse> {
         let response = self.send_raw(hex_cmd).await?;
         check_elm_error(&response)?;
-        parse_response(&response)
+        self.parse_with_addressing(&response)
+    }
+
+    /// Parse a response, removing extended-address bytes when they are in use.
+    fn parse_with_addressing(&self, response: &str) -> Result<ElmResponse> {
+        let mut parsed = parse_response(response)?;
+        if let Some(tester) = self.ext_tester {
+            parsed.lines = parsed.lines.iter().map(|l| strip_tester_byte(l, tester)).collect();
+        }
+        Ok(parsed)
     }
 
     /// Read a pending response without sending a new command.
@@ -108,15 +211,42 @@ impl Elm327 {
         let response = self.serial.read_until_prompt().await?;
         debug!(response = response.as_str(), "RX (pending)");
         check_elm_error(&response)?;
-        parse_response(&response)
+        self.parse_with_addressing(&response)
     }
 
-    /// Set the CAN transmit header (target ECU address).
-    /// e.g., "7E0" for ECM, "750" for BCM.
-    /// Validates that the header contains only hex characters (3-8 chars).
+    /// Set the diagnostic target. Accepts a plain CAN header ("7E0", "750") or a
+    /// BMW-style extended-address target ("6F1:60"); see `parse_target`.
+    /// Switching back to a plain header turns extended addressing off again.
     pub async fn set_header(&mut self, header: &str) -> Result<()> {
-        validate_can_id(header)?;
-        self.at_command(&format!("ATSH {}", header)).await?;
+        let (can_id, ext) = parse_target(header)?;
+        self.at_command(&format!("ATSH {}", can_id)).await?;
+        match ext {
+            Some(ea) => self.enable_extended_address(&can_id, ea).await?,
+            None if self.ext_tester.is_some() => self.disable_extended_address().await?,
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// Address every request to module `ea`, listen on its reply ID, and send
+    /// ISO-TP flow control from the tester header with the module byte first.
+    async fn enable_extended_address(&mut self, header: &str, ea: u8) -> Result<()> {
+        let tester = u16::from_str_radix(header, 16).unwrap_or(0) as u8;
+        self.at_command(&format!("ATCEA {:02X}", ea)).await?;
+        self.at_command(&format!("ATCRA {:03X}", EXT_RESPONSE_BASE + ea as u16)).await?;
+        self.at_command(&format!("ATFCSH {}", header)).await?;
+        self.at_command(&format!("ATFCSD {:02X} 30 00 00", ea)).await?;
+        self.at_command("ATFCSM1").await?;
+        self.ext_tester = Some(tester);
+        Ok(())
+    }
+
+    /// Return to normal 11-bit addressing and automatic flow control.
+    async fn disable_extended_address(&mut self) -> Result<()> {
+        self.at_command("ATCEA").await?;
+        self.at_command("ATFCSM0").await?;
+        self.at_command("ATAR").await?;
+        self.ext_tester = None;
         Ok(())
     }
 
@@ -135,6 +265,50 @@ impl Elm327 {
     pub async fn clear_receive_filter(&mut self) -> Result<()> {
         self.at_command("ATAR").await?;
         Ok(())
+    }
+
+    /// Passively monitor CAN traffic for a fixed window, accepting only IDs where
+    /// `(id & mask) == filter`. Returns the raw frame lines and whether the adapter
+    /// reported BUFFER FULL (meaning the window was truncated).
+    ///
+    /// Sends ATMA, reads for `window`, then sends a carriage return to stop
+    /// monitoring and drains to the prompt. CAN auto-formatting is turned off
+    /// during the capture so each line is `ID B0 B1 ... B7`, and restored after.
+    pub async fn monitor_frames(
+        &mut self,
+        filter: &str,
+        mask: &str,
+        window: std::time::Duration,
+    ) -> Result<(Vec<String>, bool)> {
+        validate_can_id(filter)?;
+        validate_can_id(mask)?;
+
+        self.at_command("ATCAF0").await?;
+        self.at_command(&format!("ATCF {}", filter)).await?;
+        self.at_command(&format!("ATCM {}", mask)).await?;
+
+        // ATMA never returns a prompt on its own, so bypass send_raw.
+        self.serial.write_bytes(b"ATMA\r").await?;
+        let captured = self.serial.read_for(window).await?;
+
+        // Any character stops monitoring; the adapter then prints STOPPED and a prompt.
+        self.serial.write_bytes(b"\r").await?;
+        let tail = self.serial.read_until_prompt().await.unwrap_or_default();
+
+        // Restore normal request/response filtering and formatting.
+        self.at_command("ATAR").await?;
+        self.at_command("ATCAF1").await?;
+
+        let combined = format!("{}\n{}", captured, tail);
+        let truncated = combined.to_uppercase().contains("BUFFER FULL");
+        let lines = combined
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        debug!(truncated, "monitor window complete");
+
+        Ok((lines, truncated))
     }
 
     /// Send a raw AT or OBD command (passthrough for shell mode).
@@ -223,6 +397,52 @@ mod tests {
         let input = "SEARCHING...\n7E8 04 41 0C 1A F8";
         let resp = parse_response(input).unwrap();
         assert_eq!(resp.lines.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_target_plain_and_extended() {
+        assert_eq!(parse_target("7E0").unwrap(), ("7E0".to_string(), None));
+        assert_eq!(parse_target("6F1:60").unwrap(), ("6F1".to_string(), Some(0x60)));
+        assert_eq!(parse_target("6f1:0a").unwrap(), ("6f1".to_string(), Some(0x0A)));
+    }
+
+    #[test]
+    fn test_parse_target_rejects_bad_input() {
+        assert!(parse_target("6F1:").is_err());
+        assert!(parse_target("6F1:100").is_err());
+        assert!(parse_target("6F1:6Z").is_err());
+        assert!(parse_target("18DA00F1:60").is_err()); // ext addressing is 11-bit only
+        assert!(parse_target("6F1:60\rATZ").is_err());
+    }
+
+    #[test]
+    fn test_blocked_ext_requests() {
+        assert!(is_blocked_ext_request("2E 30 00 01"));
+        assert!(is_blocked_ext_request("3B A7 00"));
+        assert!(is_blocked_ext_request("31 01 FF 00"));
+        assert!(is_blocked_ext_request("14 FF FF FF"));
+        assert!(is_blocked_ext_request("27 01"));
+        assert!(is_blocked_ext_request("10 02"));
+        assert!(is_blocked_ext_request("2e3000")); // unspaced raw input
+    }
+
+    #[test]
+    fn test_allowed_ext_requests() {
+        assert!(!is_blocked_ext_request("22 F1 90"));
+        assert!(!is_blocked_ext_request("3E 00"));
+        assert!(!is_blocked_ext_request("10 03"));
+        assert!(!is_blocked_ext_request("10 01"));
+        assert!(!is_blocked_ext_request("19 02 FF"));
+        assert!(!is_blocked_ext_request("ATSH 6F1"));
+        assert!(!is_blocked_ext_request("STDI"));
+    }
+
+    #[test]
+    fn test_strip_tester_byte() {
+        assert_eq!(strip_tester_byte("612 F1 02 7E 00", 0xF1), "612 02 7E 00");
+        assert_eq!(strip_tester_byte("612 F1 10 14 62 F1 90 57", 0xF1), "612 10 14 62 F1 90 57");
+        // Adapter already removed it: leave the frame alone.
+        assert_eq!(strip_tester_byte("612 02 7E 00", 0xF1), "612 02 7E 00");
     }
 
     #[test]

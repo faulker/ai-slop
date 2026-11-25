@@ -1,0 +1,17 @@
+# lora-tracker-server config. The server writes server.toml itself on first run (with keys
+# from tracker/gateway configs in the same folder). To write it by hand, copy this file and
+# keep it private (it holds keys):
+#   cp server.example.toml server.toml && chmod 600 server.toml
+
+# Address to listen on. 0.0.0.0 lets boards on your LAN reach it.
+# Boards use this as `[server] url = "http://<this machine>:8080"`.
+listen = "0.0.0.0:8080"
+
+# SQLite file. Relative paths are resolved next to this file.
+database = "tracker.db"
+
+# One entry per tracker. `lora-tracker pair` prints these for you.
+# [[device]]
+# device_id = 1
+# key = "<64 hex chars, same as device_key in tracker.toml>"
+# name = "Truck"    # optional, shown on the map

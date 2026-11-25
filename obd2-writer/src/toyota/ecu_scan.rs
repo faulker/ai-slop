@@ -76,6 +76,66 @@ pub async fn scan_ecus(elm: &mut Elm327) -> Result<Vec<&'static EcuInfo>> {
     Ok(found)
 }
 
+/// Known Subaru Global Platform diagnostic addresses (from opendbc's Subaru FW query).
+/// Used only to label sweep results; the sweep probes every address regardless.
+pub static KNOWN_SUBARU_ECUS: &[EcuInfo] = &[
+    EcuInfo { name: "ECM (Engine)", tx_address: "7E0" },
+    EcuInfo { name: "TCM (Transmission)", tx_address: "7E1" },
+    EcuInfo { name: "VDC/ABS", tx_address: "7B0" },
+    EcuInfo { name: "EPS (Power Steering)", tx_address: "746" },
+    EcuInfo { name: "EyeSight", tx_address: "787" },
+];
+
+/// Look up a label for a tx address across the known ECU tables.
+pub fn label_for(tx_address: &str) -> Option<&'static str> {
+    KNOWN_SUBARU_ECUS
+        .iter()
+        .chain(KNOWN_ECUS.iter())
+        .find(|e| e.tx_address.eq_ignore_ascii_case(tx_address))
+        .map(|e| e.name)
+}
+
+/// Expected ISO 15765-4 response address for an 11-bit request address (tx + 8).
+pub fn response_address(tx: u16) -> String {
+    format!("{:03X}", tx + 8)
+}
+
+/// Probe every 11-bit request address in `start..=end` with TesterPresent and
+/// return the addresses that answered (positive or negative response).
+/// Vehicle-agnostic: use this on a car whose module addresses are unknown.
+pub async fn sweep_ecus(elm: &mut Elm327, start: u16, end: u16) -> Result<Vec<u16>> {
+    let mut found = Vec::new();
+
+    // Moderate timeout (~300ms) keeps a 256-address sweep under two minutes.
+    elm.at_command("ATST 4B").await?;
+    elm.set_header("7DF").await?;
+    let _ = elm.send_obd("3E 00").await;
+
+    for tx in start..=end {
+        let tx_hex = format!("{:03X}", tx);
+        print!("\r  Probing 0x{}... ", tx_hex);
+        std::io::stdout().flush().ok();
+
+        elm.set_header(&tx_hex).await?;
+        let _ = elm.at_command(&format!("ATCRA {}", response_address(tx))).await;
+
+        if let Ok(resp) = elm.send_obd("3E 00").await {
+            if !resp.lines.is_empty() {
+                let label = label_for(&tx_hex).unwrap_or("unknown");
+                println!("\r  FOUND 0x{} ({})           ", tx_hex, label);
+                found.push(tx);
+            }
+        }
+    }
+    println!("\r  Swept 0x{:03X}-0x{:03X}: {} module(s) answered.        ", start, end, found.len());
+
+    elm.at_command("ATST FF").await?;
+    elm.at_command("ATAR").await?;
+    elm.set_header("7DF").await?;
+
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +143,19 @@ mod tests {
     #[test]
     fn test_known_ecus_not_empty() {
         assert!(!KNOWN_ECUS.is_empty());
+    }
+
+    #[test]
+    fn test_response_address_is_tx_plus_8() {
+        assert_eq!(response_address(0x7E0), "7E8");
+        assert_eq!(response_address(0x746), "74E");
+    }
+
+    #[test]
+    fn test_label_for_known_and_unknown() {
+        assert_eq!(label_for("787"), Some("EyeSight"));
+        assert_eq!(label_for("7e0"), Some("ECM (Engine)"));
+        assert_eq!(label_for("7FF"), None);
     }
 
     #[test]

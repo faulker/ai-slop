@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lora-tracker log</title>
+<style>
+  :root { --bg: #fff; --fg: #111; --muted: #666; --line: #ddd; --warn: #b00; --ok: #1a7f37; --off: #999; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161616; --fg: #eee; --muted: #999; --line: #333; --warn: #f66; --ok: #4ac26b; --off: #666; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 12px 16px 40px; }
+  header { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; }
+  h2 { font-size: 14px; margin: 20px 0 6px; color: var(--muted); font-weight: 600; }
+  a { color: inherit; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--off); }
+  .dot.on { background: var(--ok); }
+  #log { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #log div { padding: 3px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  #log .t { color: var(--muted); margin-right: 8px; }
+  #log .w { color: var(--warn); }
+  #status, .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>lora-tracker live log</h1>
+    <a href="/">map</a>
+    <span id="status">connecting…</span>
+  </header>
+
+  <h2>Devices</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>Device</th><th>Last heard</th><th>From</th><th>Board</th><th>Up</th><th>Battery</th>
+        <th>GPS</th><th>WiFi</th><th>LoRa</th><th>Uploads</th><th>Position</th>
+      </tr></thead>
+      <tbody id="devices"><tr><td colspan="11" class="muted">loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2>Events (newest first)</h2>
+  <div id="log"></div>
+</main>
+<script>
+/** Escapes text for safe insertion as HTML. */
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/** `1h02m`-style duration from seconds. */
+function dur(s) {
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h" + String(Math.floor(s / 60) % 60).padStart(2, "0") + "m";
+  return Math.floor(s / 86400) + "d" + String(Math.floor(s / 3600) % 24).padStart(2, "0") + "h";
+}
+
+/** How long ago a unix time was. */
+function ago(t) {
+  return dur(Math.max(0, Math.round(Date.now() / 1000 - t))) + " ago";
+}
+
+/** One table row for a device from /api/devices. */
+function row(d) {
+  const s = d.seen, t = s && s.telemetry;
+  const cells = [
+    `<span class="dot${d.online ? " on" : ""}"></span>${esc(d.name)} <span class="muted">${d.device_id}</span>`,
+    s ? ago(s.last_seen) : (d.latest ? "before restart" : "never"),
+    s ? esc(s.addr) : "",
+  ];
+  if (t) {
+    const pos = t.position
+      ? `${t.position.lat.toFixed(5)}, ${t.position.lon.toFixed(5)} <span class="muted">${t.position.source === "ip" ? "IP, city-level" : "GPS"}, ${dur(t.position.age_s)} old</span>`
+      : `<span class="muted">none</span>`;
+    const lora = t.role === "gateway" ? `rx ${t.lora_rx}, bad ${t.lora_bad}` : `tx ${t.lora_tx}`;
+    cells.push(
+      `${esc(t.board)} ${t.role}`,
+      dur(t.uptime_s) + ` <span class="muted">boot ${t.boot}</span>`,
+      t.batt_v != null ? t.batt_v.toFixed(2) + " V" : "--",
+      t.gps === "fix" ? `fix, ${t.sats} sats` : t.gps,
+      t.wifi_rssi != null ? t.wifi_rssi + " dBm" : "--",
+      lora + (t.lora_rssi != null ? ` <span class="muted">${t.lora_rssi} dBm</span>` : ""),
+      `${t.sent_ok} ok, ${t.sent_fail} failed, ${t.queued} queued`,
+      pos,
+    );
+  } else {
+    cells.push(`<span class="muted">no telemetry yet</span>`, "", "", "", "", "", "", "");
+  }
+  return "<tr>" + cells.map(c => `<td>${c}</td>`).join("") + "</tr>";
+}
+
+/** Reloads the device table. */
+async function refreshDevices() {
+  try {
+    const res = await fetch("/api/devices");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const devices = await res.json();
+    document.getElementById("devices").innerHTML = devices.length
+      ? devices.map(row).join("")
+      : `<tr><td colspan="11" class="muted">no devices in server.toml</td></tr>`;
+  } catch (e) {
+    document.getElementById("status").textContent = "device list failed: " + e.message;
+  }
+}
+
+/** Prepends one log event to the list. */
+function addEvent(ev) {
+  const div = document.createElement("div");
+  const when = new Date(ev.at * 1000).toLocaleString();
+  div.innerHTML = `<span class="t">${esc(when)}</span><span class="${ev.level === "warn" ? "w" : ""}">${esc(ev.addr)} ${ev.device_id != null ? "· " + ev.device_id + " " : ""}· ${esc(ev.text)}</span>`;
+  const log = document.getElementById("log");
+  log.prepend(div);
+  while (log.childElementCount > 500) log.lastChild.remove();
+}
+
+const source = new EventSource("/api/events");
+source.onopen = () => {
+  document.getElementById("status").textContent = "live";
+  document.getElementById("log").innerHTML = ""; // the server resends its backlog on each connect
+};
+source.onerror = () => { document.getElementById("status").textContent = "disconnected, retrying…"; };
+source.onmessage = m => { addEvent(JSON.parse(m.data)); refreshDevices(); };
+
+refreshDevices();
+setInterval(refreshDevices, 5000);
+</script>
+</body>
+</html>

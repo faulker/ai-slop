@@ -121,8 +121,10 @@ cargo run -- read-enhanced 0100
 cargo run -- browse            # pick a standard PID
 cargo run -- browse-enhanced   # pick a Toyota DID
 
-# Scan for responding ECUs
+# Scan for responding ECUs (known Toyota list, or sweep every 11-bit address)
 cargo run -- ecus
+cargo run -- ecus --sweep            # 700-7FF
+cargo run -- ecus --sweep 740-7BF
 
 # List/clear DTCs
 cargo run -- dtc list
@@ -148,6 +150,92 @@ cargo run -- write A7 00 --ecu 7C0 --confirm   # disable seatbelt chime
 ```bash
 cargo run -- shell
 ```
+
+## Recon on another vehicle (read-only)
+
+The `snapshot`, `monitor`, and `diff` commands are vehicle-agnostic and never write to an ECU. They exist to answer one question: when you press a button in the car, does any module expose a value that changes? Two layers are captured, because a state may show up in one and not the other:
+
+- **DID snapshot**: Mode 22 reads of every DID a module answers. The only layer that could reveal a writable configuration value.
+- **Broadcast capture**: passive `ATMA` listen, no requests sent. Button state almost always appears in some periodic frame even when no DID reflects it.
+
+`diff` on two captures reports only bytes that were constant within each capture but differ between them, which filters out counters, checksums, and live sensors.
+
+Do not use `scan --test-writable` or `write` on a vehicle these modules were not verified on. The writability test sends a real WriteDataByIdentifier.
+
+### Procedure (example: 2019 Subaru Forester, Auto Start/Stop and DriverFocus buttons)
+
+Park, in P, parking brake on, engine running (the buttons only have state with the engine on). Warning lamps may flicker while modules sit in an extended session; they clear on restart. The Forester uses the same bus settings as the Tacoma (ISO 15765-4, 11-bit, 500 kbps).
+
+```bash
+# 1. Find which modules answer. Expect ECM 7E0, TCM 7E1, VDC 7B0, EPS 746,
+#    EyeSight 787, plus unknowns (the BIU and DriverFocus module are the interesting ones).
+cargo run -- ecus --sweep
+
+# 2. Baseline every interesting module. A full 0000-FFFF pass takes 30-60 min per module;
+#    narrow to 0000-1FFF and F000-FFFF if short on time.
+cargo run -- snapshot --ecu 787 --scan 0000-FFFF -l before -o before-787.json
+
+# 3. Baseline broadcast traffic (8 windows x 3 s).
+cargo run -- monitor 3 -l before -o mon-before.json
+
+# 4. Press Auto Start/Stop OFF and DriverFocus OFF. Confirm both cluster indicators.
+
+# 5. Re-read only the DIDs found in step 2, then capture traffic again.
+cargo run -- snapshot --from before-787.json -l after -o after-787.json
+cargo run -- monitor 3 -l after -o mon-after.json
+
+# 6. Compare.
+cargo run -- diff before-787.json after-787.json
+cargo run -- diff mon-before.json mon-after.json
+
+# 7. Optional: cycle the ignition, re-snapshot and re-monitor, and diff again to see
+#    exactly which values revert. That reversion is the "default" being hunted.
+```
+
+Each `monitor` window covers one 0x100-wide block of CAN IDs, because a busy 500 kbps bus can overrun the adapter's 115200 baud serial link. Windows that overflowed are recorded as `truncated_windows` in the JSON and noted by `diff`.
+
+## BMW R 1250 GS Adventure (K51), read-only for now
+
+Support for a 2023 R 1250 GSA (BMW model code K51), using the same OBDLink MX+ that
+MotoScan uses with the bike's 10-pin to OBD2 adapter. The goal is to show which settings
+this bike really has, what each one does in plain language, and how risky it is
+before anything gets written.
+
+**The bike is read-only in this version.** While a BMW target is selected, the
+transport refuses write-type services (0x2E, 0x3B, 0x31, 0x27, 0x14, 0x11, programming
+session, downloads), including from the raw shell. Writes come later, and only for
+settings that are verified on this bike and rated `cosmetic` or `comfort`.
+
+Modules are addressed as `6F1:<module>` (tester header plus the module's extended
+address). Any command that takes `--ecu` accepts that form.
+
+```bash
+# 1. Find modules (extended addressing), or use plain 11-bit as a fallback
+cargo run -- bmw sweep
+cargo run -- --vehicle bmw-k51 ecus      # same as bmw sweep
+cargo run -- ecus --sweep                 # 11-bit fallback
+
+# 2. Identify a module (VIN, part number, software version)
+cargo run -- bmw identify 60
+
+# 3. See every known setting, what it does, its risk, and whether it's verified
+cargo run -- bmw explain
+cargo run -- bmw explain --read           # also show current values for mapped settings
+```
+
+### Mapping a setting with the diff workflow
+
+1. `cargo run -- snapshot --ecu 6F1:60 --scan 0000-FFFF -l before -o before.json`
+2. Close obd2-writer. In MotoScan (or the bike's own TFT menu) change **one** setting.
+3. Close MotoScan so the MX+ is free, then
+   `cargo run -- snapshot --from before.json -l after -o after.json`
+4. `cargo run -- diff before.json after.json` shows exactly which bytes changed.
+5. Record it in `bmw_k51.toml` (module, did, byte, mask, values, `verified = true`)
+   and in `docs/bmw-k51/findings.md`.
+
+Settings live in `bmw_k51.toml`. Each one has a description, an effect, a risk level
+(`cosmetic`, `comfort`, `safety`, `never`) and a source. Phase 0 test results go in
+`docs/bmw-k51/findings.md`.
 
 ## Discovered ECUs
 

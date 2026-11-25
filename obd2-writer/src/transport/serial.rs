@@ -62,6 +62,29 @@ impl SerialConnection {
         }
     }
 
+    /// Read raw bytes for a fixed wall-clock window without waiting for a prompt.
+    /// Used for ELM327 monitor mode (ATMA), which streams frames until interrupted.
+    pub async fn read_for(&mut self, window: Duration) -> Result<String> {
+        let mut buf = Vec::with_capacity(64 * 1024);
+        let mut chunk = [0u8; 512];
+        let deadline = tokio::time::Instant::now() + window;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, self.port.read(&mut chunk)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+                Ok(Err(e)) => return Err(Error::Io(e)),
+                Err(_) => break,
+            }
+        }
+
+        Ok(String::from_utf8_lossy(&buf).to_string())
+    }
+
     /// Drain any pending data from the serial buffer.
     pub async fn drain(&mut self) -> Result<()> {
         let mut byte = [0u8; 1];
@@ -106,6 +129,22 @@ pub fn select_port() -> Result<String> {
         return Ok(port.clone());
     }
 
+    // An OBDLink adapter is unambiguous; skip the prompt when exactly one is present.
+    let names: Vec<&str> = ports.iter().map(|p| p.port_name.as_str()).collect();
+    if let Some(port) = pick_obdlink_port(&names) {
+        println!("Found OBDLink adapter: {}", port);
+        return Ok(port.to_string());
+    }
+
+    // A prompt with no terminal would block forever (e.g. stdin from a pipe).
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        let names: Vec<&str> = ports.iter().map(|p| p.port_name.as_str()).collect();
+        return Err(Error::Config(format!(
+            "multiple serial ports and no terminal to choose from; pass --port. Candidates: {}",
+            names.join(", ")
+        )));
+    }
+
     println!("Available serial ports:");
     for (i, port) in ports.iter().enumerate() {
         println!("  [{}] {} ({})", i + 1, port.port_name, port_type_label(&port.port_type));
@@ -127,11 +166,37 @@ pub fn select_port() -> Result<String> {
     }
 }
 
+/// Return the single port whose name contains "obdlink", if exactly one exists.
+fn pick_obdlink_port<'a>(names: &[&'a str]) -> Option<&'a str> {
+    let mut matches = names.iter().filter(|n| n.to_lowercase().contains("obdlink"));
+    match (matches.next(), matches.next()) {
+        (Some(port), None) => Some(port),
+        _ => None,
+    }
+}
+
 fn port_type_label(port_type: &tokio_serial::SerialPortType) -> &'static str {
     match port_type {
         tokio_serial::SerialPortType::UsbPort(_) => "USB",
         tokio_serial::SerialPortType::BluetoothPort => "Bluetooth",
         tokio_serial::SerialPortType::PciPort => "PCI",
         tokio_serial::SerialPortType::Unknown => "Unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pick_obdlink_port_single_match() {
+        let names = ["/dev/cu.Bluetooth-Incoming-Port", "/dev/cu.OBDLinkMX23907", "/dev/cu.debug-console"];
+        assert_eq!(pick_obdlink_port(&names), Some("/dev/cu.OBDLinkMX23907"));
+    }
+
+    #[test]
+    fn test_pick_obdlink_port_none_or_ambiguous() {
+        assert_eq!(pick_obdlink_port(&["/dev/cu.debug-console"]), None);
+        assert_eq!(pick_obdlink_port(&["/dev/cu.OBDLinkA", "/dev/cu.OBDLinkB"]), None);
     }
 }

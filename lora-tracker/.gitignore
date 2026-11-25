@@ -1,0 +1,10 @@
+target/
+*.bin
+device*.toml
+tracker*.toml
+gateway*.toml
+server*.toml
+!server.example.toml
+*.db
+*.db-wal
+*.db-shm

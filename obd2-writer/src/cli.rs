@@ -1,7 +1,7 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "obd2", about = "OBD2 read/write tool for 2023 Toyota Tacoma")]
+#[command(name = "obd2", about = "OBD2 read/write tool for a 2023 Toyota Tacoma and a 2023 BMW R 1250 GS Adventure (K51)")]
 pub struct Cli {
     /// Serial port path (if omitted, lists available devices for selection)
     #[arg(short, long)]
@@ -19,8 +19,20 @@ pub struct Cli {
     #[arg(short, long)]
     pub verbose: bool,
 
+    /// Which vehicle is connected. Changes how `ecus` looks for modules.
+    #[arg(long, value_enum, global = true, default_value_t = Vehicle::ToyotaTacoma)]
+    pub vehicle: Vehicle,
+
     #[command(subcommand)]
     pub command: Command,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Vehicle {
+    /// 2023 Toyota Tacoma: 11-bit CAN, modules at 7xx
+    ToyotaTacoma,
+    /// 2023 BMW R 1250 GS Adventure: D-CAN with extended addressing ("6F1:<module>")
+    BmwK51,
 }
 
 #[derive(Subcommand)]
@@ -99,7 +111,78 @@ pub enum Command {
     BackupAll,
 
     /// Scan for responding ECUs on the CAN bus
-    Ecus,
+    Ecus {
+        /// Probe every 11-bit address in a range instead of the known Toyota list
+        /// (e.g., "700-7FF"). Use this on a vehicle whose module addresses are unknown.
+        #[arg(long, value_name = "RANGE", num_args = 0..=1, default_missing_value = "700-7FF")]
+        sweep: Option<String>,
+    },
+
+    /// Read-only DID snapshot of one ECU, for before/after comparison with `diff`
+    Snapshot {
+        /// Target ECU header (e.g., "7E0"). Required with --scan.
+        #[arg(long)]
+        ecu: Option<String>,
+
+        /// Discover DIDs in this hex range (e.g., "0000-FFFF") and record their values
+        #[arg(long, value_name = "RANGE", conflicts_with = "from")]
+        scan: Option<String>,
+
+        /// Re-read exactly the DIDs listed in a previous snapshot file
+        #[arg(long, value_name = "FILE", conflicts_with = "scan")]
+        from: Option<String>,
+
+        /// Label stored in the snapshot (e.g., "before", "after")
+        #[arg(short, long, default_value = "snapshot")]
+        label: String,
+
+        /// Output JSON file
+        #[arg(short, long)]
+        output: String,
+    },
+
+    /// Passively capture CAN broadcast traffic (no requests sent) for `diff`
+    Monitor {
+        /// Seconds to listen per 0x100-wide ID window (8 windows total)
+        #[arg(default_value_t = 3)]
+        seconds: u64,
+
+        /// Label stored in the capture (e.g., "before", "after")
+        #[arg(short, long, default_value = "capture")]
+        label: String,
+
+        /// Output JSON file
+        #[arg(short, long)]
+        output: String,
+    },
+
+    /// Full read-only before/after recon over a single connection:
+    /// sweep, baseline, capture, wait for you to press buttons, re-read, diff
+    Recon {
+        /// Comma-separated ECU addresses (e.g., "7E0,787"). Omit to sweep 700-7FF and use all responders.
+        #[arg(long)]
+        ecus: Option<String>,
+
+        /// Comma-separated DID ranges to scan on each ECU
+        #[arg(long, default_value = "0000-1FFF,F000-FFFF")]
+        ranges: String,
+
+        /// Seconds per passive monitor window (0 to skip monitoring)
+        #[arg(long, default_value_t = 3)]
+        monitor_seconds: u64,
+
+        /// Directory for the JSON output files
+        #[arg(short, long, default_value = "recon")]
+        out_dir: String,
+    },
+
+    /// Diff two snapshot files or two monitor capture files
+    Diff {
+        /// Baseline JSON file
+        before: String,
+        /// Comparison JSON file
+        after: String,
+    },
 
     /// Interactive PID browser — select and read a standard OBD2 PID
     Browse,
@@ -124,6 +207,12 @@ pub enum Command {
         output: Option<String>,
     },
 
+    /// BMW motorcycle tools (read-only for now)
+    Bmw {
+        #[command(subcommand)]
+        action: BmwAction,
+    },
+
     /// Start interactive shell
     Shell,
 
@@ -140,5 +229,36 @@ pub enum DtcAction {
         /// Required flag to confirm clearing DTCs
         #[arg(long)]
         confirm: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BmwAction {
+    /// Find modules by probing extended addresses with TesterPresent (read-only)
+    Sweep {
+        /// Address range as hex (e.g., "00-FF")
+        #[arg(default_value = "00-FF")]
+        range: String,
+    },
+
+    /// Read part numbers, versions and VIN from one module (read-only)
+    Identify {
+        /// Module extended address as hex (e.g., "60")
+        module: String,
+    },
+
+    /// List the known settings in plain language, with risk and verified status
+    Explain {
+        /// Only show settings on this module (hex address)
+        #[arg(long)]
+        module: Option<String>,
+
+        /// Connect and show current values for mapped settings
+        #[arg(long)]
+        read: bool,
+
+        /// Settings file (default: bmw_k51.toml next to the binary or in the working dir)
+        #[arg(long)]
+        file: Option<String>,
     },
 }

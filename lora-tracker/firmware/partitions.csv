@@ -1,0 +1,11 @@
+# Flash layout for Heltec WiFi LoRa 32 V2 and V3 (both 8 MB flash).
+# ltcfg holds the packed device config written by `lora-tracker flash-config`.
+# Its offset/size must match CONFIG_FLASH_OFFSET / CONFIG_PARTITION_SIZE in proto/src/config.rs
+# (the CLI tests check this). Reflashing firmware does not touch ltcfg. Its subtype is
+# "undefined" because espflash rejects custom numeric data subtypes like 0x40.
+# The first sector of nvs (0x9000) holds the firmware's boot counter (firmware/src/storage.rs).
+# Name,    Type, SubType, Offset,  Size
+nvs,       data, nvs,     0x9000,  0x5000
+ltcfg,     data, undefined, 0xE000, 0x1000
+phy_init,  data, phy,     0xF000,  0x1000
+factory,   app,  factory, 0x10000, 0x3F0000

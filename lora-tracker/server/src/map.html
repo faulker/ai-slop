@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lora-tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<style>
+  html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 10px; right: 10px; z-index: 1000; max-width: 280px;
+    background: #fff; color: #111; border-radius: 8px; padding: 8px 12px;
+    box-shadow: 0 1px 6px rgba(0,0,0,.3);
+  }
+  #panel h1 { font-size: 15px; margin: 0 0 6px; }
+  .dev { margin: 6px 0; cursor: pointer; }
+  .dev small { color: #555; display: block; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  #err { color: #b00; }
+  @media (prefers-color-scheme: dark) {
+    #panel { background: #222; color: #eee; }
+    .dev small { color: #aaa; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>lora-tracker <small><a href="/log">live log</a></small></h1>
+  <label>Last <select id="hours">
+    <option value="1">hour</option><option value="6">6 hours</option>
+    <option value="24" selected>24 hours</option><option value="168">7 days</option>
+  </select></label>
+  <div id="devices"></div>
+  <div id="err"></div>
+</div>
+<script>
+const colors = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#008080"];
+
+const map = L.map("map").setView([39.5, -98.35], 4);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+}).addTo(map);
+
+const layers = new Map(); // device_id -> { line, marker }
+let fitted = false;
+
+/** Escapes text for safe insertion into HTML. */
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/** Formats a report's time, preferring the device clock and falling back to arrival time. */
+function when(r) {
+  const t = r.ts > 0 ? r.ts : r.received_at;
+  return new Date(t * 1000).toLocaleString();
+}
+
+/** Says how long ago a report arrived, e.g. "5 min ago". */
+function ago(r) {
+  const s = Math.max(0, Date.now() / 1000 - r.received_at);
+  if (s < 90) return "just now";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 129600) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " days ago";
+}
+
+/** Builds the position line for the last fix. */
+function describeFix(r) {
+  const parts = [when(r), r.speed_kmh.toFixed(0) + " km/h", r.alt_m + " m"];
+  if (r.approx) return [when(r), "approximate, from network IP (city-level)"].map(esc).join(" · ");
+  if (r.stationary) parts.push("stationary");
+  return parts.map(esc).join(" · ");
+}
+
+/** Builds the status line for a device: last heard, battery, fix state. */
+function describeStatus(d) {
+  if (!d.latest) return "no reports yet";
+  const parts = ["heard " + ago(d.latest)];
+  if (d.latest.batt_mv) parts.push((d.latest.batt_mv / 1000).toFixed(2) + " V");
+  if (!d.last_fix) parts.push("no location yet");
+  else if (d.latest.no_fix) parts.push("no fix now, showing last known");
+  if (!d.configured) parts.push("not in server.toml");
+  return parts.map(esc).join(" · ");
+}
+
+/** GETs JSON from the API, throwing on HTTP errors. */
+async function api(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(path + ": HTTP " + res.status);
+  return res.json();
+}
+
+/** Reloads every device's track and redraws the map and panel. */
+async function refresh() {
+  const hours = document.getElementById("hours").value;
+  const list = document.getElementById("devices");
+  try {
+    const devices = await api("/api/devices");
+    const bounds = [];
+    list.innerHTML = "";
+    for (const [i, d] of devices.entries()) {
+      const color = colors[i % colors.length];
+      const track = await api(`/api/devices/${d.device_id}/track?hours=${hours}`);
+      // IP estimates jump between ISP exits, so only GPS fixes draw the track.
+      const pts = track.filter(r => !r.no_fix && !r.approx).map(r => [r.lat, r.lon]);
+      let l = layers.get(d.device_id);
+      if (!l) {
+        l = { line: L.polyline([], { color, weight: 3 }).addTo(map), marker: null };
+        layers.set(d.device_id, l);
+      }
+      l.line.setLatLngs(pts);
+      bounds.push(...pts);
+
+      const div = document.createElement("div");
+      div.className = "dev";
+      const swatch = `<span class="swatch" style="background:${color}"></span>${esc(d.name)}`;
+      if (d.last_fix) {
+        const pos = [d.last_fix.lat, d.last_fix.lon];
+        const text = `${describeFix(d.last_fix)}<br>${describeStatus(d)}`;
+        if (!l.marker) l.marker = L.circleMarker(pos, { radius: 8, color, fillOpacity: 0.9 }).addTo(map);
+        // Hollow, dashed and larger when the position is only an IP estimate.
+        l.marker.setStyle(d.last_fix.approx
+          ? { radius: 16, dashArray: "4 4", fillOpacity: 0.15 }
+          : { radius: 8, dashArray: null, fillOpacity: 0.9 });
+        l.marker.setLatLng(pos).bindPopup(`<b>${esc(d.name)}</b><br>${text}`);
+        bounds.push(pos);
+        div.onclick = () => { map.setView(pos, 15); l.marker.openPopup(); };
+        div.innerHTML = `${swatch}<small>${text}</small>`;
+      } else {
+        div.innerHTML = `${swatch}<small>${describeStatus(d)}</small>`;
+      }
+      list.appendChild(div);
+    }
+    if (!fitted && bounds.length) {
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+      fitted = true;
+    }
+    document.getElementById("err").textContent = "";
+  } catch (e) {
+    document.getElementById("err").textContent = e.message;
+  }
+}
+
+document.getElementById("hours").onchange = () => { fitted = false; refresh(); };
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

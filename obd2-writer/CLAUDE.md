@@ -24,6 +24,8 @@ Rust async CLI (tokio) for reading/writing to a 2023 Toyota Tacoma via an OBDLin
 - **`protocol/`** — Protocol implementations: ISO-TP framing (`isotp.rs`) and UDS services (`uds.rs`) including DiagnosticSessionControl, ReadDataByIdentifier, WriteDataByIdentifier, SecurityAccess.
 - **`obd/`** — Standard OBD2: PID definitions and reading (`pid.rs`), DTC read/clear (`dtc.rs`).
 - **`toyota/`** — Toyota-specific: enhanced DIDs via Mode 22 (`enhanced_pids.rs`), BCM write operations (`bcm.rs`), TPMS (`tpms.rs`), security access (`security.rs` — currently empty).
+- **`bmw/`** — BMW R 1250 GSA (K51): extended-address module sweep/identify (`modules.rs`), settings schema + write gate (`settings.rs`, `bmw_k51.toml`), plain-language listing (`explain.rs`). Read-only; the transport blocks write services on `6F1:<module>` targets. Findings: `docs/bmw-k51/findings.md`.
+- **`recon/`** — Vehicle-agnostic, read-only recon: DID snapshots (`snapshot.rs`), passive CAN capture (`monitor.rs`), and before/after diffs (`diff.rs`). Nothing here writes to an ECU.
 - **`cli.rs`** — Clap-derived CLI definition with subcommands.
 - **`shell.rs`** — Interactive REPL (rustyline-based) with its own command parser.
 - **`error.rs`** — Unified error type with UDS NRC decoding.

@@ -1,8 +1,10 @@
+mod bmw;
 mod browse;
 mod cli;
 mod error;
 mod obd;
 mod protocol;
+mod recon;
 mod shell;
 mod toyota;
 mod transport;
@@ -11,12 +13,13 @@ mod tui;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{Cli, Command, DtcAction};
+use crate::cli::{BmwAction, Cli, Command, DtcAction, Vehicle};
 use crate::error::Result;
 use crate::obd::dtc;
 use crate::obd::pid;
 use crate::protocol::uds;
 use crate::toyota::{did_scan, ecu_scan, write_safety};
+use crate::transport::bluetooth;
 use crate::transport::elm327::Elm327;
 use crate::transport::serial::{self, SerialConnection};
 
@@ -121,18 +124,94 @@ async fn main() -> Result<()> {
             write_safety::backup_all_settings(&mut elm).await?;
         }
 
-        Command::Ecus => {
+        Command::Ecus { sweep } => {
             let mut elm = connect(&cli).await?;
             elm.initialize().await?;
-            let found = ecu_scan::scan_ecus(&mut elm).await?;
-            if found.is_empty() {
-                println!("No ECUs responded.");
+            if cli.vehicle == Vehicle::BmwK51 {
+                let found = bmw::modules::sweep(&mut elm, 0x00, 0xFF).await?;
+                print_bmw_modules(&found);
+            } else if let Some(range) = sweep {
+                let (start, end) = did_scan::parse_range(range)?;
+                if end > 0x7FF {
+                    eprintln!("Sweep range must stay within 11-bit IDs (000-7FF).");
+                    return Ok(());
+                }
+                let found = ecu_scan::sweep_ecus(&mut elm, start, end).await?;
+                if found.is_empty() {
+                    println!("No modules responded.");
+                } else {
+                    println!("Responding modules:");
+                    for tx in &found {
+                        let hex = format!("{:03X}", tx);
+                        println!("  0x{} ({})", hex, ecu_scan::label_for(&hex).unwrap_or("unknown"));
+                    }
+                }
             } else {
-                println!("Found {} ECU(s):", found.len());
-                for ecu in &found {
-                    println!("  {} (0x{})", ecu.name, ecu.tx_address);
+                let found = ecu_scan::scan_ecus(&mut elm).await?;
+                if found.is_empty() {
+                    println!("No ECUs responded.");
+                } else {
+                    println!("Found {} ECU(s):", found.len());
+                    for ecu in &found {
+                        println!("  {} (0x{})", ecu.name, ecu.tx_address);
+                    }
                 }
             }
+        }
+
+        Command::Snapshot { ecu, scan, from, label, output } => {
+            let snapshot = match (scan, from) {
+                (Some(range), None) => {
+                    let Some(ecu) = ecu else {
+                        eprintln!("--ecu is required with --scan.");
+                        return Ok(());
+                    };
+                    let ranges = vec![did_scan::parse_range(range)?];
+                    let mut elm = connect(&cli).await?;
+                    elm.initialize().await?;
+                    recon::snapshot::scan_to_snapshot(&mut elm, ecu, &ranges, label).await?
+                }
+                (None, Some(path)) => {
+                    let baseline = recon::snapshot::Snapshot::load(path)?;
+                    println!("Re-reading {} DID(s) on ECU 0x{}", baseline.entries.len(), baseline.ecu);
+                    let mut elm = connect(&cli).await?;
+                    elm.initialize().await?;
+                    recon::snapshot::resnapshot(&mut elm, &baseline, label).await?
+                }
+                _ => {
+                    eprintln!("Specify exactly one of --scan RANGE or --from FILE.");
+                    return Ok(());
+                }
+            };
+            snapshot.save(output)?;
+            println!("Saved {} DID(s) to {}", snapshot.entries.len(), output);
+        }
+
+        Command::Monitor { seconds, label, output } => {
+            let mut elm = connect(&cli).await?;
+            elm.initialize().await?;
+            let capture = recon::monitor::capture(&mut elm, *seconds, label).await?;
+            capture.save(output)?;
+            println!("Saved capture to {}", output);
+        }
+
+        Command::Recon { ecus, ranges, monitor_seconds, out_dir } => {
+            let opts = recon::session::ReconOptions {
+                ecus: match ecus {
+                    Some(list) => recon::session::parse_ecu_list(list)?,
+                    None => Vec::new(),
+                },
+                ranges: recon::session::parse_range_list(ranges)?,
+                monitor_seconds: *monitor_seconds,
+                out_dir: out_dir.clone(),
+            };
+            let mut elm = connect(&cli).await?;
+            elm.initialize().await?;
+            recon::session::run(&mut elm, &opts).await?;
+        }
+
+        Command::Diff { before, after } => {
+            recon::diff::diff_files(before, after)?;
         }
 
         Command::Browse => {
@@ -173,8 +252,52 @@ async fn main() -> Result<()> {
             .await?;
         }
 
+        Command::Bmw { action } => match action {
+            BmwAction::Sweep { range } => {
+                let (start, end) = did_scan::parse_range(range)?;
+                if end > 0xFF {
+                    eprintln!("Extended addresses are one byte (00-FF).");
+                    return Ok(());
+                }
+                let mut elm = connect(&cli).await?;
+                elm.initialize().await?;
+                let found = bmw::modules::sweep(&mut elm, start as u8, end as u8).await?;
+                print_bmw_modules(&found);
+            }
+            BmwAction::Identify { module } => {
+                let address = u8::from_str_radix(module, 16).map_err(|_| {
+                    error::Error::Config(format!("invalid module address '{}'", module))
+                })?;
+                let mut elm = connect(&cli).await?;
+                elm.initialize().await?;
+                let ids = bmw::modules::identify(&mut elm, address).await?;
+                if ids.is_empty() {
+                    println!("Module 0x{:02X} answered no identification DIDs.", address);
+                }
+                for (label, data) in ids {
+                    println!("  {:<17} {}", label, bmw::modules::display_id(&data));
+                }
+            }
+            BmwAction::Explain { module, read, file } => {
+                let path = file
+                    .as_ref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(bmw::settings::default_path);
+                let settings = bmw::settings::SettingsFile::load(&path)?;
+                let current = if *read {
+                    let mut elm = connect(&cli).await?;
+                    elm.initialize().await?;
+                    bmw::explain::read_mapped(&mut elm, &settings).await?
+                } else {
+                    Default::default()
+                };
+                bmw::explain::print(&settings, module.as_deref(), &current);
+            }
+        },
+
         Command::Shell => {
             let port = resolve_port(&cli)?;
+            ensure_bluetooth(&port);
             let serial = SerialConnection::open(&port, cli.baud_rate, cli.timeout)?;
             let elm = Elm327::new(serial);
             shell::run(elm).await?;
@@ -182,6 +305,7 @@ async fn main() -> Result<()> {
 
         Command::Tui => {
             let port = resolve_port(&cli)?;
+            ensure_bluetooth(&port);
             let serial = SerialConnection::open(&port, cli.baud_rate, cli.timeout)?;
             let elm = Elm327::new(serial);
             tui::run(elm).await?;
@@ -189,6 +313,32 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Print BMW sweep results as ready-to-use targets for `snapshot --ecu`.
+fn print_bmw_modules(found: &[u8]) {
+    if found.is_empty() {
+        println!("No modules answered on 6F1 extended addressing.");
+        println!("Try `ecus --sweep` for plain 11-bit addressing, or `monitor` to see what the bus carries.");
+        return;
+    }
+    println!("Responding modules (use these with snapshot --ecu / bmw identify):");
+    for address in found {
+        println!("  {}", bmw::modules::target(*address));
+    }
+}
+
+/// Bring the OBDLink's Bluetooth link up before touching its serial port.
+/// Best effort: a missing blueutil or a non-Bluetooth port is not fatal, but
+/// a failed connection attempt is reported so the user knows why the serial
+/// port is about to time out.
+fn ensure_bluetooth(port: &str) {
+    if !port.to_lowercase().contains("obdlink") {
+        return;
+    }
+    if let Err(e) = bluetooth::ensure_obdlink_connected() {
+        eprintln!("Bluetooth: {}", e);
+    }
 }
 
 fn resolve_port(cli: &Cli) -> Result<String> {
@@ -200,6 +350,7 @@ fn resolve_port(cli: &Cli) -> Result<String> {
 
 async fn connect(cli: &Cli) -> Result<Elm327> {
     let port = resolve_port(cli)?;
+    ensure_bluetooth(&port);
     println!("Opening {}...", port);
     let serial = SerialConnection::open(&port, cli.baud_rate, cli.timeout)?;
     Ok(Elm327::new(serial))
