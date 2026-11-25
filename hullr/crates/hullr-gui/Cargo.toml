@@ -1,0 +1,21 @@
+[package]
+name = "hullr-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "hullr desktop app (egui)"
+
+[dependencies]
+hullr-core.workspace = true
+tokio.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+# The workspace entry keeps eframe's default features; these are the ones we
+# rely on (OpenGL backend, bundled fonts, X11 and Wayland on Linux).
+eframe = { workspace = true, features = ["glow", "default_fonts", "x11", "wayland"] }
+
+[dev-dependencies]
+async-trait.workspace = true

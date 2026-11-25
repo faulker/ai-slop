@@ -1,0 +1,22 @@
+[package]
+name = "hullr-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Orchestrates images, runtime, builds, volumes and compose behind hullr_core::Api"
+
+[dependencies]
+hullr-core.workspace = true
+hullr-image.workspace = true
+hullr-runtime.workspace = true
+hullr-build.workspace = true
+hullr-compose.workspace = true
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

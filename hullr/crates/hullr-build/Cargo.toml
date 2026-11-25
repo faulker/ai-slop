@@ -1,0 +1,21 @@
+[package]
+name = "hullr-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dockerfile parser and image builder"
+
+[dependencies]
+hullr-core.workspace = true
+hullr-image.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tar.workspace = true
+flate2.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

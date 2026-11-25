@@ -1,0 +1,30 @@
+[package]
+name = "hullr-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "hullr: a lean, friendly container tool for macOS and Linux"
+
+[[bin]]
+name = "hullr"
+path = "src/main.rs"
+
+[dependencies]
+hullr-core.workspace = true
+hullr-api.workspace = true
+hullr-engine.workspace = true
+hullr-runtime.workspace = true
+hullr-compose.workspace = true
+hullr-tui.workspace = true
+hullr-gui.workspace = true
+hullr-vm.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

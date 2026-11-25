@@ -1,3 +1,4 @@
 /target
 /vm/cache/
 /vm/out/
+!Cargo.toml

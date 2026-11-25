@@ -1,0 +1,16 @@
+[package]
+name = "hullr-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "hullr terminal UI (ratatui)"
+
+[dependencies]
+hullr-core.workspace = true
+tokio.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+libc.workspace = true

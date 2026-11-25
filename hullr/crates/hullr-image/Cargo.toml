@@ -1,0 +1,27 @@
+[package]
+name = "hullr-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OCI registry client and local image/layer store"
+
+[dependencies]
+hullr-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tar.workspace = true
+flate2.workspace = true
+zstd.workspace = true
+reqwest.workspace = true
+futures.workspace = true
+dirs.workspace = true
+libc = "0.2"
+base64 = "0.22"
+filetime = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true }
