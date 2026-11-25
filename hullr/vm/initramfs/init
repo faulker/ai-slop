@@ -1,0 +1,104 @@
+#!/bin/sh
+# hullr guest /init. Runs as PID 1 from the initramfs, prepares the system,
+# then hands over to busybox init (see /etc/inittab), which supervises the
+# guest agent and the daemon and reaps orphans.
+#
+# Kernel parameters read here (set by the host, see crates/hullr-vm/src/boot.rs):
+#   hullr.shares=s0:/Users/me,s1:/tmp:/private/tmp
+#       entries of the `hullr-host` virtiofs share: name:guest_path[:host_path]
+#   hullr.rosetta=1   the `rosetta` virtiofs tag is attached
+
+/bin/busybox mount -t proc proc /proc
+/bin/busybox --install -s 2>/dev/null
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+exec </dev/console >/dev/console 2>&1
+mkdir -p /dev/pts /dev/shm /run /tmp /var/lib/hullr /mnt/host /mnt/rosetta
+mount -t devpts devpts /dev/pts
+mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+mount -t tmpfs tmpfs /run
+mount -t tmpfs -o mode=1777 tmpfs /tmp
+mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null
+
+log() { echo "hullr-init: $*"; }
+
+# Modules, dependencies first (built-in drivers simply fail to insmod).
+if [ -f /lib/modules/hullr/load.list ]; then
+    while read -r m; do
+        [ -n "$m" ] && insmod "/lib/modules/hullr/$m" 2>/dev/null
+    done < /lib/modules/hullr/load.list
+fi
+
+SHARES=
+ROSETTA=
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        hullr.shares=*) SHARES="${arg#hullr.shares=}" ;;
+        hullr.rosetta=1) ROSETTA=1 ;;
+    esac
+done
+
+# Data disk: format on first boot, grow after `disk_gib` was raised.
+DATA=/var/lib/hullr
+if [ -b /dev/vda ]; then
+    if ! blkid /dev/vda 2>/dev/null | grep -q 'TYPE="ext4"'; then
+        log "formatting /dev/vda as ext4"
+        mkfs.ext4 -q -F -L hullr-data /dev/vda
+    fi
+    e2fsck -p /dev/vda >/dev/null 2>&1
+    resize2fs /dev/vda >/dev/null 2>&1
+    mount -t ext4 -o noatime /dev/vda "$DATA" || log "cannot mount /dev/vda"
+else
+    log "no /dev/vda; data lives in RAM"
+fi
+
+# Host directories at their host paths.
+if [ -n "$SHARES" ] && mount -t virtiofs hullr-host /mnt/host; then
+    IFS=,
+    for e in $SHARES; do
+        IFS=:
+        set -- $e
+        IFS=,
+        name=$1 gpath=$2 hpath=$3
+        mkdir -p "$gpath" && mount --bind "/mnt/host/$name" "$gpath" || log "share $gpath failed"
+        # macOS aliases: /tmp -> /private/tmp, /var/folders <-> /private/var/folders.
+        for alias in "$hpath" "${gpath#/private}"; do
+            if [ -n "$alias" ] && [ "$alias" != "$gpath" ] && [ ! -e "$alias" ]; then
+                mkdir -p "$(dirname "$alias")" && ln -s "$gpath" "$alias"
+            fi
+        done
+    done
+    unset IFS
+fi
+
+# Foreign architectures: Rosetta for x86_64 when offered, else qemu-user.
+mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null
+REG=/proc/sys/fs/binfmt_misc/register
+X86_MAGIC='\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00'
+X86_MASK='\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff'
+ARM64_MAGIC='\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00'
+ARM64_MASK='\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff'
+X86_DONE=
+if [ "$ROSETTA" = 1 ] && mount -t virtiofs rosetta /mnt/rosetta; then
+    printf '%s' ":rosetta:M::$X86_MAGIC:$X86_MASK:/mnt/rosetta/rosetta:OCF" > "$REG" && X86_DONE=1
+    log "rosetta registered for x86_64"
+fi
+ARCH=$(uname -m)
+if [ -z "$X86_DONE" ] && [ "$ARCH" != x86_64 ] && [ -x /usr/bin/qemu-x86_64 ]; then
+    printf '%s' ":qemu-x86_64:M::$X86_MAGIC:$X86_MASK:/usr/bin/qemu-x86_64:OCF" > "$REG"
+fi
+if [ "$ARCH" != aarch64 ] && [ -x /usr/bin/qemu-aarch64 ]; then
+    printf '%s' ":qemu-aarch64:M::$ARM64_MAGIC:$ARM64_MASK:/usr/bin/qemu-aarch64:OCF" > "$REG"
+fi
+
+# Network: NAT from Virtualization.framework, address via DHCP.
+hostname hullr
+ip link set lo up
+ip link set eth0 up 2>/dev/null
+udhcpc -i eth0 -b -S -s /usr/share/udhcpc/default.script >/dev/null 2>&1 || log "dhcp failed"
+
+echo 1 > /proc/sys/net/ipv4/ip_forward
+log "starting guest agent and daemon"
+exec /bin/busybox init

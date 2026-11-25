@@ -15,6 +15,8 @@ If I feel a tool is production ready or I find I'm using more then just a one of
 
 - **[claude-usage](claude-usage/README.md)** — Rust CLI that pulls Claude Code usage data from the Anthropic API via the OAuth token stored in the macOS Keychain.
 
+- **[hullr](hullr/README.md)** — Lean, friendly Docker replacement for macOS and Linux in Rust. Pulls from Docker Hub/GHCR, builds Dockerfiles, runs compose files and foreign CPU architectures, with a CLI, TUI and egui desktop app. Works daemonless or as a background service.
+
 - **[obd2-writer](obd2-writer/README.md)** — Rust CLI and TUI for reading/writing to a 2023 Toyota Tacoma's ECUs over Bluetooth using an OBDLink MX+ scanner, with live dashboards, DID scanning, and backup/restore.
 
 - **[orcha-ai](orcha-ai/README.md)** — TypeScript CLI that orchestrates multiple Claude Code agents from a markdown spec, parsing tasks into a DAG and running them in parallel.
